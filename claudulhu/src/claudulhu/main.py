@@ -64,7 +64,7 @@ def install_completions() -> None:
         "\n# claudulhu tab completion\n"
         "autoload -U bashcompinit\n"
         "bashcompinit\n"
-        f'eval "$({sys.executable.replace(os.path.expanduser("~"), "~")} -m argcomplete claudulhu)"\n'
+        f'eval "$({os.path.join(os.path.dirname(sys.executable), "register-python-argcomplete").replace(os.path.expanduser("~"), "~")} claudulhu)"\n'
     )
     zshrc = os.path.expanduser("~/.zshrc")
     if os.path.isfile(zshrc):
