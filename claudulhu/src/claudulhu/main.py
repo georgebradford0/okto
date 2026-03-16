@@ -19,22 +19,31 @@ _claudulhu_worktrees() {
 }
 
 _claudulhu_task_desc() {
-  local cur="${words[CURRENT]}"
-  [[ "$cur" != *@* ]] && return
-  local before_at="${cur%@*}"
-  local path_part="${cur##*@}"
-  local -a matches completions
-  if [[ "$path_part" == */* ]]; then
-    local dir="${path_part%/*}" base="${path_part##*/}"
-    matches=("$dir"/${base}*(N))
+  # Work from $PREFIX (the space-split token at the cursor), not words[CURRENT].
+  # IPREFIX already holds everything before this token (including any leading quote
+  # and prior words), so we must not double-count it.
+  [[ "$PREFIX" != *@* ]] && return
+  local prefix_before_at="${PREFIX%@*}"
+  local at_part="${PREFIX##*@}"
+  local dir_part file_part
+  if [[ "$at_part" == */* ]]; then
+    dir_part="${at_part%/*}/"
+    file_part="${at_part##*/}"
   else
-    matches=(${path_part}*(N))
+    dir_part=""
+    file_part="$at_part"
   fi
-  for m in $matches; do
-    [[ -d "$m" ]] && completions+=("${before_at}@${m}/") || completions+=("${before_at}@${m}")
+  local search="${dir_part:-.}"
+  local -a entries completions
+  entries=("${search%/}"/${file_part}*(N:t))
+  (( $#entries )) || return
+  local e
+  for e in $entries; do
+    [[ -d "${dir_part}${e}" ]] && completions+=("${e}/") || completions+=("${e}")
   done
-  (( $#completions )) || return
-  compadd -Q -U -S '' -a completions
+  IPREFIX="${IPREFIX}${prefix_before_at}@${dir_part}"
+  PREFIX="$file_part"
+  compadd -Q -S '' -a completions
 }
 
 _claudulhu() {
