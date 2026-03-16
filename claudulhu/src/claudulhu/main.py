@@ -23,64 +23,51 @@ _claudulhu_task_desc() {
   [[ "$cur" != *@* ]] && return
   local before_at="${cur%@*}"
   local path_part="${cur##*@}"
-  local dir_part file_part search_dir
+  local -a matches completions
   if [[ "$path_part" == */* ]]; then
-    dir_part="${path_part%/*}"
-    file_part="${path_part##*/}"
-    search_dir="${dir_part}"
+    local dir="${path_part%/*}" base="${path_part##*/}"
+    matches=("$dir"/${base}*(N))
   else
-    dir_part=""
-    file_part="$path_part"
-    search_dir="."
+    matches=(${path_part}*(N))
   fi
-  [[ -d "$search_dir" ]] || return
-  local -a completions
-  local f rel
-  for f in ${search_dir}/${file_part}*(N); do
-    local base="${f##*/}"
-    [[ -n "$dir_part" ]] && rel="${dir_part}/${base}" || rel="${base}"
-    if [[ -d "$f" ]]; then
-      completions+=("${before_at}@${rel}/")
-    else
-      completions+=("${before_at}@${rel}")
-    fi
+  for m in $matches; do
+    [[ -d "$m" ]] && completions+=("${before_at}@${m}/") || completions+=("${before_at}@${m}")
   done
-  (( ${#completions} )) || return
-  compadd -Q -S '' -a completions
+  (( $#completions )) || return
+  compadd -Q -U -S '' -a completions
 }
 
 _claudulhu() {
-  local context state state_descr line
-  typeset -A opt_args
+  local subcmd="${words[2]}"
 
-  _arguments -C \
-    '1: :->command' \
-    '*: :->args'
+  if (( CURRENT == 2 )); then
+    local -a commands=(
+      'task:Run a task in a new worktree'
+      'list:List worktrees for the current repo'
+      'completions:Manage shell completions'
+      'uninstall:Remove all claudulhu data and shell completions'
+      'merge:Merge a worktree branch into the current branch'
+      'remove:Remove a worktree and its branch'
+    )
+    _describe 'command' commands
+    return
+  fi
 
-  case $state in
-    command)
-      _values 'command' \
-        'task[Run a task in a new worktree]' \
-        'list[List worktrees for the current repo]' \
-        'completions[Manage shell completions]' \
-        'uninstall[Remove all claudulhu data and shell completions]' \
-        'merge[Merge a worktree branch into the current branch]' \
-        'remove[Remove a worktree and its branch]'
+  case $subcmd in
+    task)
+      _claudulhu_task_desc
       ;;
-    args)
-      case $line[1] in
-        task)
-          _claudulhu_task_desc
-          ;;
-        merge|remove)
-          _claudulhu_worktrees
-          ;;
-        completions)
-          _values 'subcommand' \
-            'install[Install tab completions into ~/.zshrc]' \
-            'uninstall[Remove tab completions from ~/.zshrc]'
-          ;;
-      esac
+    merge|remove)
+      _claudulhu_worktrees
+      ;;
+    completions)
+      if (( CURRENT == 3 )); then
+        local -a subcommands=(
+          'install:Install tab completions into ~/.zshrc'
+          'uninstall:Remove tab completions from ~/.zshrc'
+        )
+        _describe 'subcommand' subcommands
+      fi
       ;;
   esac
 }
@@ -90,7 +77,13 @@ _claudulhu "$@"
 
 ZSH_FUNCTIONS_DIR = os.path.expanduser("~/.zsh_functions")
 ZSH_COMPLETION_FILE = os.path.join(ZSH_FUNCTIONS_DIR, "_claudulhu")
-ZSHRC_BLOCK = "\n# claudulhu tab completion\nautoload -Uz compinit && compinit\n"
+ZSHRC_BLOCK = (
+    "\n# claudulhu tab completion\n"
+    "(( $+functions[compdef] )) || { autoload -Uz compinit && compinit -u; }\n"
+    "unfunction _claudulhu _claudulhu_task_desc _claudulhu_worktrees 2>/dev/null\n"
+    "autoload -Uz _claudulhu\n"
+    "compdef _claudulhu claudulhu\n"
+)
 
 
 def generate_branch_name(task: str, taken: list[str] | None = None) -> str:
@@ -159,7 +152,7 @@ def uninstall_completions() -> None:
     with open(zshrc) as f:
         contents = f.read()
     updated = re.sub(
-        r"\n# claudulhu tab completion\n(?:[^\n]*\n)*?(?:autoload -Uz compinit && compinit|eval \"\$\(.*?claudulhu.*?\)\")\n",
+        r"\n# claudulhu tab completion\n(?:[^\n]*\n){1,4}",
         "",
         contents,
     )
