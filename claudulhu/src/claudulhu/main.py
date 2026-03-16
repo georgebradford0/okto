@@ -113,6 +113,19 @@ def uninstall() -> None:
     print("Run 'uv tool uninstall claudulhu' to remove the binary.")
 
 
+def merge_worktree(repo: Repo, name: str) -> None:
+    existing = [h.name for h in repo.heads]
+    if name not in existing:
+        print(f"No branch '{name}' found.", file=sys.stderr)
+        sys.exit(1)
+    try:
+        repo.git.merge(name)
+        print(f"Merged '{name}' into '{repo.active_branch.name}'.")
+    except Exception as e:
+        print(f"Merge failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def list_worktrees(repo: Repo) -> None:
     repo_name = os.path.basename(repo.working_dir)
     worktrees_dir = os.path.expanduser(f"~/.claudulhu/worktrees/{repo_name}")
@@ -144,6 +157,9 @@ def main():
 
     subparsers.add_parser("uninstall", help="Remove all claudulhu data and shell completions")
 
+    merge_parser = subparsers.add_parser("merge", help="Merge a worktree branch into the current branch")
+    merge_parser.add_argument("name", help="Worktree name (branch) to merge").completer = worktree_completer
+
     remove_parser = subparsers.add_parser("remove", help="Remove a worktree and its branch")
     remove_parser.add_argument("name", help="Worktree name (branch) to remove").completer = worktree_completer
 
@@ -158,6 +174,13 @@ def main():
             uninstall_completions()
         else:
             completions_parser.print_help()
+    elif args.command == "merge":
+        try:
+            repo = Repo(os.getcwd(), search_parent_directories=True)
+        except InvalidGitRepositoryError:
+            print("No git repository found in current directory.", file=sys.stderr)
+            sys.exit(1)
+        merge_worktree(repo, args.name)
     elif args.command == "remove":
         try:
             repo = Repo(os.getcwd(), search_parent_directories=True)
