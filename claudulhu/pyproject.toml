@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-claudulhu-daemon = "claudulhu_daemon.main:main"
+claudulhud = "claudulhu_daemon.main:main"
 
 [build-system]
 requires = ["hatchling"]

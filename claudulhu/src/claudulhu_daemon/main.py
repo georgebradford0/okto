@@ -11,7 +11,7 @@ from git import InvalidGitRepositoryError, Repo
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="claudulhu-daemon",
+        prog="claudulhud",
         description="Git repo management server — WebSocket chat + worker REST API",
     )
     parser.add_argument(
@@ -62,9 +62,9 @@ def main() -> None:
         sys.exit(1)
 
     resolved = repo.working_dir
-    print(f"[claudulhu] repo   : {resolved}")
-    print(f"[claudulhu] model  : {args.model}")
-    print(f"[claudulhu] listen : {args.host}:{args.port}")
+    print(f"[claudulhud] repo   : {resolved}")
+    print(f"[claudulhud] model  : {args.model}")
+    print(f"[claudulhud] listen : {args.host}:{args.port}")
 
     # Wire app state before uvicorn imports the app module
     from .app import state
