@@ -45,12 +45,6 @@ def main() -> None:
         metavar="SECONDS",
         help="Git poll interval in seconds (default: 10)",
     )
-    parser.add_argument(
-        "--reload",
-        action="store_true",
-        help="Enable uvicorn auto-reload (dev only)",
-    )
-
     args = parser.parse_args()
 
     # Resolve repo
@@ -67,7 +61,7 @@ def main() -> None:
     print(f"[claudulhud] listen : {args.host}:{args.port}")
 
     # Wire app state before uvicorn imports the app module
-    from .app import state
+    from .app import app, state
     from .monitor import GitMonitor
     from .sessions import SessionStore
     from .workers import WorkerPool
@@ -80,12 +74,7 @@ def main() -> None:
     state.sessions = SessionStore(repo_name=os.path.basename(resolved))
 
     import uvicorn
-    uvicorn.run(
-        "claudulhu_daemon.app:app",
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-    )
+    uvicorn.run(app, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
