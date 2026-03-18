@@ -447,3 +447,49 @@
   text-overflow: ellipsis;
   opacity: 0.7;
 }
+
+/* ── Spawn worker blocks ──────────────────────────────────────────────────── */
+
+.spawning-block {
+  font-size: 11px;
+  color: var(--amber);
+  letter-spacing: 0.04em;
+  font-style: italic;
+}
+
+.worker-created-block {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--green-dim);
+  border: 1px solid rgba(61, 186, 111, 0.3);
+  border-radius: var(--radius);
+  padding: 9px 14px;
+}
+
+.worker-created-icon {
+  font-size: 15px;
+  color: var(--green);
+  flex-shrink: 0;
+}
+
+.worker-created-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.worker-created-branch {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--green);
+}
+
+.worker-created-path {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

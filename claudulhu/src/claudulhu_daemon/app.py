@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -62,6 +63,52 @@ def _worktree_system_prompt(worktree_path: str) -> str:
         "You can inspect code, propose changes, make commits, and more. "
         "Be concise and precise."
     )
+
+
+# ---------------------------------------------------------------------------
+# Branch / worktree helpers
+# ---------------------------------------------------------------------------
+
+async def _generate_branch_name(task: str, taken: list[str]) -> str:
+    prompt = (
+        f"Generate a short, lowercase, hyphenated git branch name (2-5 words, no punctuation) "
+        f"for this task: {task}. Reply with only the branch name, nothing else."
+    )
+    if taken:
+        prompt += f" Do not use any of these: {', '.join(taken)}."
+    proc = await asyncio.create_subprocess_exec(
+        "claude", "-p", prompt,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await proc.communicate()
+    name = stdout.decode().strip().lower().replace(" ", "-")
+    return re.sub(r"[^a-z0-9-]", "", name)
+
+
+def _create_worktree(repo, branch: str) -> str:
+    repo_name = os.path.basename(repo.working_dir)
+    worktrees_dir = os.path.expanduser(f"~/.claudulhu/worktrees/{repo_name}")
+    os.makedirs(worktrees_dir, exist_ok=True)
+    worktree_path = os.path.join(worktrees_dir, branch)
+    repo.git.worktree("add", "-b", branch, worktree_path)
+    return worktree_path
+
+
+async def spawn_worker_from_task(task: str) -> dict:
+    existing = [h.name for h in state.repo.heads]
+    taken: list[str] = []
+    for _ in range(5):
+        branch = await _generate_branch_name(task, taken)
+        if branch and branch not in existing:
+            break
+        taken.append(branch)
+    else:
+        raise RuntimeError("Could not generate a unique branch name after 5 attempts")
+
+    worktree_path = await asyncio.to_thread(_create_worktree, state.repo, branch)
+    print(f"[spawn] created branch={branch} worktree={worktree_path}")
+    return {"branch": branch, "worktree_path": worktree_path}
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +179,7 @@ async def chat_ws(websocket: WebSocket):
             system_prompt=_main_system_prompt(),
             resume_sdk_session_id=resume_id,
             on_session_id=_persist,
+            on_spawn_worker=spawn_worker_from_task,
         )
     finally:
         state._main_chat_active = False

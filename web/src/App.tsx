@@ -4,23 +4,29 @@ import './App.css'
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 type ServerFrame =
-  | { type: 'ready';       session_id: string; resumed: boolean }
-  | { type: 'text';        text: string }
-  | { type: 'tool_use';    tool: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; tool_use_id: string; content: unknown }
-  | { type: 'result';      cost_usd: number; turns: number; session_id: string; result: string | null }
-  | { type: 'error';       message: string }
+  | { type: 'ready';          session_id: string; resumed: boolean }
+  | { type: 'text';           text: string }
+  | { type: 'tool_use';       tool: string; input: Record<string, unknown> }
+  | { type: 'tool_result';    tool_use_id: string; content: unknown }
+  | { type: 'result';         cost_usd: number; turns: number; session_id: string; result: string | null }
+  | { type: 'error';          message: string }
   | { type: 'interrupted' }
-  | { type: 'system';      text: string }
+  | { type: 'system';         text: string }
+  | { type: 'spawning';       task: string }
+  | { type: 'worker_created'; branch: string; worktree_path: string }
+  | { type: 'worker_error';   message: string }
 
 type Block =
-  | { kind: 'text';        text: string }
-  | { kind: 'tool_use';    tool: string; input: Record<string, unknown> }
-  | { kind: 'tool_result'; content: unknown }
-  | { kind: 'result';      cost_usd: number; turns: number }
-  | { kind: 'error';       message: string }
+  | { kind: 'text';           text: string }
+  | { kind: 'tool_use';       tool: string; input: Record<string, unknown> }
+  | { kind: 'tool_result';    content: unknown }
+  | { kind: 'result';         cost_usd: number; turns: number }
+  | { kind: 'error';          message: string }
   | { kind: 'interrupted' }
-  | { kind: 'system';      text: string }
+  | { kind: 'system';         text: string }
+  | { kind: 'spawning';       task: string }
+  | { kind: 'worker_created'; branch: string; worktree_path: string }
+  | { kind: 'worker_error';   message: string }
 
 interface ChatMessage {
   id: string
@@ -104,6 +110,20 @@ function BlockRenderer({ block }: { block: Block }) {
       return <div className="interrupted-block">— interrupted</div>
     case 'system':
       return <div className="system-block">{block.text}</div>
+    case 'spawning':
+      return <div className="spawning-block">generating branch for: {block.task}</div>
+    case 'worker_created':
+      return (
+        <div className="worker-created-block">
+          <span className="worker-created-icon">⎇</span>
+          <div className="worker-created-info">
+            <span className="worker-created-branch">{block.branch}</span>
+            <span className="worker-created-path">{block.worktree_path}</span>
+          </div>
+        </div>
+      )
+    case 'worker_error':
+      return <div className="error-block">✗ {block.message}</div>
   }
 }
 
@@ -264,6 +284,21 @@ export default function App() {
               blocks: [{ kind: 'system', text: frame.text }],
             }])
             break
+          case 'spawning':
+            // Update the last user message (which showed the & task) with spawning status
+            break
+          case 'worker_created':
+            setMessages(prev => [...prev, {
+              id: uid(), role: 'info', streaming: false,
+              blocks: [{ kind: 'worker_created', branch: frame.branch, worktree_path: frame.worktree_path }],
+            }])
+            break
+          case 'worker_error':
+            setMessages(prev => [...prev, {
+              id: uid(), role: 'info', streaming: false,
+              blocks: [{ kind: 'worker_error', message: frame.message }],
+            }])
+            break
         }
       }
 
@@ -291,11 +326,22 @@ export default function App() {
     const ws = wsRef.current
     if (!ws || ws.readyState !== WebSocket.OPEN) return
 
-    setMessages(prev => [...prev, {
-      id: uid(), role: 'user', streaming: false,
-      blocks: [{ kind: 'text', text }],
-    }])
-    ws.send(JSON.stringify({ type: 'message', text }))
+    if (text.startsWith('&')) {
+      const task = text.slice(1).trim()
+      if (!task) return
+      setMessages(prev => [...prev, {
+        id: uid(), role: 'user', streaming: false,
+        blocks: [{ kind: 'spawning', task }],
+      }])
+      ws.send(JSON.stringify({ type: 'spawn_worker', task }))
+    } else {
+      setMessages(prev => [...prev, {
+        id: uid(), role: 'user', streaming: false,
+        blocks: [{ kind: 'text', text }],
+      }])
+      ws.send(JSON.stringify({ type: 'message', text }))
+    }
+
     setInput('')
     inputRef.current?.focus()
   }, [input, isStreaming])
@@ -362,7 +408,7 @@ export default function App() {
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="message…"
+              placeholder="message… (& task to spawn a worktree)"
               rows={1}
               disabled={status === 'connecting' || status === 'disconnected'}
             />

@@ -59,6 +59,7 @@ async def handle_chat(
     system_prompt: str,
     resume_sdk_session_id: str | None = None,
     on_session_id: Callable[[str], Awaitable[None]] | None = None,
+    on_spawn_worker: Callable[[str], Awaitable[dict]] | None = None,
 ) -> None:
     """Manages one user's WebSocket connection end-to-end.
 
@@ -150,6 +151,22 @@ async def handle_chat(
                     if m:
                         await client.set_model(m)
                         await websocket.send_text(_msg(type="model_set", model=m))
+
+                elif kind == "spawn_worker":
+                    task = data.get("task", "").strip()
+                    if not task:
+                        await websocket.send_text(_msg(type="error", message="spawn_worker requires a task"))
+                        continue
+                    if on_spawn_worker is None:
+                        await websocket.send_text(_msg(type="error", message="worker spawning not available"))
+                        continue
+                    await websocket.send_text(_msg(type="spawning", task=task))
+                    try:
+                        result = await on_spawn_worker(task)
+                        await websocket.send_text(_msg(type="worker_created", **result))
+                    except Exception as exc:
+                        print(f"[chat] spawn_worker error: {exc}")
+                        await websocket.send_text(_msg(type="worker_error", message=str(exc)))
 
                 else:
                     await websocket.send_text(_msg(type="error", message=f"unknown type: {kind!r}"))
