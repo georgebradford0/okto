@@ -45,6 +45,13 @@ def main() -> None:
         metavar="SECONDS",
         help="Git poll interval in seconds (default: 10)",
     )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=100,
+        metavar="N",
+        help="Max conversation turns before pruning oldest messages (default: 100)",
+    )
     args = parser.parse_args()
 
     # Resolve repo
@@ -69,6 +76,7 @@ def main() -> None:
     state.repo = repo
     state.repo_path = resolved
     state.model = args.model
+    state.max_turns = args.max_turns
     state.monitor = GitMonitor(repo, poll_interval=args.poll_interval)
     state.workers = WorkerPool()
     state.sessions = SessionStore(repo_name=os.path.basename(resolved))

@@ -35,6 +35,7 @@ class _State:
     _stop: asyncio.Event
     _monitor_task: asyncio.Task
     model: str
+    max_turns: int
     main_session: SharedChatSession
 
 
@@ -139,7 +140,7 @@ async def lifespan(app: FastAPI):
         permission_mode="bypassPermissions",
         resume=resume_id,
     )
-    state.main_session = SharedChatSession()
+    state.main_session = SharedChatSession(max_turns=state.max_turns)
     await state.main_session.start(opts, resumed=resume_id is not None)
 
     yield
@@ -341,5 +342,7 @@ async def health() -> dict[str, Any]:
         "branches": len(snap.branches),
         "active_sessions": len(state.workers.all()),
         "shared_session_subscribers": state.main_session.subscriber_count,
+        "shared_session_turns": len(state.main_session._history),
+        "max_turns": state.max_turns,
         "model": state.model,
     }
