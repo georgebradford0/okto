@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket
+import claude_agent_sdk as sdk
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from git import Repo
@@ -16,6 +18,7 @@ from git import Repo
 from .chat import handle_chat
 from .monitor import GitMonitor
 from .sessions import SessionRecord, SessionStore
+from .shared_session import SharedChatSession
 from .workers import WorkerPool
 
 
@@ -32,7 +35,7 @@ class _State:
     _stop: asyncio.Event
     _monitor_task: asyncio.Task
     model: str
-    _main_chat_active: bool = False
+    main_session: SharedChatSession
 
 
 state = _State()
@@ -115,19 +118,40 @@ async def spawn_worker_from_task(task: str) -> dict:
 # Lifespan
 # ---------------------------------------------------------------------------
 
+_MAIN_SESSION_KEY = "__main__"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Start git monitor
     state._stop = asyncio.Event()
     state._monitor_task = asyncio.create_task(
         state.monitor.run(state._stop), name="git-monitor"
     )
+
+    # Start shared main chat session
+    record = state.sessions.load(_MAIN_SESSION_KEY)
+    resume_id = record.sdk_session_id if record else None
+    opts = sdk.ClaudeAgentOptions(
+        system_prompt=_main_system_prompt(),
+        model=state.model,
+        cwd=state.repo_path,
+        permission_mode="bypassPermissions",
+        resume=resume_id,
+    )
+    state.main_session = SharedChatSession()
+    await state.main_session.start(opts, resumed=resume_id is not None)
+
     yield
+
+    # Shutdown
     state._stop.set()
     state._monitor_task.cancel()
     try:
         await state._monitor_task
     except asyncio.CancelledError:
         pass
+    await state.main_session.stop()
     await state.workers.stop_all()
 
 
@@ -144,21 +168,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_MAIN_SESSION_KEY = "__main__"
-
 
 # ------------------------------------------------------------------
-# WebSocket  /chat  (main repo-level session)
+# WebSocket  /chat  (shared main session — all clients see same conversation)
 # ------------------------------------------------------------------
 
 @app.websocket("/chat")
 async def chat_ws(websocket: WebSocket):
-    if state._main_chat_active:
-        await websocket.close(code=4009, reason="A main chat session is already active")
-        return
-
-    record = state.sessions.load(_MAIN_SESSION_KEY)
-    resume_id = record.sdk_session_id if record else None
+    await websocket.accept()
 
     async def _persist(sdk_session_id: str) -> None:
         import datetime
@@ -169,20 +186,64 @@ async def chat_ws(websocket: WebSocket):
             last_seen=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         ))
 
-    state._main_chat_active = True
+    # Greet the new subscriber
+    await websocket.send_text(json.dumps({
+        "type": "ready",
+        "session_id": _MAIN_SESSION_KEY,
+        "resumed": state.main_session.resumed,
+    }))
+
+    state.main_session.subscribe(websocket)
+    print(f"[chat] subscriber joined (total={state.main_session.subscriber_count})")
     try:
-        await handle_chat(
-            websocket=websocket,
-            session_id=_MAIN_SESSION_KEY,
-            repo_path=state.repo_path,
-            model=state.model,
-            system_prompt=_main_system_prompt(),
-            resume_sdk_session_id=resume_id,
-            on_session_id=_persist,
-            on_spawn_worker=spawn_worker_from_task,
-        )
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                await state.main_session.send_to(
+                    websocket, type="error", message="invalid JSON"
+                )
+                continue
+
+            kind = data.get("type")
+
+            if kind == "message":
+                text = data.get("text", "").strip()
+                if text:
+                    await state.main_session.query(text, on_session_id=_persist)
+
+            elif kind == "interrupt":
+                await state.main_session.interrupt()
+
+            elif kind == "spawn_worker":
+                task = data.get("task", "").strip()
+                if not task:
+                    await state.main_session.send_to(
+                        websocket, type="error", message="spawn_worker requires a task"
+                    )
+                    continue
+                # spawning feedback is individual; worker_created is broadcast
+                await state.main_session.send_to(websocket, type="spawning", task=task)
+                try:
+                    result = await spawn_worker_from_task(task)
+                    await state.main_session.broadcast(type="worker_created", **result)
+                except Exception as exc:
+                    print(f"[chat] spawn_worker error: {exc}")
+                    await state.main_session.send_to(
+                        websocket, type="worker_error", message=str(exc)
+                    )
+
+            else:
+                await state.main_session.send_to(
+                    websocket, type="error", message=f"unknown type: {kind!r}"
+                )
+
+    except WebSocketDisconnect:
+        pass
     finally:
-        state._main_chat_active = False
+        state.main_session.unsubscribe(websocket)
+        print(f"[chat] subscriber left (total={state.main_session.subscriber_count})")
 
 
 # ------------------------------------------------------------------
@@ -205,7 +266,6 @@ async def worker_ws(websocket: WebSocket, branch: str):
         await websocket.close(code=4004, reason=f"No worktree for branch '{branch}'")
         return
 
-    # Resume prior session if one exists on disk
     record = state.sessions.load(branch)
     resume_id = record.sdk_session_id if record else None
 
@@ -280,5 +340,6 @@ async def health() -> dict[str, Any]:
         "repo": state.repo_path,
         "branches": len(snap.branches),
         "active_sessions": len(state.workers.all()),
+        "shared_session_subscribers": state.main_session.subscriber_count,
         "model": state.model,
     }
