@@ -30,12 +30,26 @@ class _State:
     _stop: asyncio.Event
     _monitor_task: asyncio.Task
     model: str
+    _main_chat_active: bool = False
 
 
 state = _State()
 
 
-def _build_system_prompt(worktree_path: str) -> str:
+def _main_system_prompt() -> str:
+    snap = state.monitor.snapshot
+    branches = ", ".join(snap.branches) or "none"
+    active = [w.branch for w in state.workers.all()]
+    return (
+        f"You are an AI assistant helping manage the git repository at {state.repo_path}.\n"
+        f"Current branches: {branches}\n"
+        f"Branches with active sessions: {', '.join(active) or 'none'}\n\n"
+        "You can inspect code, answer questions, create branches, and coordinate work. "
+        "Be concise and precise."
+    )
+
+
+def _worktree_system_prompt(worktree_path: str) -> str:
     snap = state.monitor.snapshot
     branches = ", ".join(snap.branches) or "none"
     active = [w.branch for w in state.workers.all()]
@@ -74,6 +88,45 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="claudulhud", lifespan=lifespan)
+
+_MAIN_SESSION_KEY = "__main__"
+
+
+# ------------------------------------------------------------------
+# WebSocket  /chat  (main repo-level session)
+# ------------------------------------------------------------------
+
+@app.websocket("/chat")
+async def chat_ws(websocket: WebSocket):
+    if state._main_chat_active:
+        await websocket.close(code=4009, reason="A main chat session is already active")
+        return
+
+    record = state.sessions.load(_MAIN_SESSION_KEY)
+    resume_id = record.sdk_session_id if record else None
+
+    async def _persist(sdk_session_id: str) -> None:
+        import datetime
+        state.sessions.save(SessionRecord(
+            branch=_MAIN_SESSION_KEY,
+            sdk_session_id=sdk_session_id,
+            worktree_path=state.repo_path,
+            last_seen=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        ))
+
+    state._main_chat_active = True
+    try:
+        await handle_chat(
+            websocket=websocket,
+            session_id=_MAIN_SESSION_KEY,
+            repo_path=state.repo_path,
+            model=state.model,
+            system_prompt=_main_system_prompt(),
+            resume_sdk_session_id=resume_id,
+            on_session_id=_persist,
+        )
+    finally:
+        state._main_chat_active = False
 
 
 # ------------------------------------------------------------------
@@ -116,7 +169,7 @@ async def worker_ws(websocket: WebSocket, branch: str):
             session_id=branch,
             repo_path=wt_path,
             model=state.model,
-            system_prompt=_build_system_prompt(wt_path),
+            system_prompt=_worktree_system_prompt(wt_path),
             resume_sdk_session_id=resume_id,
             on_session_id=_persist_session_id,
         )
