@@ -241,6 +241,10 @@ fn create_worktree(repo_path: &str, branch: &str) -> Result<String, String> {
 
 // ── Tool Execution ────────────────────────────────────────────────────────────
 
+fn resolve_path(p: &str, cwd: &str) -> PathBuf {
+    if p.starts_with('/') { PathBuf::from(p) } else { PathBuf::from(cwd).join(p) }
+}
+
 async fn execute_tool(name: &str, input: &serde_json::Value, cwd: &str) -> String {
     match name {
         "bash" => {
@@ -255,53 +259,82 @@ async fn execute_tool(name: &str, input: &serde_json::Value, cwd: &str) -> Strin
                 Ok(o) => {
                     let stdout = String::from_utf8_lossy(&o.stdout).to_string();
                     let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-                    if stderr.is_empty() {
-                        stdout
-                    } else {
-                        format!("{stdout}\n[stderr]: {stderr}")
-                    }
+                    if stderr.is_empty() { stdout } else { format!("{stdout}\n[stderr]: {stderr}") }
                 }
                 Err(e) => format!("error: {e}"),
             }
         }
         "read_file" => {
             let p = input["path"].as_str().unwrap_or("");
-            let full = if p.starts_with('/') {
-                PathBuf::from(p)
-            } else {
-                PathBuf::from(cwd).join(p)
-            };
-            fs::read_to_string(&full).unwrap_or_else(|e| format!("error: {e}"))
+            let full = resolve_path(p, cwd);
+            let offset = input["offset"].as_u64().unwrap_or(0) as usize;
+            let limit  = input["limit"].as_u64().map(|v| v as usize);
+            match fs::read_to_string(&full) {
+                Err(e) => format!("error: {e}"),
+                Ok(content) => {
+                    let lines: Vec<&str> = content.lines().collect();
+                    let total = lines.len();
+                    let start = offset.min(total);
+                    let end   = limit.map(|l| (start + l).min(total)).unwrap_or(total);
+                    let numbered: Vec<String> = lines[start..end]
+                        .iter()
+                        .enumerate()
+                        .map(|(i, l)| format!("{:>4}→{}", start + i + 1, l))
+                        .collect();
+                    if offset > 0 || limit.is_some() {
+                        format!("(lines {}-{} of {})\n{}", start + 1, end, total, numbered.join("\n"))
+                    } else {
+                        numbered.join("\n")
+                    }
+                }
+            }
+        }
+        "edit_file" => {
+            // Targeted str_replace — only sends the changed lines, not the whole file
+            let p        = input["path"].as_str().unwrap_or("");
+            let old_str  = input["old_str"].as_str().unwrap_or("");
+            let new_str  = input["new_str"].as_str().unwrap_or("");
+            let full = resolve_path(p, cwd);
+            match fs::read_to_string(&full) {
+                Err(e) => format!("error reading file: {e}"),
+                Ok(content) => {
+                    let count = content.matches(old_str).count();
+                    if count == 0 {
+                        "error: old_str not found in file".to_string()
+                    } else if count > 1 {
+                        format!("error: old_str matches {count} locations — make it more specific")
+                    } else {
+                        let updated = content.replacen(old_str, new_str, 1);
+                        match fs::write(&full, updated) {
+                            Ok(_)  => "ok".to_string(),
+                            Err(e) => format!("error writing file: {e}"),
+                        }
+                    }
+                }
+            }
         }
         "write_file" => {
-            let p = input["path"].as_str().unwrap_or("");
+            // Use for new files only — prefer edit_file for existing files
+            let p       = input["path"].as_str().unwrap_or("");
             let content = input["content"].as_str().unwrap_or("");
-            let full = if p.starts_with('/') {
-                PathBuf::from(p)
-            } else {
-                PathBuf::from(cwd).join(p)
-            };
-            if let Some(parent) = full.parent() {
-                fs::create_dir_all(parent).ok();
-            }
+            let full = resolve_path(p, cwd);
+            if let Some(parent) = full.parent() { fs::create_dir_all(parent).ok(); }
             match fs::write(&full, content) {
-                Ok(_) => "ok".to_string(),
+                Ok(_)  => "ok".to_string(),
                 Err(e) => format!("error: {e}"),
             }
         }
         "glob" => {
-            let pattern = input["pattern"].as_str().unwrap_or("**/*");
-            let base = PathBuf::from(cwd);
+            let pattern      = input["pattern"].as_str().unwrap_or("**/*");
+            let base         = PathBuf::from(cwd);
             let full_pattern = format!("{cwd}/{pattern}");
             match glob::glob(&full_pattern) {
                 Ok(paths) => paths
                     .filter_map(|p| p.ok())
                     .filter(|p| p.is_file())
-                    .map(|p| {
-                        p.strip_prefix(&base)
-                            .map(|r| r.to_string_lossy().to_string())
-                            .unwrap_or_else(|_| p.to_string_lossy().to_string())
-                    })
+                    .map(|p| p.strip_prefix(&base)
+                        .map(|r| r.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| p.to_string_lossy().to_string()))
                     .collect::<Vec<_>>()
                     .join("\n"),
                 Err(e) => format!("error: {e}"),
@@ -309,14 +342,14 @@ async fn execute_tool(name: &str, input: &serde_json::Value, cwd: &str) -> Strin
         }
         "grep" => {
             let pattern = input["pattern"].as_str().unwrap_or("");
-            let path = input["path"].as_str().unwrap_or(".");
+            let path    = input["path"].as_str().unwrap_or(".");
             match tokio::process::Command::new("grep")
                 .args(["-r", "-n", pattern, path])
                 .current_dir(cwd)
                 .output()
                 .await
             {
-                Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
+                Ok(o)  => String::from_utf8_lossy(&o.stdout).to_string(),
                 Err(e) => format!("error: {e}"),
             }
         }
@@ -328,8 +361,7 @@ fn tool_definitions() -> Vec<AnthropicTool> {
     vec![
         AnthropicTool {
             name: "bash".to_string(),
-            description: "Run a shell command in the repository directory. Returns stdout/stderr."
-                .to_string(),
+            description: "Run a shell command in the repository directory. Returns stdout/stderr.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -340,23 +372,37 @@ fn tool_definitions() -> Vec<AnthropicTool> {
         },
         AnthropicTool {
             name: "read_file".to_string(),
-            description: "Read the contents of a file.".to_string(),
+            description: "Read a file, optionally a line range. Use offset+limit to read only the section you need — avoids loading large files. Lines are returned with line numbers.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "File path relative to repo or absolute" }
+                    "path":   { "type": "string", "description": "File path (relative to repo or absolute)" },
+                    "offset": { "type": "integer", "description": "0-based line to start from (default 0)" },
+                    "limit":  { "type": "integer", "description": "Max lines to return (omit for whole file)" }
                 },
                 "required": ["path"]
             }),
         },
         AnthropicTool {
-            name: "write_file".to_string(),
-            description: "Write content to a file, creating parent directories as needed."
-                .to_string(),
+            name: "edit_file".to_string(),
+            description: "Replace an exact string in a file. PREFER this over write_file for modifying existing files — only the changed text is needed, not the whole file. old_str must match exactly once.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string" },
+                    "path":    { "type": "string", "description": "File path" },
+                    "old_str": { "type": "string", "description": "Exact string to replace (must be unique in the file)" },
+                    "new_str": { "type": "string", "description": "Replacement string" }
+                },
+                "required": ["path", "old_str", "new_str"]
+            }),
+        },
+        AnthropicTool {
+            name: "write_file".to_string(),
+            description: "Write a file. Use for creating new files only. For modifying existing files use edit_file instead — it is far cheaper.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path":    { "type": "string" },
                     "content": { "type": "string" }
                 },
                 "required": ["path", "content"]
@@ -375,12 +421,12 @@ fn tool_definitions() -> Vec<AnthropicTool> {
         },
         AnthropicTool {
             name: "grep".to_string(),
-            description: "Search file contents for a regex pattern.".to_string(),
+            description: "Search file contents for a regex pattern. Returns matching lines with line numbers.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "pattern": { "type": "string", "description": "Regex pattern" },
-                    "path": { "type": "string", "description": "Directory or file to search (default: .)" }
+                    "path":    { "type": "string", "description": "Directory or file to search (default: .)" }
                 },
                 "required": ["pattern"]
             }),
@@ -686,18 +732,21 @@ fn cost_usd(model: &str, input_tokens: u64, output_tokens: u64) -> f64 {
 }
 
 fn build_system_prompt(repo_path: &str, branch: Option<&str>, worktree_path: Option<&str>) -> String {
+    let tool_guidance = "\n\nTool use guidelines (IMPORTANT — follow to minimise token cost):\
+        \n- To modify an existing file use edit_file (str_replace). Never read the whole file just to rewrite it.\
+        \n- Use read_file with offset+limit to read only the section you need.\
+        \n- Use grep to locate the exact lines before reading or editing.\
+        \n- Use write_file only for creating new files.\
+        \n- Be concise and precise.";
+
     match (branch, worktree_path) {
         (Some(branch), Some(wt)) => format!(
-            "You are an AI coding assistant working on branch '{branch}' of the git repository at {repo_path}.\n\
-             Your working directory is the worktree at {wt}.\n\
-             Use the bash, read_file, write_file, glob, and grep tools to inspect and modify the codebase.\n\
-             Be concise and precise."
+            "You are an AI coding assistant working on branch '{branch}' of the git repository at {repo_path}.\
+             Your working directory is the worktree at {wt}.{tool_guidance}"
         ),
         _ => format!(
-            "You are an AI assistant helping manage the git repository at {repo_path}.\n\
-             You can inspect code, answer questions, and help coordinate work across branches.\n\
-             Use the bash, read_file, glob, and grep tools to explore the codebase.\n\
-             Be concise and precise."
+            "You are an AI assistant helping manage the git repository at {repo_path}.\
+             You can inspect code, answer questions, and help coordinate work across branches.{tool_guidance}"
         ),
     }
 }
