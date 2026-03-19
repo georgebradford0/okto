@@ -175,15 +175,21 @@ function ChatPane({
   const [isStreaming, setIsStreaming] = useState(false)
   const [input,       setInput]      = useState('')
 
-  const wsRef          = useRef<WebSocket | null>(null)
-  const inResponseRef  = useRef(false)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-  const inputRef       = useRef<HTMLTextAreaElement>(null)
+  const wsRef               = useRef<WebSocket | null>(null)
+  const inResponseRef       = useRef(false)
+  const messagesEndRef      = useRef<HTMLDivElement>(null)
+  const inputRef            = useRef<HTMLTextAreaElement>(null)
+  const onStatusChangeRef   = useRef(onStatusChange)
+  const onWorkerCreatedRef  = useRef(onWorkerCreated)
+
+  // Keep refs current without triggering effect re-runs
+  onStatusChangeRef.current  = onStatusChange
+  onWorkerCreatedRef.current = onWorkerCreated
 
   const updateStatus = useCallback((s: ConnStatus) => {
     setStatus(s)
-    onStatusChange(s)
-  }, [onStatusChange])
+    onStatusChangeRef.current(s)
+  }, []) // stable — uses ref internally
 
   // Auto-scroll
   useEffect(() => {
@@ -289,7 +295,7 @@ function ChatPane({
               id: uid(), role: 'info', streaming: false,
               blocks: [{ kind: 'worker_created', branch: frame.branch, worktree_path: frame.worktree_path }],
             }])
-            onWorkerCreated(frame.branch, frame.worktree_path)
+            onWorkerCreatedRef.current(frame.branch, frame.worktree_path)
             break
           case 'worker_error':
             setMessages(prev => [...prev, {
@@ -315,7 +321,7 @@ function ChatPane({
       cancelled = true
       wsRef.current?.close()
     }
-  }, [wsUrl, appendBlock, completeResponse, ensureAssistantMsg, onWorkerCreated, updateStatus])
+  }, [wsUrl, appendBlock, completeResponse, ensureAssistantMsg, updateStatus])
 
   const sendMessage = useCallback(() => {
     const text = input.trim()
