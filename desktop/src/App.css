@@ -576,6 +576,22 @@
 
 .btn--interrupt:hover { background: rgba(196, 54, 42, 0.14); }
 
+.btn--clear {
+  background: none;
+  border-color: transparent;
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.btn--clear:hover { opacity: 1; border-color: var(--border); }
+
+.input-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: stretch;
+}
+
 /* ── Branches panel ───────────────────────────────────────────────────────── */
 
 .branches-panel {

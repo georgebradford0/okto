@@ -613,11 +613,14 @@ function ChatPane({
             rows={1}
             disabled={status === 'connecting' || status === 'disconnected'}
           />
-          <div>
-          {isStreaming
-            ? <button className="btn btn--interrupt" onClick={sendInterrupt}>stop</button>
-            : <button className="btn btn--send" onClick={sendMessage} disabled={!canSend}>send</button>
-          }
+          <div className="input-actions">
+            {isStreaming
+              ? <button className="btn btn--interrupt" onClick={sendInterrupt}>stop</button>
+              : <button className="btn btn--send" onClick={sendMessage} disabled={!canSend}>send</button>
+            }
+            {!isStreaming && messages.length > 0 && (
+              <button className="btn btn--clear" onClick={() => setMessages([])}>clear</button>
+            )}
           </div>
         </div>
       </div>
