@@ -1,29 +1,20 @@
-.PHONY: all daemon web desktop install-daemon copy-sidecar
-
-TARGET := $(shell rustc -vV | awk '/host:/ { print $$2 }')
+.PHONY: all web desktop dev dev-web
 
 # Build everything
-all: daemon web desktop
-
-# Install the Python daemon via uv
-daemon:
-	cd claudulhu && uv tool install . --reinstall
+all: web desktop
 
 # Build the web frontend
 web:
 	cd web && npm run build
 
-# Copy claudulhud binary into Tauri sidecar directory and build the desktop app
-desktop: daemon web copy-sidecar
+# Build the desktop app (.app bundle)
+desktop: web
 	cd web && npm run tauri:build -- --bundles app
 
-copy-sidecar:
-	cp $(shell which claudulhud) web/src-tauri/binaries/claudulhud-$(TARGET)
+# Run the Tauri app in development mode
+dev:
+	cd web && npm run tauri:dev
 
-# Run the daemon (defaults to current directory as repo)
-run:
-	claudulhud --repo .
-
-# Run the web dev server
+# Run just the Vite dev server (browser mode, requires claudulhud running separately)
 dev-web:
 	cd web && npm run dev

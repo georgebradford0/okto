@@ -110,6 +110,31 @@
   background: rgba(59, 98, 232, 0.14);
 }
 
+.api-key-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  outline: none;
+  box-sizing: border-box;
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+
+.api-key-input:focus {
+  border-color: var(--accent);
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .app-body {
   display: flex;
   flex: 1;

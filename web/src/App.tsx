@@ -10,6 +10,14 @@ async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
   return invoke<T>(cmd, args)
 }
 
+async function tauriListen<T>(
+  event: string,
+  handler: (payload: T) => void,
+): Promise<() => void> {
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<T>(event, e => handler(e.payload))
+}
+
 async function tauriPickFolder(): Promise<string | null> {
   const { open } = await import('@tauri-apps/plugin-dialog')
   const result = await open({ directory: true, title: 'Select Repository' })
@@ -19,17 +27,18 @@ async function tauriPickFolder(): Promise<string | null> {
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 type ServerFrame =
-  | { type: 'ready';          session_id: string; resumed: boolean }
-  | { type: 'text';           text: string }
-  | { type: 'tool_use';       tool: string; input: Record<string, unknown> }
-  | { type: 'tool_result';    tool_use_id: string; content: unknown }
-  | { type: 'result';         cost_usd: number; turns: number; session_id: string; result: string | null }
-  | { type: 'error';          message: string }
+  | { type: 'ready';                session_id: string; resumed: boolean }
+  | { type: 'text';                 text: string }
+  | { type: 'tool_use';             tool: string; input: Record<string, unknown> }
+  | { type: 'tool_result';          tool_use_id: string; content: unknown }
+  | { type: 'result';               cost_usd: number; turns: number; session_id: string; result: string | null }
+  | { type: 'error';                message: string }
   | { type: 'interrupted' }
-  | { type: 'system';         text: string }
-  | { type: 'spawning';       task: string }
-  | { type: 'worker_created'; branch: string; worktree_path: string; task: string }
-  | { type: 'worker_error';   message: string }
+  | { type: 'system';               text: string }
+  | { type: 'spawning';             task: string }
+  | { type: 'worker_created';       branch: string; worktree_path: string; task: string }
+  | { type: 'worker_error';         message: string }
+  | { type: 'worker_session_ready'; branch: string; worker_session_id: string; task: string }
 
 type Block =
   | { kind: 'text';           text: string }
@@ -59,7 +68,8 @@ interface Branch {
 interface Tab {
   id: string
   label: string
-  wsUrl: string
+  wsUrl: string          // used in browser mode
+  sessionId?: string     // used in Tauri mode
   initialMessage?: string
 }
 
@@ -173,17 +183,21 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 
 interface ChatPaneProps {
   wsUrl: string
+  sessionId?: string     // pre-assigned session ID for Tauri worker panes
   active: boolean
   canSpawnWorker: boolean
+  repo: string
   initialMessage?: string
   onStatusChange: (status: ConnStatus) => void
-  onWorkerCreated: (branch: string, worktreePath: string, task: string) => void
+  onWorkerCreated: (branch: string, worktreePath: string, task: string, workerSessionId: string) => void
 }
 
 function ChatPane({
   wsUrl,
+  sessionId: externalSessionId,
   active,
   canSpawnWorker,
+  repo,
   initialMessage,
   onStatusChange,
   onWorkerCreated,
@@ -193,6 +207,9 @@ function ChatPane({
   const [isStreaming, setIsStreaming] = useState(false)
   const [input,       setInput]      = useState('')
 
+  // Tauri session ID for this pane
+  const tauriSessionId              = useRef<string | null>(externalSessionId ?? null)
+
   const wsRef               = useRef<WebSocket | null>(null)
   const inResponseRef       = useRef(false)
   const messagesEndRef      = useRef<HTMLDivElement>(null)
@@ -201,14 +218,13 @@ function ChatPane({
   const onWorkerCreatedRef  = useRef(onWorkerCreated)
   const initialMessageSent  = useRef(false)
 
-  // Keep refs current without triggering effect re-runs
   onStatusChangeRef.current  = onStatusChange
   onWorkerCreatedRef.current = onWorkerCreated
 
   const updateStatus = useCallback((s: ConnStatus) => {
     setStatus(s)
     onStatusChangeRef.current(s)
-  }, []) // stable — uses ref internally
+  }, [])
 
   // Auto-scroll
   useEffect(() => {
@@ -227,20 +243,6 @@ function ChatPane({
     ta.style.height = 'auto'
     ta.style.height = Math.min(ta.scrollHeight, 120) + 'px'
   }, [input])
-
-  // Send initial message once connected
-  useEffect(() => {
-    if (!initialMessage || initialMessageSent.current) return
-    if (status !== 'ready' && status !== 'resumed') return
-    const ws = wsRef.current
-    if (!ws || ws.readyState !== WebSocket.OPEN) return
-    initialMessageSent.current = true
-    setMessages(prev => [...prev, {
-      id: uid(), role: 'user', streaming: false,
-      blocks: [{ kind: 'text', text: initialMessage }],
-    }])
-    ws.send(JSON.stringify({ type: 'message', text: initialMessage }))
-  }, [status, initialMessage])
 
   const ensureAssistantMsg = useCallback(() => {
     if (!inResponseRef.current) {
@@ -273,8 +275,117 @@ function ChatPane({
     setMessages(prev => prev.map((m, i) => i < prev.length - 1 ? m : { ...m, streaming: false }))
   }, [])
 
-  // WebSocket
+  const handleFrame = useCallback((frame: ServerFrame) => {
+    switch (frame.type) {
+      case 'ready':
+        updateStatus(frame.resumed ? 'resumed' : 'ready')
+        break
+      case 'text':
+        ensureAssistantMsg()
+        appendBlock({ kind: 'text', text: frame.text })
+        break
+      case 'tool_use':
+        ensureAssistantMsg()
+        appendBlock({ kind: 'tool_use', tool: frame.tool, input: frame.input })
+        break
+      case 'tool_result':
+        appendBlock({ kind: 'tool_result', content: frame.content })
+        break
+      case 'result':
+        appendBlock({ kind: 'result', cost_usd: frame.cost_usd, turns: frame.turns })
+        completeResponse()
+        break
+      case 'error':
+        ensureAssistantMsg()
+        appendBlock({ kind: 'error', message: frame.message })
+        completeResponse()
+        break
+      case 'interrupted':
+        appendBlock({ kind: 'interrupted' })
+        completeResponse()
+        break
+      case 'system':
+        setMessages(prev => [...prev, {
+          id: uid(), role: 'info', streaming: false,
+          blocks: [{ kind: 'system', text: frame.text }],
+        }])
+        break
+      case 'spawning':
+        break
+      case 'worker_created':
+        setMessages(prev => [...prev, {
+          id: uid(), role: 'info', streaming: false,
+          blocks: [{ kind: 'worker_created', branch: frame.branch, worktree_path: frame.worktree_path }],
+        }])
+        break
+      case 'worker_session_ready':
+        onWorkerCreatedRef.current(frame.branch, '', frame.task, frame.worker_session_id)
+        break
+      case 'worker_error':
+        setMessages(prev => [...prev, {
+          id: uid(), role: 'info', streaming: false,
+          blocks: [{ kind: 'worker_error', message: frame.message }],
+        }])
+        break
+    }
+  }, [appendBlock, completeResponse, ensureAssistantMsg, updateStatus])
+
+  // ── Tauri event path ────────────────────────────────────────────────────────
+
   useEffect(() => {
+    if (!isTauri()) return
+
+    let unlistenFn: (() => void) | null = null
+    let mounted = true
+
+    const setup = async () => {
+      // If we don't have a session yet, create one
+      if (!tauriSessionId.current) {
+        const sessionType = wsUrl.includes('/workers/') ? 'worker' : 'main'
+        const branch = wsUrl.includes('/workers/')
+          ? decodeURIComponent(wsUrl.split('/workers/')[1])
+          : undefined
+        const sid = await tauriInvoke<string>('chat_new_session', {
+          sessionType,
+          branch: branch ?? null,
+          worktreePath: null,
+          repo,
+        })
+        if (!mounted) return
+        tauriSessionId.current = sid
+      }
+
+      const sid = tauriSessionId.current!
+      unlistenFn = await tauriListen<ServerFrame>(`claude-event-${sid}`, handleFrame)
+    }
+
+    setup().catch(e => updateStatus('error'))
+
+    return () => {
+      mounted = false
+      unlistenFn?.()
+    }
+  }, [wsUrl, repo]) // stable — handleFrame/updateStatus are stable callbacks via useCallback
+
+  // Send initial message once Tauri session is ready
+  useEffect(() => {
+    if (!isTauri() || !initialMessage || initialMessageSent.current) return
+    if (status !== 'ready' && status !== 'resumed') return
+    const sid = tauriSessionId.current
+    if (!sid) return
+    initialMessageSent.current = true
+    setMessages(prev => [...prev, {
+      id: uid(), role: 'user', streaming: false,
+      blocks: [{ kind: 'text', text: initialMessage }],
+    }])
+    tauriInvoke('chat_send', { sessionId: sid, text: initialMessage })
+  }, [status, initialMessage])
+
+  // ── WebSocket path (browser mode) ──────────────────────────────────────────
+
+  useEffect(() => {
+    if (isTauri()) return
+
     let cancelled = false
 
     const connect = () => {
@@ -286,62 +397,11 @@ function ChatPane({
       ws.onmessage = ({ data }) => {
         let frame: ServerFrame
         try { frame = JSON.parse(data) } catch { return }
-
-        switch (frame.type) {
-          case 'ready':
-            updateStatus(frame.resumed ? 'resumed' : 'ready')
-            break
-          case 'text':
-            ensureAssistantMsg()
-            appendBlock({ kind: 'text', text: frame.text })
-            break
-          case 'tool_use':
-            ensureAssistantMsg()
-            appendBlock({ kind: 'tool_use', tool: frame.tool, input: frame.input })
-            break
-          case 'tool_result':
-            appendBlock({ kind: 'tool_result', content: frame.content })
-            break
-          case 'result':
-            appendBlock({ kind: 'result', cost_usd: frame.cost_usd, turns: frame.turns })
-            completeResponse()
-            break
-          case 'error':
-            ensureAssistantMsg()
-            appendBlock({ kind: 'error', message: frame.message })
-            completeResponse()
-            break
-          case 'interrupted':
-            appendBlock({ kind: 'interrupted' })
-            completeResponse()
-            break
-          case 'system':
-            setMessages(prev => [...prev, {
-              id: uid(), role: 'info', streaming: false,
-              blocks: [{ kind: 'system', text: frame.text }],
-            }])
-            break
-          case 'spawning':
-            break
-          case 'worker_created':
-            setMessages(prev => [...prev, {
-              id: uid(), role: 'info', streaming: false,
-              blocks: [{ kind: 'worker_created', branch: frame.branch, worktree_path: frame.worktree_path }],
-            }])
-            onWorkerCreatedRef.current(frame.branch, frame.worktree_path, frame.task)
-            break
-          case 'worker_error':
-            setMessages(prev => [...prev, {
-              id: uid(), role: 'info', streaming: false,
-              blocks: [{ kind: 'worker_error', message: frame.message }],
-            }])
-            break
-        }
+        handleFrame(frame)
       }
 
       ws.onclose = () => {
         if (!cancelled) {
-          // If disconnected mid-stream, stop the blinking cursor and unblock input
           if (inResponseRef.current) {
             inResponseRef.current = false
             setIsStreaming(false)
@@ -357,18 +417,34 @@ function ChatPane({
       ws.onerror = () => updateStatus('error')
     }
 
+    // Send initial message once WS is ready (browser mode)
+    const origOnMessage = (ws: WebSocket) => {
+      ws.addEventListener('message', ({ data }) => {
+        let frame: ServerFrame
+        try { frame = JSON.parse(data) } catch { return }
+        if ((frame.type === 'ready') && initialMessage && !initialMessageSent.current) {
+          initialMessageSent.current = true
+          setMessages(prev => [...prev, {
+            id: uid(), role: 'user', streaming: false,
+            blocks: [{ kind: 'text', text: initialMessage }],
+          }])
+          ws.send(JSON.stringify({ type: 'message', text: initialMessage }))
+        }
+      })
+    }
+
     connect()
     return () => {
       cancelled = true
       wsRef.current?.close()
     }
-  }, [wsUrl, appendBlock, completeResponse, ensureAssistantMsg, updateStatus])
+  }, [wsUrl, appendBlock, completeResponse, ensureAssistantMsg, updateStatus, handleFrame])
+
+  // ── Send / interrupt ────────────────────────────────────────────────────────
 
   const sendMessage = useCallback(() => {
     const text = input.trim()
     if (!text || isStreaming) return
-    const ws = wsRef.current
-    if (!ws || ws.readyState !== WebSocket.OPEN) return
 
     if (canSpawnWorker && text.startsWith('&')) {
       const task = text.slice(1).trim()
@@ -377,21 +453,38 @@ function ChatPane({
         id: uid(), role: 'user', streaming: false,
         blocks: [{ kind: 'spawning', task }],
       }])
-      ws.send(JSON.stringify({ type: 'spawn_worker', task }))
+      if (isTauri()) {
+        const sid = tauriSessionId.current
+        if (sid) tauriInvoke('spawn_worker', { sessionId: sid, task, repo })
+      } else {
+        wsRef.current?.send(JSON.stringify({ type: 'spawn_worker', task }))
+      }
     } else {
       setMessages(prev => [...prev, {
         id: uid(), role: 'user', streaming: false,
         blocks: [{ kind: 'text', text }],
       }])
-      ws.send(JSON.stringify({ type: 'message', text }))
+      if (isTauri()) {
+        const sid = tauriSessionId.current
+        if (sid) tauriInvoke('chat_send', { sessionId: sid, text })
+      } else {
+        const ws = wsRef.current
+        if (!ws || ws.readyState !== WebSocket.OPEN) return
+        ws.send(JSON.stringify({ type: 'message', text }))
+      }
     }
 
     setInput('')
     inputRef.current?.focus()
-  }, [input, isStreaming, canSpawnWorker])
+  }, [input, isStreaming, canSpawnWorker, repo])
 
   const sendInterrupt = useCallback(() => {
-    wsRef.current?.send(JSON.stringify({ type: 'interrupt' }))
+    if (isTauri()) {
+      const sid = tauriSessionId.current
+      if (sid) tauriInvoke('chat_interrupt', { sessionId: sid })
+    } else {
+      wsRef.current?.send(JSON.stringify({ type: 'interrupt' }))
+    }
   }, [])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -480,51 +573,68 @@ function BranchItem({
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [tabs,       setTabs]       = useState<Tab[]>([
+  const [tabs,        setTabs]        = useState<Tab[]>([
     { id: 'main', label: 'main', wsUrl: MAIN_WS_URL },
   ])
-  const [activeTab,  setActiveTab]  = useState('main')
+  const [activeTab,   setActiveTab]   = useState('main')
   const [tabStatuses, setTabStatuses] = useState<Record<string, ConnStatus>>({ main: 'connecting' })
-  const [branches,   setBranches]   = useState<Branch[]>([])
-  const [repoPath,   setRepoPath]   = useState<string | null>(null)
-  const [repoReady,  setRepoReady]  = useState(!isTauri()) // browser: always ready
+  const [branches,    setBranches]    = useState<Branch[]>([])
+  const [repoPath,    setRepoPath]    = useState<string | null>(null)
+  const [repoReady,   setRepoReady]   = useState(!isTauri())
+  const [apiKey,      setApiKeyState] = useState<string | null>(null)
+  const [apiKeyInput, setApiKeyInput] = useState('')
 
-  // Tauri: load stored repo on mount, auto-start daemon if found
+  // Tauri: load stored repo + API key on mount
   useEffect(() => {
     if (!isTauri()) return
-    tauriInvoke<string | null>('get_repo').then(repo => {
-      if (repo) {
-        setRepoPath(repo)
-        setRepoReady(true)
-      }
+    Promise.all([
+      tauriInvoke<string | null>('get_repo'),
+      tauriInvoke<string | null>('get_api_key'),
+    ]).then(([repo, key]) => {
+      if (repo) { setRepoPath(repo); setRepoReady(true) }
+      if (key)  setApiKeyState(key)
     })
   }, [])
 
   const pickRepo = useCallback(async () => {
     const folder = await tauriPickFolder()
     if (!folder) return
-    await tauriInvoke('start_daemon', { repo: folder })
+    await tauriInvoke('set_repo', { repo: folder })
     setRepoPath(folder)
     setRepoReady(true)
   }, [])
 
-  // Branch polling
-  useEffect(() => {
-    const fetch_ = () =>
-      fetch(BRANCHES_URL)
-        .then(r => r.ok ? r.json() : null)
-        .then(d => d && setBranches(d))
-        .catch(() => {})
-    fetch_()
-    const t = setInterval(fetch_, 10_000)
-    return () => clearInterval(t)
-  }, [])
+  const saveApiKey = useCallback(async () => {
+    const key = apiKeyInput.trim()
+    if (!key) return
+    await tauriInvoke('set_api_key', { key })
+    setApiKeyState(key)
+    setApiKeyInput('')
+  }, [apiKeyInput])
 
-  const openTab = useCallback((branch: string, initialMessage?: string) => {
+  // Branch polling — Tauri uses invoke, browser uses HTTP
+  useEffect(() => {
+    const repo = repoPath
+    const fetchBranches = () => {
+      if (isTauri() && repo) {
+        tauriInvoke<Branch[]>('get_branches', { repo }).then(setBranches).catch(() => {})
+      } else if (!isTauri()) {
+        fetch(BRANCHES_URL)
+          .then(r => r.ok ? r.json() : null)
+          .then(d => d && setBranches(d))
+          .catch(() => {})
+      }
+    }
+    fetchBranches()
+    const t = setInterval(fetchBranches, 10_000)
+    return () => clearInterval(t)
+  }, [repoPath])
+
+  const openTab = useCallback((branch: string, initialMessage?: string, sessionId?: string) => {
     const wsUrl = `ws://localhost:8000/workers/${encodeURIComponent(branch)}`
     setTabs(prev => {
       if (prev.find(t => t.id === branch)) return prev
-      return [...prev, { id: branch, label: branch, wsUrl, initialMessage }]
+      return [...prev, { id: branch, label: branch, wsUrl, sessionId, initialMessage }]
     })
     setTabStatuses(prev => ({ ...prev, [branch]: prev[branch] ?? 'connecting' }))
     setActiveTab(branch)
@@ -541,9 +651,12 @@ export default function App() {
     setTabStatuses(prev => ({ ...prev, [id]: status }))
   }, [])
 
-  const handleWorkerCreated = useCallback((branch: string, _worktreePath: string, task: string) => {
-    openTab(branch, task)
-  }, [openTab])
+  const handleWorkerCreated = useCallback(
+    (_branch: string, _worktreePath: string, task: string, workerSessionId: string) => {
+      openTab(_branch, task, workerSessionId || undefined)
+    },
+    [openTab],
+  )
 
   const activeWorktrees = branches.filter(b => b.worktree).length
   const openTabIds = new Set(tabs.map(t => t.id))
@@ -556,6 +669,8 @@ export default function App() {
   }
 
   const repoName = repoPath ? repoPath.split('/').pop() : null
+
+  // ── Setup screens ──────────────────────────────────────────────────────────
 
   if (isTauri() && !repoReady) {
     return (
@@ -574,6 +689,34 @@ export default function App() {
     )
   }
 
+  if (isTauri() && !apiKey) {
+    return (
+      <div className="app">
+        <div className="repo-picker">
+          <div className="repo-picker-card">
+            <span className="repo-picker-mark">⬡</span>
+            <h1 className="repo-picker-title">claudulhu</h1>
+            <p className="repo-picker-desc">Enter your Anthropic API key to continue.</p>
+            <input
+              className="api-key-input"
+              type="password"
+              placeholder="sk-ant-…"
+              value={apiKeyInput}
+              onChange={e => setApiKeyInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && saveApiKey()}
+              autoFocus
+            />
+            <button className="repo-picker-btn" onClick={saveApiKey} disabled={!apiKeyInput.trim()}>
+              Save Key
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── Main UI ────────────────────────────────────────────────────────────────
+
   return (
     <div className="app">
       <header className="app-header">
@@ -583,16 +726,15 @@ export default function App() {
           {repoName && <span className="header-repo">{repoName}</span>}
         </div>
         {isTauri() && (
-          <button className="btn-change-repo" onClick={pickRepo}>
-            change repo
-          </button>
+          <div className="header-actions">
+            <button className="btn-change-repo" onClick={pickRepo}>change repo</button>
+          </div>
         )}
       </header>
 
       <main className="app-body">
         {/* ── Chat section ── */}
         <section className="chat-section">
-          {/* Tab bar */}
           <div className="tab-bar">
             {tabs.map(tab => (
               <div
@@ -612,7 +754,6 @@ export default function App() {
             ))}
           </div>
 
-          {/* Chat panes — all mounted, only active one visible */}
           <div className="chat-panes">
             {tabs.map(tab => (
               <div
@@ -621,8 +762,10 @@ export default function App() {
               >
                 <ChatPane
                   wsUrl={tab.wsUrl}
+                  sessionId={tab.sessionId}
                   active={activeTab === tab.id}
                   canSpawnWorker={tab.id === 'main'}
+                  repo={repoPath ?? ''}
                   initialMessage={tab.initialMessage}
                   onStatusChange={handleStatusChange(tab.id)}
                   onWorkerCreated={handleWorkerCreated}
