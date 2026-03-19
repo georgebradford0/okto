@@ -755,9 +755,15 @@ fn set_repo(repo: String) {
     write_config(&cfg);
 }
 
+/// Resolve API key: environment variable takes precedence over stored config.
+fn resolve_api_key() -> Option<String> {
+    std::env::var("ANTHROPIC_API_KEY").ok().filter(|s| !s.is_empty())
+        .or_else(|| read_config().api_key)
+}
+
 #[tauri::command]
 fn get_api_key() -> Option<String> {
-    read_config().api_key
+    resolve_api_key()
 }
 
 #[tauri::command]
@@ -816,7 +822,7 @@ async fn chat_send(
     let session = session.ok_or_else(|| "session not found".to_string())?;
 
     let config = read_config();
-    let api_key = config.api_key.ok_or_else(|| "no API key configured".to_string())?;
+    let api_key = resolve_api_key().ok_or_else(|| "no API key configured".to_string())?;
     let model = config.model.unwrap_or_else(|| "claude-opus-4-6".to_string());
 
     // Reset abort flag and add user message
