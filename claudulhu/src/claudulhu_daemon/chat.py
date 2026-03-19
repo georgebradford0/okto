@@ -148,7 +148,7 @@ async def handle_chat(
                     await websocket.send_text(_msg(type="spawning", task=task))
                     try:
                         result = await on_spawn_worker(task)
-                        await websocket.send_text(_msg(type="worker_created", **result))
+                        await websocket.send_text(_msg(type="worker_created", task=task, **result))
                     except Exception as exc:
                         print(f"[chat:{session_id}] spawn_worker error: {exc}")
                         await websocket.send_text(_msg(type="worker_error", message=str(exc)))

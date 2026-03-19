@@ -13,7 +13,7 @@ type ServerFrame =
   | { type: 'interrupted' }
   | { type: 'system';         text: string }
   | { type: 'spawning';       task: string }
-  | { type: 'worker_created'; branch: string; worktree_path: string }
+  | { type: 'worker_created'; branch: string; worktree_path: string; task: string }
   | { type: 'worker_error';   message: string }
 
 type Block =
@@ -45,6 +45,7 @@ interface Tab {
   id: string
   label: string
   wsUrl: string
+  initialMessage?: string
 }
 
 type ConnStatus = 'connecting' | 'ready' | 'resumed' | 'error' | 'disconnected'
@@ -159,14 +160,16 @@ interface ChatPaneProps {
   wsUrl: string
   active: boolean
   canSpawnWorker: boolean
+  initialMessage?: string
   onStatusChange: (status: ConnStatus) => void
-  onWorkerCreated: (branch: string, worktreePath: string) => void
+  onWorkerCreated: (branch: string, worktreePath: string, task: string) => void
 }
 
 function ChatPane({
   wsUrl,
   active,
   canSpawnWorker,
+  initialMessage,
   onStatusChange,
   onWorkerCreated,
 }: ChatPaneProps) {
@@ -181,6 +184,7 @@ function ChatPane({
   const inputRef            = useRef<HTMLTextAreaElement>(null)
   const onStatusChangeRef   = useRef(onStatusChange)
   const onWorkerCreatedRef  = useRef(onWorkerCreated)
+  const initialMessageSent  = useRef(false)
 
   // Keep refs current without triggering effect re-runs
   onStatusChangeRef.current  = onStatusChange
@@ -208,6 +212,20 @@ function ChatPane({
     ta.style.height = 'auto'
     ta.style.height = Math.min(ta.scrollHeight, 120) + 'px'
   }, [input])
+
+  // Send initial message once connected
+  useEffect(() => {
+    if (!initialMessage || initialMessageSent.current) return
+    if (status !== 'ready' && status !== 'resumed') return
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    initialMessageSent.current = true
+    setMessages(prev => [...prev, {
+      id: uid(), role: 'user', streaming: false,
+      blocks: [{ kind: 'text', text: initialMessage }],
+    }])
+    ws.send(JSON.stringify({ type: 'message', text: initialMessage }))
+  }, [status, initialMessage])
 
   const ensureAssistantMsg = useCallback(() => {
     if (!inResponseRef.current) {
@@ -295,7 +313,7 @@ function ChatPane({
               id: uid(), role: 'info', streaming: false,
               blocks: [{ kind: 'worker_created', branch: frame.branch, worktree_path: frame.worktree_path }],
             }])
-            onWorkerCreatedRef.current(frame.branch, frame.worktree_path)
+            onWorkerCreatedRef.current(frame.branch, frame.worktree_path, frame.task)
             break
           case 'worker_error':
             setMessages(prev => [...prev, {
@@ -458,11 +476,11 @@ export default function App() {
     return () => clearInterval(t)
   }, [])
 
-  const openTab = useCallback((branch: string) => {
+  const openTab = useCallback((branch: string, initialMessage?: string) => {
     const wsUrl = `ws://localhost:8000/workers/${encodeURIComponent(branch)}`
     setTabs(prev => {
       if (prev.find(t => t.id === branch)) return prev
-      return [...prev, { id: branch, label: branch, wsUrl }]
+      return [...prev, { id: branch, label: branch, wsUrl, initialMessage }]
     })
     setTabStatuses(prev => ({ ...prev, [branch]: prev[branch] ?? 'connecting' }))
     setActiveTab(branch)
@@ -479,8 +497,8 @@ export default function App() {
     setTabStatuses(prev => ({ ...prev, [id]: status }))
   }, [])
 
-  const handleWorkerCreated = useCallback((branch: string) => {
-    openTab(branch)
+  const handleWorkerCreated = useCallback((branch: string, _worktreePath: string, task: string) => {
+    openTab(branch, task)
   }, [openTab])
 
   const activeWorktrees = branches.filter(b => b.worktree).length
@@ -536,6 +554,7 @@ export default function App() {
                   wsUrl={tab.wsUrl}
                   active={activeTab === tab.id}
                   canSpawnWorker={tab.id === 'main'}
+                  initialMessage={tab.initialMessage}
                   onStatusChange={handleStatusChange(tab.id)}
                   onWorkerCreated={handleWorkerCreated}
                 />
