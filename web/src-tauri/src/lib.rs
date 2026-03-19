@@ -702,6 +702,45 @@ fn build_system_prompt(repo_path: &str, branch: Option<&str>, worktree_path: Opt
     }
 }
 
+// ── Path Completion ───────────────────────────────────────────────────────────
+
+/// Given one or more root directories, a directory fragment, and a filename prefix,
+/// return all matching paths (relative to the root) in the form `dir_part + name[/]`.
+/// Searches all roots and deduplicates.
+#[tauri::command]
+fn get_completions(roots: Vec<String>, dir_part: String, file_part: String) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut results = Vec::new();
+
+    for root in &roots {
+        let search_dir = PathBuf::from(root).join(&dir_part);
+        let Ok(entries) = fs::read_dir(&search_dir) else { continue };
+
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Skip hidden files unless the prefix starts with '.'
+            if name.starts_with('.') && !file_part.starts_with('.') {
+                continue;
+            }
+            if !name.to_lowercase().starts_with(&file_part.to_lowercase()) {
+                continue;
+            }
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let completion = if is_dir {
+                format!("{}{}/", dir_part, name)
+            } else {
+                format!("{}{}", dir_part, name)
+            };
+            if seen.insert(completion.clone()) {
+                results.push(completion);
+            }
+        }
+    }
+
+    results.sort();
+    results
+}
+
 // ── Tauri Commands ────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -897,6 +936,7 @@ pub fn run() {
             get_api_key,
             set_api_key,
             get_branches,
+            get_completions,
             chat_new_session,
             chat_send,
             chat_interrupt,

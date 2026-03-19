@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import './App.css'
 
 // ── Tauri integration (no-ops when running in browser) ────────────────────────
@@ -187,6 +187,7 @@ interface ChatPaneProps {
   active: boolean
   canSpawnWorker: boolean
   repo: string
+  completionRoots: string[]   // dirs to search for @ completions (repo + worktrees)
   initialMessage?: string
   onStatusChange: (status: ConnStatus) => void
   onWorkerCreated: (branch: string, worktreePath: string, task: string, workerSessionId: string) => void
@@ -198,14 +199,18 @@ function ChatPane({
   active,
   canSpawnWorker,
   repo,
+  completionRoots,
   initialMessage,
   onStatusChange,
   onWorkerCreated,
 }: ChatPaneProps) {
-  const [messages,    setMessages]   = useState<ChatMessage[]>([])
-  const [status,      setStatus]     = useState<ConnStatus>('connecting')
-  const [isStreaming, setIsStreaming] = useState(false)
-  const [input,       setInput]      = useState('')
+  const [messages,     setMessages]     = useState<ChatMessage[]>([])
+  const [status,       setStatus]       = useState<ConnStatus>('connecting')
+  const [isStreaming,  setIsStreaming]   = useState(false)
+  const [input,        setInput]        = useState('')
+  const [completions,  setCompletions]  = useState<string[]>([])
+  const [compIndex,    setCompIndex]    = useState(0)
+  const [compQuery,    setCompQuery]    = useState<{ atPos: number; dirPart: string; filePart: string } | null>(null)
 
   // Tauri session ID for this pane
   const tauriSessionId              = useRef<string | null>(externalSessionId ?? null)
@@ -476,12 +481,88 @@ function ChatPane({
     }
   }, [])
 
+  // Parse `@`-triggered path completion from text before cursor
+  const parseAtCompletion = (text: string, cursor: number) => {
+    const before = text.slice(0, cursor)
+    const atIdx = before.lastIndexOf('@')
+    if (atIdx === -1) return null
+    const fragment = before.slice(atIdx + 1)
+    if (fragment.includes(' ')) return null   // space in fragment → not a path
+    const slash = fragment.lastIndexOf('/')
+    const dirPart  = slash >= 0 ? fragment.slice(0, slash + 1) : ''
+    const filePart = slash >= 0 ? fragment.slice(slash + 1) : fragment
+    return { atPos: atIdx, dirPart, filePart }
+  }
+
+  const acceptCompletion = useCallback((completion: string) => {
+    if (!compQuery) return
+    const ta = inputRef.current
+    const cursor = ta?.selectionStart ?? input.length
+    // Replace from the '@' up to cursor with '@' + completion
+    const before = input.slice(0, compQuery.atPos + 1) // keep the '@'
+    const after  = input.slice(cursor)
+    const next   = before + completion + after
+    setInput(next)
+    setCompletions([])
+    setCompQuery(null)
+    // Move cursor to end of inserted completion
+    const newCursor = compQuery.atPos + 1 + completion.length
+    requestAnimationFrame(() => {
+      ta?.setSelectionRange(newCursor, newCursor)
+      ta?.focus()
+    })
+  }, [compQuery, input])
+
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value
+    setInput(val)
+
+    if (!isTauri()) { setCompletions([]); setCompQuery(null); return }
+
+    const cursor = e.target.selectionStart ?? val.length
+    const query = parseAtCompletion(val, cursor)
+    if (!query) { setCompletions([]); setCompQuery(null); return }
+
+    setCompQuery(query)
+    setCompIndex(0)
+    tauriInvoke<string[]>('get_completions', {
+      roots: completionRoots.length ? completionRoots : [repo],
+      dirPart: query.dirPart,
+      filePart: query.filePart,
+    }).then(items => {
+      setCompletions(items)
+      setCompIndex(0)
+    }).catch(() => setCompletions([]))
+  }, [completionRoots, repo])
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (completions.length > 0) {
+      if (e.key === 'Tab' || e.key === 'ArrowDown') {
+        e.preventDefault()
+        setCompIndex(i => (i + 1) % completions.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setCompIndex(i => (i - 1 + completions.length) % completions.length)
+        return
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        acceptCompletion(completions[compIndex])
+        return
+      }
+      if (e.key === 'Escape') {
+        setCompletions([])
+        setCompQuery(null)
+        return
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       sendMessage()
     }
-  }, [sendMessage])
+  }, [sendMessage, completions, compIndex, acceptCompletion])
 
   const canSend = !isStreaming && !!input.trim() && (status === 'ready' || status === 'resumed')
   const placeholder = canSpawnWorker
@@ -507,21 +588,37 @@ function ChatPane({
       </div>
 
       <div className="input-area">
-        <textarea
-          ref={inputRef}
-          className="chat-input"
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={placeholder}
-          rows={1}
-          disabled={status === 'connecting' || status === 'disconnected'}
-        />
-        <div>
+        {completions.length > 0 && (
+          <ul className="completion-list">
+            {completions.map((c, i) => (
+              <li
+                key={c}
+                className={`completion-item${i === compIndex ? ' completion-item--active' : ''}`}
+                onMouseDown={e => { e.preventDefault(); acceptCompletion(c) }}
+                onMouseEnter={() => setCompIndex(i)}
+              >
+                {c}
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="input-row">
+          <textarea
+            ref={inputRef}
+            className="chat-input"
+            value={input}
+            onChange={handleInputChange}
+            onKeyDown={handleKeyDown}
+            placeholder={placeholder}
+            rows={1}
+            disabled={status === 'connecting' || status === 'disconnected'}
+          />
+          <div>
           {isStreaming
             ? <button className="btn btn--interrupt" onClick={sendInterrupt}>stop</button>
             : <button className="btn btn--send" onClick={sendMessage} disabled={!canSend}>send</button>
           }
+          </div>
         </div>
       </div>
     </div>
@@ -650,6 +747,16 @@ export default function App() {
   const activeWorktrees = branches.filter(b => b.worktree).length
   const openTabIds = new Set(tabs.map(t => t.id))
 
+  // Completion roots: repo root + all worktree paths that exist
+  const completionRoots = useMemo(() => {
+    const roots: string[] = []
+    if (repoPath) roots.push(repoPath)
+    for (const b of branches) {
+      if (b.worktree && !roots.includes(b.worktree)) roots.push(b.worktree)
+    }
+    return roots
+  }, [repoPath, branches])
+
   const statusDotClass = (status: ConnStatus) => {
     if (status === 'ready' || status === 'resumed') return 'tab-dot--ready'
     if (status === 'connecting' || status === 'disconnected') return 'tab-dot--connecting'
@@ -755,6 +862,7 @@ export default function App() {
                   active={activeTab === tab.id}
                   canSpawnWorker={tab.id === 'main'}
                   repo={repoPath ?? ''}
+                  completionRoots={completionRoots}
                   initialMessage={tab.initialMessage}
                   onStatusChange={handleStatusChange(tab.id)}
                   onWorkerCreated={handleWorkerCreated}
