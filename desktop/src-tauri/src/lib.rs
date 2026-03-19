@@ -1246,10 +1246,20 @@ fn set_repo(repo: String) {
     write_config(&cfg);
 }
 
-/// Resolve API key: environment variable takes precedence over stored config.
+/// Resolve API key: environment variable takes precedence over stored config,
+/// falling back to a login shell lookup (for GUI apps launched outside a terminal).
 fn resolve_api_key() -> Option<String> {
     std::env::var("ANTHROPIC_API_KEY").ok().filter(|s| !s.is_empty())
         .or_else(|| read_config().api_key)
+        .or_else(|| {
+            let output = std::process::Command::new("zsh")
+                .args(["-l", "-c", "echo $ANTHROPIC_API_KEY"])
+                .output()
+                .ok()?;
+            let val = String::from_utf8(output.stdout).ok()?;
+            let val = val.trim().to_string();
+            if val.is_empty() { None } else { Some(val) }
+        })
 }
 
 #[tauri::command]
