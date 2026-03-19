@@ -7,28 +7,28 @@
 }
 
 :root {
-  --bg:           #07090d;
-  --bg-panel:     #0b0f15;
-  --bg-elevated:  #111720;
-  --bg-user:      #0d1623;
-  --bg-tool:      #0e1219;
+  --bg:           #F6F4F1;
+  --bg-panel:     #FFFFFF;
+  --bg-elevated:  #EEEAE5;
+  --bg-user:      #EEF1FB;
+  --bg-tool:      #F9F8F6;
 
-  --border:       #1a2333;
-  --border-mid:   #243044;
-  --border-focus: #3a5a80;
+  --border:       #E0DCD6;
+  --border-mid:   #CEC9C2;
+  --border-focus: #3B62E8;
 
-  --text:         #c8d3de;
-  --text-dim:     #6b7f94;
-  --text-muted:   #3a4d62;
+  --text:         #1C1917;
+  --text-dim:     #57534E;
+  --text-muted:   #A8A29E;
 
-  --blue:         #4d9de0;
-  --blue-dim:     rgba(77, 157, 224, 0.12);
-  --green:        #3dba6f;
-  --green-dim:    rgba(61, 186, 111, 0.18);
-  --amber:        #d4963a;
-  --amber-dim:    rgba(212, 150, 58, 0.12);
-  --red:          #e05c5c;
-  --red-dim:      rgba(224, 92, 92, 0.12);
+  --blue:         #3B62E8;
+  --blue-dim:     rgba(59, 98, 232, 0.08);
+  --green:        #1A7A4A;
+  --green-dim:    rgba(26, 122, 74, 0.10);
+  --amber:        #A16207;
+  --amber-dim:    rgba(161, 98, 7, 0.09);
+  --red:          #C4362A;
+  --red-dim:      rgba(196, 54, 42, 0.08);
 
   --font: 'JetBrains Mono', 'Courier New', monospace;
   --radius: 4px;
@@ -36,7 +36,7 @@
   font-family: var(--font);
   font-size: 13px;
   line-height: 1.65;
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 html, body, #root {
@@ -47,7 +47,7 @@ html, body, #root {
   -moz-osx-font-smoothing: grayscale;
 }
 
-::selection { background: rgba(77, 157, 224, 0.25); }
+::selection { background: rgba(59, 98, 232, 0.15); }
 
 ::-webkit-scrollbar       { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
