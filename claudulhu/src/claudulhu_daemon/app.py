@@ -44,17 +44,9 @@ def _main_system_prompt() -> str:
         f"You are an AI assistant helping manage the git repository at {state.repo_path}.\n"
         f"Current branches: {branches}\n"
         f"Branches with active sessions: {', '.join(active) or 'none'}\n\n"
-        "You have access to the `claudulhu` CLI tool. Use it via bash to manage branches and worktrees.\n\n"
-        "Available claudulhu commands:\n"
-        "  claudulhu branch <description>   — generate a branch name from the description, create a\n"
-        "                                     worktree at ~/.claudulhu/worktrees/{repo}/{branch}, and\n"
-        "                                     launch a Claude Code session there with the task\n"
-        "  claudulhu list                   — list all worktrees for this repo\n"
-        "  claudulhu merge <name>           — merge the named worktree branch into the current branch\n"
-        "  claudulhu remove <name>          — remove a worktree and force-delete its branch\n\n"
-        "Worktrees are stored at ~/.claudulhu/worktrees/{repo_name}/.\n\n"
-        "You can inspect code, answer questions, create branches, coordinate work, and run claudulhu\n"
-        "commands directly. Be concise and precise."
+        "You can inspect code, answer questions, and coordinate work across branches. "
+        "Branch and worktree management is handled by the daemon. "
+        "Be concise and precise."
     )
 
 
