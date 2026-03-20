@@ -1253,7 +1253,7 @@ fn resolve_api_key() -> Option<String> {
         .or_else(|| read_config().api_key)
         .or_else(|| {
             let output = std::process::Command::new("zsh")
-                .args(["-l", "-c", "echo $ANTHROPIC_API_KEY"])
+                .args(["-l", "-c", "source ~/.zshrc 2>/dev/null; echo $ANTHROPIC_API_KEY"])
                 .output()
                 .ok()?;
             let val = String::from_utf8(output.stdout).ok()?;
