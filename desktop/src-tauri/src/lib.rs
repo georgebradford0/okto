@@ -1181,14 +1181,18 @@ fn build_system_prompt(repo_path: &str, branch: Option<&str>, worktree_path: Opt
         \n- Use write_file only for creating new files.\
         \n- Be concise and precise.";
 
+    let claude_md = std::fs::read_to_string(format!("{}/CLAUDE.md", repo_path))
+        .map(|s| format!("\n\n# Project instructions (CLAUDE.md)\n{}", s))
+        .unwrap_or_default();
+
     match (branch, worktree_path) {
         (Some(branch), Some(wt)) => format!(
             "You are an AI coding assistant working on branch '{branch}' of the git repository at {repo_path}.\
-             Your working directory is the worktree at {wt}.{tool_guidance}"
+             Your working directory is the worktree at {wt}.{claude_md}{tool_guidance}"
         ),
         _ => format!(
             "You are an AI assistant helping manage the git repository at {repo_path}.\
-             You can inspect code, answer questions, and help coordinate work across branches.{tool_guidance}"
+             You can inspect code, answer questions, and help coordinate work across branches.{claude_md}{tool_guidance}"
         ),
     }
 }
