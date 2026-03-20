@@ -383,9 +383,9 @@ async fn execute_tool(
     match name {
         "bash" => {
             let cmd = input["command"].as_str().unwrap_or("");
-            match tokio::process::Command::new("bash")
-                .arg("-c")
-                .arg(cmd)
+            let wrapped = format!("source ~/.zshrc 2>/dev/null; {}", cmd);
+            match tokio::process::Command::new("zsh")
+                .args(["-l", "-c", &wrapped])
                 .current_dir(cwd)
                 .output()
                 .await
