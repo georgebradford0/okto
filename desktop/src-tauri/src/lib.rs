@@ -383,9 +383,9 @@ async fn execute_tool(
     match name {
         "bash" => {
             let cmd = input["command"].as_str().unwrap_or("");
-            let wrapped = format!("source ~/.zshrc 2>/dev/null; {}", cmd);
-            match tokio::process::Command::new("zsh")
-                .args(["-l", "-c", &wrapped])
+            match tokio::process::Command::new("bash")
+                .arg("-c")
+                .arg(cmd)
                 .current_dir(cwd)
                 .output()
                 .await
@@ -1460,10 +1460,29 @@ async fn spawn_worker(
     Ok(())
 }
 
+// ── Shell Environment Bootstrap ───────────────────────────────────────────────
+
+/// At startup, spawn a login shell to capture the user's full environment
+/// (PATH, rbenv, nvm, Homebrew, etc.) and apply it to the current process.
+/// This ensures all subprocesses inherit the same env as a terminal session.
+fn init_shell_env() {
+    let output = std::process::Command::new("zsh")
+        .args(["-l", "-c", "source ~/.zshrc 2>/dev/null; env"])
+        .output();
+    let Ok(output) = output else { return };
+    let Ok(env_str) = std::str::from_utf8(&output.stdout) else { return };
+    for line in env_str.lines() {
+        if let Some((key, val)) = line.split_once('=') {
+            std::env::set_var(key, val);
+        }
+    }
+}
+
 // ── App Setup ─────────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    init_shell_env();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
