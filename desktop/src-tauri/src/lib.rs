@@ -903,7 +903,7 @@ async fn stream_turn(
 
     let body = serde_json::json!({
         "model": model,
-        "max_tokens": 1000000,
+        "max_tokens": 128000,
         "system": system,
         "tools": tool_definitions(),
         "messages": messages,
