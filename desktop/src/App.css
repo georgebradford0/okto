@@ -765,6 +765,91 @@
 .branch-item--clickable:hover .branch-open-hint { opacity: 1; }
 .branch-item--open .branch-open-hint            { opacity: 1; color: var(--blue); }
 
+/* ── Pronunciation task / mobile responsive ───────────────────────────────── */
+
+@media (max-width: 600px) {
+  /* Stack the branches panel below the chat on small screens */
+  .app-body {
+    flex-direction: column;
+  }
+
+  /* Give chat section the top priority — it should fill available space */
+  .chat-section {
+    flex: 1 1 auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    min-height: 0;
+  }
+
+  /* Branches panel becomes a compact horizontal strip at the bottom */
+  .branches-panel {
+    flex: 0 0 auto;
+    max-height: 180px;
+    flex-direction: column;
+    border-top: 1px solid var(--border);
+  }
+
+  .branches-list {
+    overflow-x: auto;
+    overflow-y: hidden;
+    display: flex;
+    flex-direction: row;
+    padding: 4px 0;
+    gap: 0;
+  }
+
+  .branch-item {
+    flex-shrink: 0;
+    min-width: 140px;
+    max-width: 200px;
+    border-bottom: none;
+    border-right: 1px solid var(--border);
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    padding: 8px 12px;
+  }
+
+  .branch-item:last-child {
+    border-right: none;
+  }
+
+  .branch-dot {
+    margin-top: 0;
+  }
+
+  /* Reduce padding in message list on small screens */
+  .messages-inner {
+    padding: 14px 12px;
+  }
+
+  /* Tighten input area on small screens */
+  .input-area {
+    padding: 10px 12px;
+  }
+
+  /* Reduce branches-panel header height to save space */
+  .panel-header {
+    height: 36px;
+    padding: 0 12px;
+  }
+
+  /* Keep header compact */
+  .app-header {
+    padding: 0 12px;
+  }
+
+  /* Message bubbles can be wider on small screens */
+  .message {
+    max-width: 95%;
+  }
+
+  /* Reduce header height slightly on mobile */
+  .app-header {
+    height: 40px;
+  }
+}
+
 /* ── Spawn worker blocks ──────────────────────────────────────────────────── */
 
 .spawning-block {
