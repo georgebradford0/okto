@@ -46,6 +46,16 @@ fn read_config() -> Config {
         .unwrap_or_default()
 }
 
+fn effective_repo(cfg: &Config) -> String {
+    cfg.repo.clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        })
+}
+
 fn write_config(cfg: &Config) {
     let path = config_path();
     fs::create_dir_all(path.parent().unwrap()).ok();
@@ -1061,7 +1071,8 @@ async fn run_session(socket: WebSocket, session: Arc<Mutex<Session>>, session_id
 // ── HTTP Handlers ─────────────────────────────────────────────────────────────
 
 async fn get_branches_handler(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
-    let repo = read_config().repo.unwrap_or_default();
+    let cfg = read_config();
+    let repo = effective_repo(&cfg);
     match get_branches_for_repo(&repo) {
         Ok(branches) => Json(branches).into_response(),
         Err(e)       => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -1091,7 +1102,7 @@ async fn chat_ws_handler(
     ws.on_upgrade(move |socket| async move {
         let session_id = Uuid::new_v4().to_string();
         let cfg        = read_config();
-        let repo       = cfg.repo.clone().unwrap_or_default();
+        let repo       = effective_repo(&cfg);
         let system     = build_system_prompt(&repo, None, None);
 
         let session = Arc::new(Mutex::new(Session {
@@ -1124,7 +1135,7 @@ async fn worker_ws_handler(
         } else {
             // Fallback: create a fresh worker session if none was pre-created
             let cfg  = read_config();
-            let repo = cfg.repo.clone().unwrap_or_default();
+            let repo = effective_repo(&cfg);
             let system = build_system_prompt(&repo, Some(&branch), None);
             let sess = Arc::new(Mutex::new(Session {
                 messages:         Vec::new(),
