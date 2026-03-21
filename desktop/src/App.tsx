@@ -824,6 +824,27 @@ export default function App() {
     return () => clearInterval(t)
   }, [repoPath])
 
+  // Auto-close tabs whose worktree has been removed
+  useEffect(() => {
+    setTabs(prev => {
+      const toClose = prev.filter(t => {
+        if (t.id === 'main') return false
+        const branch = branches.find(b => b.name === t.id)
+        // Close if the branch no longer has a worktree (or has been deleted entirely)
+        return !branch || !branch.worktree
+      })
+      if (toClose.length === 0) return prev
+      const closeIds = new Set(toClose.map(t => t.id))
+      setTabStatuses(s => {
+        const n = { ...s }
+        closeIds.forEach(id => delete n[id])
+        return n
+      })
+      setActiveTab(cur => closeIds.has(cur) ? 'main' : cur)
+      return prev.filter(t => !closeIds.has(t.id))
+    })
+  }, [branches])
+
   const openTab = useCallback((branch: string, initialMessage?: string, sessionId?: string, worktreePath?: string) => {
     const wsUrl = `ws://localhost:8000/workers/${encodeURIComponent(branch)}`
     setTabs(prev => {
