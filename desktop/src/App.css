@@ -633,9 +633,10 @@
 
 .input-actions {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  align-items: stretch;
+  flex-direction: row;
+  gap: 6px;
+  align-items: flex-end;
+  flex-shrink: 0;
 }
 
 /* ── Branches panel ───────────────────────────────────────────────────────── */
