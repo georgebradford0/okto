@@ -641,11 +641,15 @@ function ChatPane({
         return
       }
     }
+    if (e.key === 'Escape' && (isStreaming || isPending)) {
+      sendInterrupt()
+      return
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       sendMessage()
     }
-  }, [sendMessage, completions, compIndex, acceptCompletion])
+  }, [sendMessage, completions, compIndex, acceptCompletion, isStreaming, isPending, sendInterrupt])
 
   const canSend = !!input.trim() && (
     pendingQuestion ||
