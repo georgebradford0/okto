@@ -65,6 +65,7 @@ async def handle_chat(
     Conversation history does not persist between connections.
     """
     await websocket.accept()
+    await websocket.send_text(_msg(type="ready", session_id=session_id, resumed=False))
 
     opts = sdk.ClaudeAgentOptions(
         system_prompt=system_prompt,
@@ -93,7 +94,6 @@ async def handle_chat(
     try:
         async with sdk.ClaudeSDKClient(options=opts) as client:
             print(f"[chat:{session_id}] connected")
-            await websocket.send_text(_msg(type="ready", session_id=session_id, resumed=False))
 
             while True:
                 raw = await websocket.receive_text()
