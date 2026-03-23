@@ -275,15 +275,6 @@ function ChatPane({
     if (active) inputRef.current?.focus()
   }, [active])
 
-  // Auto-resize textarea
-  useEffect(() => {
-    const ta = inputRef.current
-    if (!ta) return
-    ta.style.height = 'auto'
-    const newHeight = Math.min(ta.scrollHeight, 120)
-    ta.style.height = newHeight + 'px'
-    ta.style.overflowY = ta.scrollHeight > 120 ? 'auto' : 'hidden'
-  }, [input])
 
   const ensureAssistantMsg = useCallback(() => {
     if (!inResponseRef.current) {
@@ -717,7 +708,6 @@ function ChatPane({
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
-            rows={1}
             disabled={!pendingQuestion && (status === 'connecting' || status === 'disconnected')}
           />
           <div className="input-actions">

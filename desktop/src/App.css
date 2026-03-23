@@ -580,11 +580,11 @@
   font-size: 13px;
   line-height: 1.6;
   padding: 9px 13px;
-  resize: none;
+  resize: vertical;
   outline: none;
   transition: border-color 0.15s;
-  max-height: 120px;
-  overflow-y: hidden;
+  overflow-y: auto;
+  min-height: 100px;
 }
 
 .chat-input:focus       { border-color: var(--border-focus); }
