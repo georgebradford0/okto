@@ -87,7 +87,10 @@ fn chat_new_session(
     branch: Option<String>,
     worktree_path: Option<String>,
     repo: String,
-) -> String {
+) -> Result<String, String> {
+    if repo.is_empty() {
+        return Err("no repository selected".to_string());
+    }
     let session_id    = Uuid::new_v4().to_string();
     let cwd           = worktree_path.clone().unwrap_or_else(|| repo.clone());
     let system_prompt = build_system_prompt(&repo, branch.as_deref(), worktree_path.as_deref());
@@ -108,7 +111,7 @@ fn chat_new_session(
         emit(&app, &sid, ChatEvent::Ready { session_id: sid.clone(), resumed: false });
     });
 
-    session_id
+    Ok(session_id)
 }
 
 #[tauri::command]

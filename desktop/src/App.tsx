@@ -386,6 +386,8 @@ function ChatPane({
 
   useEffect(() => {
     if (!isTauri()) return
+    // Don't create a session until a repo has been selected.
+    if (!repo && !externalSessionId) return
 
     let unlistenFn: (() => void) | null = null
     let mounted = true
@@ -420,6 +422,9 @@ function ChatPane({
     return () => {
       mounted = false
       unlistenFn?.()
+      // Reset session so a new one is created with the updated repo when repo changes.
+      // Skip for worker tabs (externalSessionId) — those sessions are pre-created externally.
+      if (!externalSessionId) tauriSessionId.current = null
     }
   }, [wsUrl, repo]) // stable — handleFrame/updateStatus are stable callbacks via useCallback
 
