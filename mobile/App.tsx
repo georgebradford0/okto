@@ -4,6 +4,7 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Modal,
+  PermissionsAndroid,
   Platform,
   Pressable,
   ScrollView,
@@ -15,12 +16,17 @@ import {
   View,
 } from 'react-native'
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
+import { Camera, useCameraDevice, useCodeScanner } from 'react-native-vision-camera'
+import SshTunnel from './src/NativeSshTunnel'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-interface SavedConnection {
-  nickname: string
-  url: string
+interface SshConnectionInfo {
+  v:    number
+  host: string
+  port: number
+  hk:   string   // base64 OpenSSH wire-format host public key ("hk" from QR)
+  ck:   string   // base64 OpenSSH private key PEM file ("ck" from QR)
 }
 
 type ServerFrame =
@@ -76,6 +82,15 @@ type ConnStatus = 'connecting' | 'ready' | 'resumed' | 'error' | 'disconnected'
 
 let _id = 0
 const uid = () => `m${++_id}`
+
+function parseQrData(raw: string): SshConnectionInfo | null {
+  try {
+    const p = JSON.parse(raw)
+    if (typeof p.host !== 'string' || typeof p.port !== 'number' ||
+        typeof p.hk   !== 'string' || typeof p.ck   !== 'string') { return null }
+    return { v: p.v ?? 1, host: p.host, port: p.port, hk: p.hk, ck: p.ck }
+  } catch { return null }
+}
 
 // ── Colours ────────────────────────────────────────────────────────────────────
 
@@ -208,6 +223,63 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       ]}>
         {message.blocks.map((block, i) => <BlockRenderer key={i} block={block} />)}
         {message.streaming && <Text style={s.cursor}>▋</Text>}
+      </View>
+    </View>
+  )
+}
+
+// ── QrScanner ─────────────────────────────────────────────────────────────────
+
+function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void; onCancel: () => void }) {
+  const device = useCameraDevice('back')
+  const scannedRef = useRef(false)
+
+  const codeScanner = useCodeScanner({
+    codeTypes: ['qr'],
+    onCodeScanned: (codes) => {
+      if (scannedRef.current) { return }
+      const value = codes[0]?.value
+      if (value) {
+        scannedRef.current = true
+        onScanned(value)
+      }
+    },
+  })
+
+  if (!device) {
+    return (
+      <View style={s.scannerFull}>
+        <Text style={s.scannerError}>Camera not available</Text>
+        <TouchableOpacity style={s.scannerCancel} onPress={onCancel}>
+          <Text style={s.scannerCancelText}>Cancel</Text>
+        </TouchableOpacity>
+      </View>
+    )
+  }
+
+  return (
+    <View style={s.scannerFull}>
+      <Camera
+        device={device}
+        isActive={true}
+        codeScanner={codeScanner}
+        style={StyleSheet.absoluteFill}
+      />
+      {/* Dark overlay with cut-out reticle */}
+      <View style={s.scannerOverlay}>
+        <View style={s.scannerTopBar}>
+          <Text style={s.scannerTitle}>Scan QR code</Text>
+          <Text style={s.scannerSubtitle}>Point at the QR code printed in the container terminal</Text>
+        </View>
+        <View style={s.scannerReticle}>
+          <View style={[s.scannerCorner, s.cornerTL]} />
+          <View style={[s.scannerCorner, s.cornerTR]} />
+          <View style={[s.scannerCorner, s.cornerBL]} />
+          <View style={[s.scannerCorner, s.cornerBR]} />
+        </View>
+        <TouchableOpacity style={s.scannerCancel} onPress={onCancel}>
+          <Text style={s.scannerCancelText}>Cancel</Text>
+        </TouchableOpacity>
       </View>
     </View>
   )
@@ -418,30 +490,26 @@ function ChatPane({ wsUrl, canSpawnWorker, onStatusChange, onWorkerCreated, init
       wsRef.current?.send(JSON.stringify({ type: 'answer', answer: text }))
       setPendingQuestion(false)
       setIsPending(true)
-      setInput('')
-      return
-    }
-
-    if (canSpawnWorker && text.startsWith('&')) {
-      const task = text.slice(1).trim()
-      if (!task) { return }
-      setMessages(prev => [...prev, { id: uid(), role: 'user', streaming: false, blocks: [{ kind: 'system', text: `spawning: ${task}` }] }])
-      wsRef.current?.send(JSON.stringify({ type: 'spawn_worker', task }))
     } else {
       setMessages(prev => [...prev, { id: uid(), role: 'user', streaming: false, blocks: [{ kind: 'text', text }] }])
       wsRef.current?.send(JSON.stringify({ type: 'message', text }))
+      setIsPending(true)
     }
-
-    setIsPending(true)
     setInput('')
-  }, [input, isStreaming, pendingQuestion, canSpawnWorker])
+  }, [input, isStreaming, pendingQuestion])
 
-  const sendInterrupt = useCallback(() => {
-    wsRef.current?.send(JSON.stringify({ type: 'interrupt' }))
-  }, [])
+  const spawnWorker = useCallback(() => {
+    const text = input.trim()
+    if (!text || isStreaming) { return }
+    wsRef.current?.send(JSON.stringify({ type: 'spawn_worker', task: text }))
+    setMessages(prev => [...prev, { id: uid(), role: 'user', streaming: false, blocks: [{ kind: 'text', text }] }])
+    setInput('')
+    setIsPending(true)
+    inResponseRef.current = true
+    setIsStreaming(true)
+  }, [input, isStreaming])
 
   const canSend = !!input.trim() && (pendingQuestion || (!isStreaming && (status === 'ready' || status === 'resumed')))
-  const placeholder = pendingQuestion ? 'your answer…' : canSpawnWorker ? 'message… (& task to spawn worktree)' : 'message…'
 
   return (
     <View style={s.pane}>
@@ -450,22 +518,13 @@ function ChatPane({ wsUrl, canSpawnWorker, onStatusChange, onWorkerCreated, init
         style={s.messageList}
         contentContainerStyle={s.messageListContent}
         onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
-        keyboardDismissMode="interactive"
       >
         {messages.length === 0 && (
           <Text style={s.emptyState}>
             {status === 'connecting' || status === 'disconnected' ? 'connecting to server…' : 'send a message to begin'}
           </Text>
         )}
-        {messages.map(msg => <MessageBubble key={msg.id} message={msg} />)}
-        {isPending && (
-          <View style={s.messageWrap}>
-            <Text style={s.messageLabel}>claude</Text>
-            <View style={[s.bubble, s.bubbleAsst]}>
-              <Text style={s.thinkingDots}>• • •</Text>
-            </View>
-          </View>
-        )}
+        {messages.map(m => <MessageBubble key={m.id} message={m} />)}
       </ScrollView>
 
       <View style={s.inputRow}>
@@ -473,19 +532,24 @@ function ChatPane({ wsUrl, canSpawnWorker, onStatusChange, onWorkerCreated, init
           style={s.input}
           value={input}
           onChangeText={setInput}
-          placeholder={placeholder}
+          placeholder={pendingQuestion ? 'answer…' : 'message…'}
           placeholderTextColor={C.textMuted}
           multiline
-          maxLength={8000}
+          returnKeyType="default"
           editable={pendingQuestion || status === 'ready' || status === 'resumed'}
         />
+        {canSpawnWorker && !!input.trim() && !isStreaming && (status === 'ready' || status === 'resumed') && !pendingQuestion && (
+          <TouchableOpacity style={[s.btnSend, { backgroundColor: C.yellow }]} onPress={spawnWorker}>
+            <Text style={s.btnSendText}>⎇</Text>
+          </TouchableOpacity>
+        )}
         {isStreaming ? (
-          <TouchableOpacity style={s.btnStop} onPress={sendInterrupt}>
+          <TouchableOpacity style={s.btnStop} onPress={() => wsRef.current?.send(JSON.stringify({ type: 'interrupt' }))}>
             <Text style={s.btnStopText}>■</Text>
           </TouchableOpacity>
         ) : (
           <TouchableOpacity style={[s.btnSend, !canSend && s.btnDisabled]} onPress={sendMessage} disabled={!canSend}>
-            <Text style={s.btnSendText}>▶</Text>
+            <Text style={s.btnSendText}>↑</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -496,49 +560,53 @@ function ChatPane({ wsUrl, canSpawnWorker, onStatusChange, onWorkerCreated, init
 // ── Root App ──────────────────────────────────────────────────────────────────
 
 function AppInner() {
-  const [serverUrl,       setServerUrl]       = useState('')
-  const [urlInput,        setUrlInput]        = useState('')
-  const [nicknameInput,   setNicknameInput]   = useState('')
-  const [savedConns,      setSavedConns]      = useState<SavedConnection[]>([])
-  const [isSetup,         setIsSetup]         = useState(false)
+  const [sshConn,      setSshConn]      = useState<SshConnectionInfo | null>(null)
+  const [tunnelPort,   setTunnelPort]   = useState<number | null>(null)
+  const [tunnelError,  setTunnelError]  = useState<string | null>(null)
+  const [scanning,     setScanning]     = useState(false)
   const [tabs,         setTabs]         = useState<Tab[]>([])
   const [activeTab,    setActiveTab]    = useState('main')
   const [tabStatuses,  setTabStatuses]  = useState<Record<string, ConnStatus>>({ main: 'connecting' })
   const [branches,     setBranches]     = useState<Branch[]>([])
   const [showBranches, setShowBranches] = useState(false)
 
-  // Load saved server URL and saved connections on mount
+  // ── Load stored connection on mount ────────────────────────────────────────
   useEffect(() => {
-    Promise.all([
-      AsyncStorage.getItem('serverUrl'),
-      AsyncStorage.getItem('savedConnections'),
-    ]).then(([url, connsJson]) => {
-      if (connsJson) {
-        try { setSavedConns(JSON.parse(connsJson)) } catch {}
-      }
-      if (url) {
-        setServerUrl(url)
-        setUrlInput(url)
-        setIsSetup(true)
-      }
+    AsyncStorage.getItem('sshConnection').then(json => {
+      if (!json) { return }
+      try {
+        const conn = JSON.parse(json) as SshConnectionInfo
+        setSshConn(conn)
+      } catch {}
     })
   }, [])
 
-  // Init tabs when server URL is set
+  // ── Establish SSH tunnel whenever sshConn changes ──────────────────────────
   useEffect(() => {
-    if (!serverUrl) { return }
-    const wsBase = serverUrl.startsWith('ws') ? serverUrl : `ws://${serverUrl}`
-    setTabs([{ id: 'main', label: 'main', wsUrl: `${wsBase}/chat` }])
+    if (!sshConn) { return }
+    setTunnelPort(null)
+    setTunnelError(null)
+
+    SshTunnel.connect(sshConn.host, sshConn.port, sshConn.hk, sshConn.ck)
+      .then(port => { setTunnelPort(port) })
+      .catch(e  => { setTunnelError(e?.message ?? String(e)) })
+
+    return () => { SshTunnel.disconnect() }
+  }, [sshConn])
+
+  // ── Init tabs when tunnel is ready ─────────────────────────────────────────
+  useEffect(() => {
+    if (!tunnelPort) { return }
+    setTabs([{ id: 'main', label: 'main', wsUrl: `ws://127.0.0.1:${tunnelPort}/chat` }])
     setActiveTab('main')
     setTabStatuses({ main: 'connecting' })
-  }, [serverUrl])
+  }, [tunnelPort])
 
-  // Poll branches
+  // ── Poll branches ──────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!serverUrl) { return }
-    const httpBase = serverUrl.replace(/^ws/, 'http')
+    if (!tunnelPort) { return }
     const poll = () => {
-      fetch(`${httpBase}/branches`)
+      fetch(`http://127.0.0.1:${tunnelPort}/branches`)
         .then(r => r.ok ? r.json() : null)
         .then((d: Branch[] | null) => d && setBranches(d))
         .catch(() => {})
@@ -546,9 +614,9 @@ function AppInner() {
     poll()
     const t = setInterval(poll, 10_000)
     return () => clearInterval(t)
-  }, [serverUrl])
+  }, [tunnelPort])
 
-  // Auto-close tabs whose worktree was removed
+  // ── Auto-close tabs whose worktree was removed ─────────────────────────────
   useEffect(() => {
     setTabs(prev => {
       const toClose = prev.filter(t => {
@@ -564,34 +632,35 @@ function AppInner() {
     })
   }, [branches])
 
-  const connectToUrl = (url: string, nickname?: string) => {
-    const cleaned = url.trim().replace(/\/$/, '')
-    if (!cleaned) { return }
-    setSavedConns(prev => {
-      const nick = (nickname ?? '').trim() || cleaned
-      const filtered = prev.filter(c => c.url !== cleaned)
-      const next = [{ nickname: nick, url: cleaned }, ...filtered].slice(0, 10)
-      AsyncStorage.setItem('savedConnections', JSON.stringify(next))
-      return next
-    })
-    AsyncStorage.setItem('serverUrl', cleaned)
-    setServerUrl(cleaned)
-    setIsSetup(true)
-  }
+  // ── QR scan handler ────────────────────────────────────────────────────────
+  const handleQrScanned = useCallback((raw: string) => {
+    setScanning(false)
+    const conn = parseQrData(raw)
+    if (!conn) {
+      setTunnelError('Invalid QR code — not a claudulhu connection QR')
+      return
+    }
+    AsyncStorage.setItem('sshConnection', JSON.stringify(conn))
+    setSshConn(conn)
+  }, [])
 
-  const connect = () => {
-    connectToUrl(urlInput, nicknameInput)
-  }
+  const requestCameraAndScan = useCallback(async () => {
+    if (Platform.OS === 'android') {
+      const granted = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.CAMERA)
+      if (granted !== PermissionsAndroid.RESULTS.GRANTED) { return }
+    }
+    setScanning(true)
+  }, [])
 
   const openTab = useCallback((branch: string, _worktreePath: string, initialMessage?: string) => {
-    const wsBase = serverUrl.startsWith('ws') ? serverUrl : `ws://${serverUrl}`
+    if (!tunnelPort) { return }
     setTabs(prev => {
       if (prev.find(t => t.id === branch)) { return prev }
-      return [...prev, { id: branch, label: branch, wsUrl: `${wsBase}/workers/${encodeURIComponent(branch)}`, initialMessage }]
+      return [...prev, { id: branch, label: branch, wsUrl: `ws://127.0.0.1:${tunnelPort}/workers/${encodeURIComponent(branch)}`, initialMessage }]
     })
     setTabStatuses(prev => ({ ...prev, [branch]: prev[branch] ?? 'connecting' }))
     setActiveTab(branch)
-  }, [serverUrl])
+  }, [tunnelPort])
 
   const closeTab = useCallback((id: string) => {
     if (id === 'main') { return }
@@ -617,74 +686,51 @@ function AppInner() {
   const activeWorktrees = branches.filter(b => b.worktree).length
   const openTabIds = new Set(tabs.map(t => t.id))
 
-  // ── Setup screen ───────────────────────────────────────────────────────────
+  // ── QR scanner overlay ─────────────────────────────────────────────────────
+  if (scanning) {
+    return (
+      <QrScanner
+        onScanned={handleQrScanned}
+        onCancel={() => setScanning(false)}
+      />
+    )
+  }
 
-  if (!isSetup) {
+  // ── Setup / connecting screen ──────────────────────────────────────────────
+  if (!tunnelPort) {
     return (
       <SafeAreaView style={s.setupSafe} edges={['top', 'bottom']}>
-        <ScrollView contentContainerStyle={s.setupScroll} keyboardShouldPersistTaps="handled">
+        <View style={s.setupCenter}>
           <Text style={s.setupMark}>⬡</Text>
           <Text style={s.setupTitle}>claudulhu</Text>
-          <View style={s.setupForm}>
-            <Text style={s.setupDesc}>Nickname</Text>
-            <TextInput
-              style={s.setupInput}
-              value={nicknameInput}
-              onChangeText={setNicknameInput}
-              placeholder="home server"
-              placeholderTextColor={C.textMuted}
-              autoCapitalize="none"
-              autoCorrect={false}
-              returnKeyType="next"
-            />
-            <Text style={s.setupDesc}>Server address</Text>
-            <TextInput
-              style={s.setupInput}
-              value={urlInput}
-              onChangeText={setUrlInput}
-              placeholder="192.168.1.x:8000"
-              placeholderTextColor={C.textMuted}
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
-              returnKeyType="done"
-              onSubmitEditing={connect}
-            />
-            <TouchableOpacity
-              style={[s.setupBtn, !urlInput.trim() && s.btnDisabled]}
-              onPress={connect}
-              disabled={!urlInput.trim()}
-            >
-              <Text style={s.setupBtnText}>Connect</Text>
-            </TouchableOpacity>
-          </View>
-          {savedConns.length > 0 && (
-            <View style={s.savedSection}>
-              <Text style={s.savedTitle}>saved connections</Text>
-              {savedConns.map((conn, i) => (
-                <TouchableOpacity
-                  key={i}
-                  style={s.savedRow}
-                  onPress={() => connectToUrl(conn.url, conn.nickname)}
-                  activeOpacity={0.7}
-                >
-                  <View style={s.savedDot} />
-                  <View style={s.savedInfo}>
-                    <Text style={s.savedNickname}>{conn.nickname}</Text>
-                    <Text style={s.savedUrl} numberOfLines={1}>{conn.url}</Text>
-                  </View>
-                  <Text style={s.savedArrow}>›</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+
+          {!sshConn && (
+            <>
+              <Text style={s.setupDesc}>Scan the QR code printed by the Docker container</Text>
+              <TouchableOpacity style={s.setupBtn} onPress={requestCameraAndScan}>
+                <Text style={s.setupBtnText}>Scan QR code</Text>
+              </TouchableOpacity>
+            </>
           )}
-        </ScrollView>
+
+          {sshConn && !tunnelError && (
+            <Text style={s.setupStatus}>Connecting to {sshConn.host}:{sshConn.port}…</Text>
+          )}
+
+          {tunnelError && (
+            <>
+              <Text style={s.setupError}>{tunnelError}</Text>
+              <TouchableOpacity style={s.setupBtn} onPress={requestCameraAndScan}>
+                <Text style={s.setupBtnText}>Re-scan QR code</Text>
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
       </SafeAreaView>
     )
   }
 
-  // ── Main UI ───────────────────────────────────────────────────────────────
-
+  // ── Main UI ────────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
       <KeyboardAvoidingView
@@ -702,8 +748,8 @@ function AppInner() {
             <TouchableOpacity style={s.iconBtn} onPress={() => setShowBranches(true)}>
               <Text style={s.iconBtnText}>⎇ {activeWorktrees}</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={s.iconBtn} onPress={() => { setIsSetup(false); setTabs([]); setBranches([]) }}>
-              <Text style={s.iconBtnText}>⚙</Text>
+            <TouchableOpacity style={s.iconBtn} onPress={requestCameraAndScan}>
+              <Text style={s.iconBtnText}>⬡</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -798,25 +844,32 @@ export default function App() {
 const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace'
 
 const s = StyleSheet.create({
-  // Setup
+  // Setup / connecting screen
   setupSafe:        { flex: 1, backgroundColor: C.bg },
-  setupScroll:      { flexGrow: 1, alignItems: 'center', paddingHorizontal: 32, paddingTop: 72, paddingBottom: 40, gap: 0 },
+  setupCenter:      { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 40, gap: 16 },
   setupMark:        { fontSize: 48, color: C.accent },
-  setupTitle:       { fontSize: 26, fontWeight: '700', color: C.textPrimary, letterSpacing: 2, marginBottom: 32, marginTop: 8 },
-  setupForm:        { width: '100%', gap: 10 },
-  setupDesc:        { fontSize: 13, color: C.textSecondary, marginBottom: 2 },
-  setupInput:       { width: '100%', backgroundColor: C.inputBg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 13, color: C.textPrimary, fontSize: 16, fontFamily: MONO },
-  setupBtn:         { width: '100%', backgroundColor: C.accent, borderRadius: 10, paddingVertical: 14, alignItems: 'center', marginTop: 4 },
+  setupTitle:       { fontSize: 26, fontWeight: '700', color: C.textPrimary, letterSpacing: 2 },
+  setupDesc:        { fontSize: 15, color: C.textSecondary, textAlign: 'center', lineHeight: 22 },
+  setupStatus:      { fontSize: 15, color: C.textMuted, textAlign: 'center' },
+  setupError:       { fontSize: 14, color: C.red, textAlign: 'center', lineHeight: 20 },
+  setupBtn:         { backgroundColor: C.accent, borderRadius: 12, paddingVertical: 14, paddingHorizontal: 32, alignItems: 'center', marginTop: 8 },
   setupBtnText:     { color: '#fff', fontWeight: '700', fontSize: 16 },
-  // Saved connections
-  savedSection:     { width: '100%', marginTop: 32 },
-  savedTitle:       { fontSize: 12, color: C.textMuted, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 10 },
-  savedRow:         { flexDirection: 'row', alignItems: 'center', backgroundColor: C.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 13, marginBottom: 8, gap: 12 },
-  savedDot:         { width: 8, height: 8, borderRadius: 4, backgroundColor: C.accent },
-  savedInfo:        { flex: 1 },
-  savedNickname:    { color: C.textPrimary, fontSize: 15, fontWeight: '600' },
-  savedUrl:         { color: C.textMuted, fontSize: 12, fontFamily: MONO, marginTop: 2 },
-  savedArrow:       { color: C.textMuted, fontSize: 20 },
+
+  // QR scanner
+  scannerFull:      { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', zIndex: 100 },
+  scannerOverlay:   { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'space-between', paddingVertical: 60 },
+  scannerTopBar:    { alignItems: 'center', gap: 8, paddingHorizontal: 32 },
+  scannerTitle:     { color: '#fff', fontSize: 20, fontWeight: '700' },
+  scannerSubtitle:  { color: 'rgba(255,255,255,0.6)', fontSize: 14, textAlign: 'center', lineHeight: 20 },
+  scannerReticle:   { width: 240, height: 240 },
+  scannerCorner:    { position: 'absolute', width: 28, height: 28, borderColor: C.accent, borderWidth: 3 },
+  cornerTL:         { top: 0, left: 0, borderRightWidth: 0, borderBottomWidth: 0, borderTopLeftRadius: 4 },
+  cornerTR:         { top: 0, right: 0, borderLeftWidth: 0, borderBottomWidth: 0, borderTopRightRadius: 4 },
+  cornerBL:         { bottom: 0, left: 0, borderRightWidth: 0, borderTopWidth: 0, borderBottomLeftRadius: 4 },
+  cornerBR:         { bottom: 0, right: 0, borderLeftWidth: 0, borderTopWidth: 0, borderBottomRightRadius: 4 },
+  scannerCancel:    { backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 24, paddingVertical: 12, paddingHorizontal: 32 },
+  scannerCancelText:{ color: '#fff', fontSize: 16, fontWeight: '600' },
+  scannerError:     { color: C.red, fontSize: 16, textAlign: 'center', marginBottom: 24 },
 
   // Layout
   safe:             { flex: 1, backgroundColor: C.bg },
@@ -861,7 +914,6 @@ const s = StyleSheet.create({
   bubbleAsst:       { backgroundColor: C.asstBubble, borderWidth: StyleSheet.hairlineWidth, borderColor: C.asstBorder },
   bubbleInfo:       { backgroundColor: C.infoBubble, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border },
   cursor:           { color: C.accent, fontSize: 14 },
-  thinkingDots:     { color: C.textMuted, fontSize: 20, letterSpacing: 4 },
 
   // Text blocks
   textBlock:        { color: C.textPrimary, fontSize: 15, lineHeight: 23 },
