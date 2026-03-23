@@ -280,7 +280,9 @@ function ChatPane({
     const ta = inputRef.current
     if (!ta) return
     ta.style.height = 'auto'
-    ta.style.height = Math.min(ta.scrollHeight, 120) + 'px'
+    const newHeight = Math.min(ta.scrollHeight, 120)
+    ta.style.height = newHeight + 'px'
+    ta.style.overflowY = ta.scrollHeight > 120 ? 'auto' : 'hidden'
   }, [input])
 
   const ensureAssistantMsg = useCallback(() => {

@@ -584,7 +584,7 @@
   outline: none;
   transition: border-color 0.15s;
   max-height: 120px;
-  overflow-y: auto;
+  overflow-y: hidden;
 }
 
 .chat-input:focus       { border-color: var(--border-focus); }
