@@ -357,6 +357,7 @@ function ChatPane({ wsUrl, canSpawnWorker, onStatusChange, onWorkerCreated, init
 
       ws.onopen = () => {
         console.log('[ws] connected to', wsUrl)
+        updateStatus('ready')
       }
 
       ws.onmessage = ({ data }) => {
