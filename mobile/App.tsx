@@ -18,6 +18,11 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
+interface SavedConnection {
+  nickname: string
+  url: string
+}
+
 type ServerFrame =
   | { type: 'ready';                session_id: string; resumed: boolean }
   | { type: 'text';                 text: string }
@@ -490,18 +495,26 @@ function ChatPane({ wsUrl, canSpawnWorker, onStatusChange, onWorkerCreated, init
 // ── Root App ──────────────────────────────────────────────────────────────────
 
 function AppInner() {
-  const [serverUrl,    setServerUrl]    = useState('')
-  const [urlInput,     setUrlInput]     = useState('')
-  const [isSetup,      setIsSetup]      = useState(false)
+  const [serverUrl,       setServerUrl]       = useState('')
+  const [urlInput,        setUrlInput]        = useState('')
+  const [nicknameInput,   setNicknameInput]   = useState('')
+  const [savedConns,      setSavedConns]      = useState<SavedConnection[]>([])
+  const [isSetup,         setIsSetup]         = useState(false)
   const [tabs,         setTabs]         = useState<Tab[]>([])
   const [activeTab,    setActiveTab]    = useState('main')
   const [tabStatuses,  setTabStatuses]  = useState<Record<string, ConnStatus>>({ main: 'connecting' })
   const [branches,     setBranches]     = useState<Branch[]>([])
   const [showBranches, setShowBranches] = useState(false)
 
-  // Load saved server URL on mount
+  // Load saved server URL and saved connections on mount
   useEffect(() => {
-    AsyncStorage.getItem('serverUrl').then(url => {
+    Promise.all([
+      AsyncStorage.getItem('serverUrl'),
+      AsyncStorage.getItem('savedConnections'),
+    ]).then(([url, connsJson]) => {
+      if (connsJson) {
+        try { setSavedConns(JSON.parse(connsJson)) } catch {}
+      }
       if (url) {
         setServerUrl(url)
         setUrlInput(url)
@@ -550,12 +563,23 @@ function AppInner() {
     })
   }, [branches])
 
-  const connect = () => {
-    const url = urlInput.trim().replace(/\/$/, '')
-    if (!url) { return }
-    AsyncStorage.setItem('serverUrl', url)
-    setServerUrl(url)
+  const connectToUrl = (url: string, nickname?: string) => {
+    const cleaned = url.trim().replace(/\/$/, '')
+    if (!cleaned) { return }
+    setSavedConns(prev => {
+      const nick = (nickname ?? '').trim() || cleaned
+      const filtered = prev.filter(c => c.url !== cleaned)
+      const next = [{ nickname: nick, url: cleaned }, ...filtered].slice(0, 10)
+      AsyncStorage.setItem('savedConnections', JSON.stringify(next))
+      return next
+    })
+    AsyncStorage.setItem('serverUrl', cleaned)
+    setServerUrl(cleaned)
     setIsSetup(true)
+  }
+
+  const connect = () => {
+    connectToUrl(urlInput, nicknameInput)
   }
 
   const openTab = useCallback((branch: string, _worktreePath: string, initialMessage?: string) => {
@@ -597,30 +621,63 @@ function AppInner() {
   if (!isSetup) {
     return (
       <SafeAreaView style={s.setupSafe} edges={['top', 'bottom']}>
-        <View style={s.setupCenter}>
+        <ScrollView contentContainerStyle={s.setupScroll} keyboardShouldPersistTaps="handled">
           <Text style={s.setupMark}>⬡</Text>
           <Text style={s.setupTitle}>claudulhu</Text>
-          <Text style={s.setupDesc}>Server address</Text>
-          <TextInput
-            style={s.setupInput}
-            value={urlInput}
-            onChangeText={setUrlInput}
-            placeholder="192.168.1.x:8000"
-            placeholderTextColor={C.textMuted}
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-            returnKeyType="done"
-            onSubmitEditing={connect}
-          />
-          <TouchableOpacity
-            style={[s.setupBtn, !urlInput.trim() && s.btnDisabled]}
-            onPress={connect}
-            disabled={!urlInput.trim()}
-          >
-            <Text style={s.setupBtnText}>Connect</Text>
-          </TouchableOpacity>
-        </View>
+          <View style={s.setupForm}>
+            <Text style={s.setupDesc}>Nickname</Text>
+            <TextInput
+              style={s.setupInput}
+              value={nicknameInput}
+              onChangeText={setNicknameInput}
+              placeholder="home server"
+              placeholderTextColor={C.textMuted}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="next"
+            />
+            <Text style={s.setupDesc}>Server address</Text>
+            <TextInput
+              style={s.setupInput}
+              value={urlInput}
+              onChangeText={setUrlInput}
+              placeholder="192.168.1.x:8000"
+              placeholderTextColor={C.textMuted}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              returnKeyType="done"
+              onSubmitEditing={connect}
+            />
+            <TouchableOpacity
+              style={[s.setupBtn, !urlInput.trim() && s.btnDisabled]}
+              onPress={connect}
+              disabled={!urlInput.trim()}
+            >
+              <Text style={s.setupBtnText}>Connect</Text>
+            </TouchableOpacity>
+          </View>
+          {savedConns.length > 0 && (
+            <View style={s.savedSection}>
+              <Text style={s.savedTitle}>saved connections</Text>
+              {savedConns.map((conn, i) => (
+                <TouchableOpacity
+                  key={i}
+                  style={s.savedRow}
+                  onPress={() => connectToUrl(conn.url, conn.nickname)}
+                  activeOpacity={0.7}
+                >
+                  <View style={s.savedDot} />
+                  <View style={s.savedInfo}>
+                    <Text style={s.savedNickname}>{conn.nickname}</Text>
+                    <Text style={s.savedUrl} numberOfLines={1}>{conn.url}</Text>
+                  </View>
+                  <Text style={s.savedArrow}>›</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+        </ScrollView>
       </SafeAreaView>
     )
   }
@@ -742,13 +799,23 @@ const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace'
 const s = StyleSheet.create({
   // Setup
   setupSafe:        { flex: 1, backgroundColor: C.bg },
-  setupCenter:      { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32, gap: 16 },
+  setupScroll:      { flexGrow: 1, alignItems: 'center', paddingHorizontal: 32, paddingTop: 72, paddingBottom: 40, gap: 0 },
   setupMark:        { fontSize: 48, color: C.accent },
-  setupTitle:       { fontSize: 26, fontWeight: '700', color: C.textPrimary, letterSpacing: 2 },
-  setupDesc:        { fontSize: 14, color: C.textSecondary },
+  setupTitle:       { fontSize: 26, fontWeight: '700', color: C.textPrimary, letterSpacing: 2, marginBottom: 32, marginTop: 8 },
+  setupForm:        { width: '100%', gap: 10 },
+  setupDesc:        { fontSize: 13, color: C.textSecondary, marginBottom: 2 },
   setupInput:       { width: '100%', backgroundColor: C.inputBg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 13, color: C.textPrimary, fontSize: 16, fontFamily: MONO },
-  setupBtn:         { width: '100%', backgroundColor: C.accent, borderRadius: 10, paddingVertical: 14, alignItems: 'center' },
+  setupBtn:         { width: '100%', backgroundColor: C.accent, borderRadius: 10, paddingVertical: 14, alignItems: 'center', marginTop: 4 },
   setupBtnText:     { color: '#fff', fontWeight: '700', fontSize: 16 },
+  // Saved connections
+  savedSection:     { width: '100%', marginTop: 32 },
+  savedTitle:       { fontSize: 12, color: C.textMuted, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 10 },
+  savedRow:         { flexDirection: 'row', alignItems: 'center', backgroundColor: C.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 13, marginBottom: 8, gap: 12 },
+  savedDot:         { width: 8, height: 8, borderRadius: 4, backgroundColor: C.accent },
+  savedInfo:        { flex: 1 },
+  savedNickname:    { color: C.textPrimary, fontSize: 15, fontWeight: '600' },
+  savedUrl:         { color: C.textMuted, fontSize: 12, fontFamily: MONO, marginTop: 2 },
+  savedArrow:       { color: C.textMuted, fontSize: 20 },
 
   // Layout
   safe:             { flex: 1, backgroundColor: C.bg },
