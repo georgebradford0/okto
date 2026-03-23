@@ -583,7 +583,6 @@
   resize: vertical;
   outline: none;
   transition: border-color 0.15s;
-  overflow-y: hidden;
   min-height: 100px;
 }
 
