@@ -25,7 +25,7 @@ interface SshConnectionInfo {
   v:    number
   host: string
   port: number
-  hk:   string   // base64(raw 32-byte Ed25519 host pubkey) — converted from QR base32
+  hk:   string   // base64(SHA-256 fingerprint of ECDSA host key) — converted from QR base32
   ck:   string   // base64(raw 32-byte Ed25519 private seed) — converted from QR base32
 }
 
@@ -257,8 +257,10 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
   const codeScanner = useCodeScanner({
     codeTypes: ['qr'],
     onCodeScanned: (codes) => {
+      console.log('[scanner] codes:', JSON.stringify(codes))
       if (scannedRef.current) { return }
       const value = codes[0]?.value
+      console.log('[scanner] value:', value)
       if (value) {
         scannedRef.current = true
         onScanned(value)
@@ -655,7 +657,9 @@ function AppInner() {
   // ── QR scan handler ────────────────────────────────────────────────────────
   const handleQrScanned = useCallback((raw: string) => {
     setScanning(false)
+    console.log('[QR] raw:', JSON.stringify(raw))
     const conn = parseQrData(raw)
+    console.log('[QR] parsed:', conn)
     if (!conn) {
       setTunnelError('Invalid QR code — not a claudulhu connection QR')
       return

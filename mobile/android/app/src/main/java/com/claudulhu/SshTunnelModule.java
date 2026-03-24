@@ -21,6 +21,7 @@ import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters;
 import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters;
 import org.bouncycastle.crypto.signers.Ed25519Signer;
 
+import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.Properties;
 
@@ -66,11 +67,12 @@ public class SshTunnelModule extends NativeSshTunnelSpec {
      * Establish an SSH tunnel.
      *
      * @param host          SSH server hostname / IP
-     * @param port          SSH server port (typically 22)
-     * @param hostPubKey    Base64-encoded raw 32-byte Ed25519 host public key
-     *                      (the "hk" field in the QR code).
+     * @param port          SSH server port (typically 2222)
+     * @param hostPubKey    Base64-encoded SHA-256 fingerprint of the server's
+     *                      ECDSA P-256 host key wire blob ("hk" in the QR).
+     *                      32 bytes. Used for host key pinning.
      * @param clientPrivKey Base64-encoded raw 32-byte Ed25519 private key seed
-     *                      (the "ck" field in the QR code).
+     *                      ("ck" in the QR). Used for client authentication.
      * @param promise       Resolves with the local port bound for forwarding,
      *                      or rejects with an error message.
      */
@@ -86,13 +88,13 @@ public class SshTunnelModule extends NativeSshTunnelSpec {
         new Thread(() -> {
             try {
                 // ------------------------------------------------------------------
-                // 1. Decode raw 32-byte Ed25519 host public key
-                //    "hk" in the QR = base64(raw 32-byte pubkey)
+                // 1. Decode SHA-256 fingerprint of server's ECDSA host key
+                //    "hk" in the QR = base64(SHA256(wire_format_blob))
                 // ------------------------------------------------------------------
-                byte[] rawPub = Base64.decode(hostPubKey, Base64.DEFAULT);
-                if (rawPub == null || rawPub.length != 32) {
+                byte[] pinnedFingerprint = Base64.decode(hostPubKey, Base64.DEFAULT);
+                if (pinnedFingerprint == null || pinnedFingerprint.length != 32) {
                     promise.reject("SSH_KEY_ERROR",
-                            "hostPubKey must be a base64-encoded 32-byte Ed25519 public key");
+                            "hostPubKey must be a base64-encoded 32-byte SHA-256 fingerprint");
                     return;
                 }
 
@@ -113,7 +115,7 @@ public class SshTunnelModule extends NativeSshTunnelSpec {
                 // 3. Configure JSch
                 // ------------------------------------------------------------------
                 JSch jsch = new JSch();
-                jsch.setHostKeyRepository(new PinnedHostKeyRepository(host, rawPub));
+                jsch.setHostKeyRepository(new PinnedHostKeyRepository(host, pinnedFingerprint));
                 jsch.addIdentity(new Ed25519Identity(bcPriv, bcPub), null);
 
                 // ------------------------------------------------------------------
@@ -124,9 +126,9 @@ public class SshTunnelModule extends NativeSshTunnelSpec {
 
                 Properties config = new Properties();
                 config.put("StrictHostKeyChecking", "yes");
-                // Restrict key exchange / host-key algorithms to Ed25519 so JSch
-                // doesn't try RSA/ECDSA and fail before reaching our host-key check.
-                config.put("server_host_key", "ssh-ed25519");
+                // ECDSA P-256 host key: well-supported by Android JCE on all API levels.
+                // Ed25519 host key verification requires JCE EdDSA (Android API 33+).
+                config.put("server_host_key", "ecdsa-sha2-nistp256");
                 session.setConfig(config);
 
                 // Prevent JSch from prompting for passwords or pass-phrases.
@@ -184,33 +186,38 @@ public class SshTunnelModule extends NativeSshTunnelSpec {
     // -------------------------------------------------------------------------
 
     /**
-     * A {@link HostKeyRepository} that accepts exactly one Ed25519 host key
-     * (supplied as 32 raw bytes) for a specific host.  All other keys are
-     * rejected so that the SSH session fails rather than silently connecting
-     * to an unexpected server.
+     * A {@link HostKeyRepository} that pins the server's host key by its
+     * SHA-256 fingerprint.  Rejects any other key, preventing MITM attacks.
+     *
+     * JSch passes "[host]:port" (not just "host") when connecting on a
+     * non-standard port, so we match both forms.
      */
     private static final class PinnedHostKeyRepository implements HostKeyRepository {
 
         private final String pinnedHost;
-        private final byte[] pinnedRawPub; // 32-byte Ed25519 public key
+        private final byte[] pinnedFingerprint; // SHA-256 of the server's key wire blob
 
-        PinnedHostKeyRepository(String host, byte[] rawPub) {
+        PinnedHostKeyRepository(String host, byte[] fingerprint) {
             this.pinnedHost = host;
-            this.pinnedRawPub = rawPub;
+            this.pinnedFingerprint = fingerprint;
         }
 
         @Override
         public int check(String host, byte[] serverKeyBlob) {
-            // serverKeyBlob is the raw SSH wire-format key blob:
-            //   [uint32 len] "ssh-ed25519" [uint32 32] [32 bytes public key]
-            byte[] serverRaw = extractEd25519PublicKey(serverKeyBlob);
-            if (serverRaw == null) {
-                return NOT_INCLUDED; // Force a rejection via StrictHostKeyChecking.
-            }
-            if (!host.equals(pinnedHost) && !host.startsWith(pinnedHost + ",")) {
+            // JSch passes "[host]:port" for non-standard ports.
+            boolean hostMatches = host.equals(pinnedHost)
+                    || host.startsWith(pinnedHost + ",")
+                    || host.startsWith("[" + pinnedHost + "]:");
+            if (!hostMatches) {
                 return NOT_INCLUDED;
             }
-            return Arrays.equals(pinnedRawPub, serverRaw) ? OK : CHANGED;
+            try {
+                MessageDigest md = MessageDigest.getInstance("SHA-256");
+                byte[] serverFingerprint = md.digest(serverKeyBlob);
+                return Arrays.equals(pinnedFingerprint, serverFingerprint) ? OK : CHANGED;
+            } catch (Exception e) {
+                return NOT_INCLUDED;
+            }
         }
 
         @Override
@@ -235,39 +242,6 @@ public class SshTunnelModule extends NativeSshTunnelSpec {
         @Override
         public HostKey[] getHostKey(String host, String type) {
             return new HostKey[0];
-        }
-
-        /**
-         * Parse the 32-byte Ed25519 public key out of an SSH wire-format blob.
-         *
-         * Wire format:
-         *   4 bytes  — length of key-type string
-         *   N bytes  — key-type string (e.g. "ssh-ed25519")
-         *   4 bytes  — length of public key bytes (should be 32)
-         *   32 bytes — raw public key
-         */
-        @Nullable
-        static byte[] extractEd25519PublicKey(byte[] blob) {
-            try {
-                if (blob == null || blob.length < 4) return null;
-                int typeLen = readUint32(blob, 0);
-                if (typeLen < 0 || 4 + typeLen + 4 > blob.length) return null;
-                String keyType = new String(blob, 4, typeLen, java.nio.charset.StandardCharsets.UTF_8);
-                if (!"ssh-ed25519".equals(keyType)) return null;
-                int keyOffset = 4 + typeLen;
-                int keyLen = readUint32(blob, keyOffset);
-                if (keyLen != 32 || keyOffset + 4 + 32 > blob.length) return null;
-                return Arrays.copyOfRange(blob, keyOffset + 4, keyOffset + 4 + 32);
-            } catch (Exception e) {
-                return null;
-            }
-        }
-
-        private static int readUint32(byte[] b, int offset) {
-            return ((b[offset] & 0xFF) << 24)
-                    | ((b[offset + 1] & 0xFF) << 16)
-                    | ((b[offset + 2] & 0xFF) << 8)
-                    | (b[offset + 3] & 0xFF);
         }
     }
 

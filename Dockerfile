@@ -36,6 +36,7 @@ RUN apt-get update && apt-get install -y \
     qrencode \
     ca-certificates \
     curl \
+    openssl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/claudulhu-server /usr/local/bin/claudulhu-server

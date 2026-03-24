@@ -22,10 +22,11 @@ fi
 SSH_PORT="${SSH_PORT:-2222}"
 
 # ── SSH host key ───────────────────────────────────────────────────────────────
-# Generate a fresh Ed25519 host keypair every startup so each session gets
-# unique keys — the app re-scans the QR after a container restart.
-rm -f /etc/ssh/ssh_host_ed25519_key /etc/ssh/ssh_host_ed25519_key.pub
-ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N "" -q
+# ECDSA P-256: Android JCE supports it since API 11. Ed25519 JCE is API 33+
+# and JSch 0.1.55 uses JCE for host key verification, so Ed25519 fails on
+# older devices. Client auth still uses Ed25519 (our own BouncyCastle impl).
+rm -f /etc/ssh/ssh_host_ecdsa_key /etc/ssh/ssh_host_ecdsa_key.pub
+ssh-keygen -t ecdsa -b 256 -f /etc/ssh/ssh_host_ecdsa_key -N "" -q
 
 # ── SSH client key (for the mobile app) ───────────────────────────────────────
 CLIENT_KEY_FILE=/tmp/claudulhu_client
@@ -43,7 +44,7 @@ chmod 600 /root/.ssh/authorized_keys
 mkdir -p /var/run/sshd
 cat > /etc/ssh/sshd_config << EOF
 Port ${SSH_PORT}
-HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
 AuthorizedKeysFile /root/.ssh/authorized_keys
 PasswordAuthentication no
 ChallengeResponseAuthentication no
@@ -60,12 +61,12 @@ EOF
 echo "[claudulhu] SSH server listening on port ${SSH_PORT}"
 
 # ── QR code ───────────────────────────────────────────────────────────────────
-# hk/ck: base32(raw 32-byte key) — 52 uppercase chars each.
-# Using base32 (uppercase + digits) puts all QR data in the alphanumeric
-# charset, enabling a smaller QR version than base64 (byte mode) would need.
+# hk: base32(SHA-256 fingerprint of server's ECDSA host key wire blob) — 52 chars
+# ck: base32(raw 32-byte Ed25519 client private key seed) — 52 chars
+# All chars uppercase+digits+colon+dot → QR alphanumeric mode → smaller QR version.
 # Colon-delimited format: "1:<host>:<port>:<hk52>:<ck52>"
-HOST_PUB_KEY=$(awk '{print $2}' /etc/ssh/ssh_host_ed25519_key.pub \
-    | base64 -d | dd bs=1 skip=19 count=32 2>/dev/null | base32 | tr -d '=\n')
+HOST_PUB_KEY=$(awk '{print $2}' /etc/ssh/ssh_host_ecdsa_key.pub \
+    | base64 -d | openssl dgst -sha256 -binary | base32 | tr -d '=\n')
 CLIENT_PRIV_KEY=$(grep -v -- '-----' "${CLIENT_KEY_FILE}" | tr -d '\n' \
     | base64 -d | dd bs=1 skip=125 count=32 2>/dev/null | base32 | tr -d '=\n')
 
