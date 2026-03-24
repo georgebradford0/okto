@@ -79,7 +79,7 @@ QR_DATA=$(printf '{"v":1,"host":"%s","port":%s,"hk":"%s","ck":"%s"}' \
 echo ""
 echo "[claudulhu] Scan this QR code with the app to connect:"
 echo ""
-printf '%s' "${QR_DATA}" | qrencode -l L -m 1 -t UTF8 -o -
+printf '%s' "${QR_DATA}" | qrencode -l L -m 1 -t UTF8small -o -
 echo ""
 
 # Private key no longer needed on disk — app has it from the QR
