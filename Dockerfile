@@ -47,6 +47,6 @@ ENV HOME=/root
 ENV CLAUDULHU_SKIP_SHELL_ENV=1
 
 # 8000: claudulhu WebSocket/HTTP  22: SSH tunnel endpoint
-EXPOSE 8000 22
+EXPOSE 8000 2222
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

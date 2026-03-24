@@ -3,7 +3,7 @@ services:
     build: .
     ports:
       - "8000:8000"
-      - "${SSH_PORT:-22}:${SSH_PORT:-22}"
+      - "${SSH_PORT:-2222}:${SSH_PORT:-2222}"
     environment:
       - GIT_URL=${GIT_URL}
       - GIT_TOKEN=${GIT_TOKEN:-}
@@ -11,7 +11,7 @@ services:
       - GIT_USER_NAME=${GIT_USER_NAME:-claudulhu}
       - GIT_USER_EMAIL=${GIT_USER_EMAIL:-claudulhu@localhost}
       - PUBLIC_HOST=${PUBLIC_HOST:-}
-      - SSH_PORT=${SSH_PORT:-22}
+      - SSH_PORT=${SSH_PORT:-2222}
     volumes:
       - workspace:/workspace
       - claudulhu-data:/root/.claudulhu
