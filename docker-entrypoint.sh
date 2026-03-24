@@ -19,7 +19,7 @@ if [ -z "$PUBLIC_HOST" ]; then
     echo "[claudulhu] Detected public IP: ${PUBLIC_HOST}"
 fi
 
-SSH_PORT="${SSH_PORT:-2222}"
+SSH_PORT="${SSH_PORT:-22}"
 
 # ── SSH host key ───────────────────────────────────────────────────────────────
 # Generate a fresh Ed25519 host keypair every startup so each session gets

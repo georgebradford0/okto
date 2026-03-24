@@ -7,14 +7,14 @@ An agentic coding assistant that runs a Rust server, exposing a WebSocket API fo
 The server is available as a multi-platform Docker image (`linux/amd64`, `linux/arm64`):
 
 ```sh
-docker run -p 2222:2222 \
+docker run -p 22:22 \
   -e GIT_URL=https://github.com/user/repo \
   -e GIT_TOKEN=ghp_... \
   -e ANTHROPIC_API_KEY=sk-ant-... \
   ghcr.io/georgebradford0/claudulhu-server:latest
 ```
 
-On startup the container prints a QR code. Scan it with the mobile app to connect — the app establishes an SSH tunnel (port 2222) and routes all traffic through it. No TLS certificate required.
+On startup the container prints a QR code. Scan it with the mobile app to connect — the app establishes an SSH tunnel (port 22) and routes all traffic through it. No TLS certificate required.
 
 ### Environment variables
 
@@ -26,7 +26,7 @@ On startup the container prints a QR code. Scan it with the mobile app to connec
 | `GIT_TOKEN` | No | GitHub/GitLab personal access token (required for pushing to private repos or creating PRs) |
 | `GIT_USER_NAME` | No | Git commit author name (default: `claudulhu`) |
 | `GIT_USER_EMAIL` | No | Git commit author email (default: `claudulhu@localhost`) |
-| `SSH_PORT` | No | Port for the SSH tunnel endpoint (default: `2222`) |
+| `SSH_PORT` | No | Port for the SSH tunnel endpoint (default: `22`) |
 
 ### Git URL schemes
 
@@ -46,7 +46,7 @@ Two URL schemes are supported:
 Each container is independent. Run one per repo on different SSH ports:
 
 ```sh
-docker run -d -p 2222:2222 -e PUBLIC_HOST=1.2.3.4 -e SSH_PORT=2222 -e GIT_URL=https://github.com/user/repo-a ...
+docker run -d -p 22:22 -e PUBLIC_HOST=1.2.3.4 -e SSH_PORT=22 -e GIT_URL=https://github.com/user/repo-a ...
 docker run -d -p 2223:2223 -e PUBLIC_HOST=1.2.3.4 -e SSH_PORT=2223 -e GIT_URL=https://github.com/user/repo-b ...
 ```
 
