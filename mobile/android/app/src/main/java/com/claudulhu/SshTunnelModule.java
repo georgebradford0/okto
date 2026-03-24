@@ -131,7 +131,7 @@ public class SshTunnelModule extends NativeSshTunnelSpec {
                 // ------------------------------------------------------------------
                 JSch jsch = new JSch();
                 jsch.setHostKeyRepository(new PinnedHostKeyRepository(host, rawPub));
-                jsch.addIdentity(new Ed25519Identity(bcPriv, bcPub));
+                jsch.addIdentity(new Ed25519Identity(bcPriv, bcPub), null);
 
                 // ------------------------------------------------------------------
                 // 4. Open SSH session
@@ -361,7 +361,6 @@ public class SshTunnelModule extends NativeSshTunnelSpec {
             return "Ed25519Identity";
         }
 
-        @Override
         public String getFingerPrint() {
             return "Ed25519";
         }
