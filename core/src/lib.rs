@@ -24,6 +24,7 @@ pub fn config_path() -> PathBuf {
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Config {
     pub repo:    Option<String>,
+    pub name:    Option<String>,
     pub api_key: Option<String>,
     pub model:   Option<String>,
 }

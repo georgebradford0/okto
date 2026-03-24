@@ -115,7 +115,8 @@ fi
 
 # ── Write claudulhu config ────────────────────────────────────────────────────
 mkdir -p /root/.claudulhu
-printf '{"repo":"%s"}\n' "$WORKSPACE" > /root/.claudulhu/config.json
+REPO_NAME=$(basename "$GIT_URL" .git)
+printf '{"repo":"%s","name":"%s"}\n' "$WORKSPACE" "$REPO_NAME" > /root/.claudulhu/config.json
 
 echo "[claudulhu] Starting server (repo: $WORKSPACE)"
 exec claudulhu-server

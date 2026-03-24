@@ -591,6 +591,7 @@ function AppInner() {
   const [tabStatuses,  setTabStatuses]  = useState<Record<string, ConnStatus>>({ main: 'connecting' })
   const [branches,     setBranches]     = useState<Branch[]>([])
   const [showBranches, setShowBranches] = useState(false)
+  const [repoName,     setRepoName]     = useState<string | null>(null)
 
   // ── Load stored connection on mount ────────────────────────────────────────
   useEffect(() => {
@@ -622,6 +623,17 @@ function AppInner() {
     setTabs([{ id: 'main', label: 'main', wsUrl: `ws://127.0.0.1:${tunnelPort}/chat` }])
     setActiveTab('main')
     setTabStatuses({ main: 'connecting' })
+  }, [tunnelPort])
+
+  // ── Fetch repo name ────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!tunnelPort) { return }
+    fetch(`http://127.0.0.1:${tunnelPort}/config`)
+      .then(r => r.ok ? r.json() : null)
+      .then((d: { repo?: string | null; name?: string | null } | null) => {
+        setRepoName(d?.name ?? null)
+      })
+      .catch(() => {})
   }, [tunnelPort])
 
   // ── Poll branches ──────────────────────────────────────────────────────────
@@ -766,7 +778,10 @@ function AppInner() {
         <View style={s.header}>
           <View style={s.headerLeft}>
             <Text style={s.headerMark}>⬡</Text>
-            <Text style={s.headerTitle}>claudulhu</Text>
+            <View>
+              <Text style={s.headerTitle}>claudulhu</Text>
+              {repoName && <Text style={s.headerRepo}>{repoName}</Text>}
+            </View>
           </View>
           <View style={s.headerRight}>
             <TouchableOpacity style={s.iconBtn} onPress={() => setShowBranches(true)}>
@@ -907,6 +922,7 @@ const s = StyleSheet.create({
   headerRight:      { flexDirection: 'row', gap: 8 },
   headerMark:       { fontSize: 20, color: C.accent },
   headerTitle:      { fontSize: 17, fontWeight: '700', color: C.textPrimary, letterSpacing: 1 },
+  headerRepo:       { fontSize: 11, color: C.textSecondary, marginTop: 1 },
   iconBtn:          { backgroundColor: C.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderRadius: 7, paddingHorizontal: 10, paddingVertical: 6 },
   iconBtnText:      { color: C.textSecondary, fontSize: 13 },
 
