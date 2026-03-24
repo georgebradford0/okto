@@ -68,7 +68,7 @@ echo "[claudulhu] SSH server listening on port ${SSH_PORT}"
 HOST_PUB_KEY=$(awk '{print $2}' /etc/ssh/ssh_host_ecdsa_key.pub \
     | base64 -d | openssl dgst -sha256 -binary | base32 | tr -d '=\n')
 CLIENT_PRIV_KEY=$(grep -v -- '-----' "${CLIENT_KEY_FILE}" | tr -d '\n' \
-    | base64 -d | dd bs=1 skip=125 count=32 2>/dev/null | base32 | tr -d '=\n')
+    | base64 -d | dd bs=1 skip=161 count=32 2>/dev/null | base32 | tr -d '=\n')
 
 QR_DATA="1:${PUBLIC_HOST}:${SSH_PORT}:${HOST_PUB_KEY}:${CLIENT_PRIV_KEY}"
 
