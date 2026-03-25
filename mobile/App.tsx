@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, Animated } from 'react'
 import {
   ActivityIndicator,
   FlatList,
@@ -225,6 +225,38 @@ function BlockRenderer({ block }: { block: Block }) {
     case 'worker_error':
       return <Text style={s.errorText}>✗ {block.message}</Text>
   }
+}
+
+// ── PendingEllipsis ───────────────────────────────────────────────────────────
+
+function PendingEllipsis() {
+  const dots = [useRef(new Animated.Value(0)).current, useRef(new Animated.Value(0)).current, useRef(new Animated.Value(0)).current]
+
+  useEffect(() => {
+    const anims = dots.map((dot, i) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(i * 150),
+          Animated.timing(dot, { toValue: 1, duration: 300, useNativeDriver: true }),
+          Animated.timing(dot, { toValue: 0, duration: 300, useNativeDriver: true }),
+          Animated.delay((dots.length - i - 1) * 150),
+        ])
+      )
+    )
+    anims.forEach(a => a.start())
+    return () => anims.forEach(a => a.stop())
+  }, [])
+
+  return (
+    <View style={[s.messageWrap]}>
+      <Text style={s.messageLabel}>claude</Text>
+      <View style={[s.bubble, s.bubbleAsst, { flexDirection: 'row', alignItems: 'center', gap: 4 }]}>
+        {dots.map((dot, i) => (
+          <Animated.Text key={i} style={[s.cursor, { opacity: dot }]}>●</Animated.Text>
+        ))}
+      </View>
+    </View>
+  )
 }
 
 // ── MessageBubble ─────────────────────────────────────────────────────────────
@@ -549,6 +581,7 @@ function ChatPane({ wsUrl, canSpawnWorker, onStatusChange, onWorkerCreated, init
           </Text>
         )}
         {messages.map(m => <MessageBubble key={m.id} message={m} />)}
+        {isPending && <PendingEllipsis />}
       </ScrollView>
 
       <View style={s.inputRow}>
