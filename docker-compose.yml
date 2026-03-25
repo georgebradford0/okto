@@ -2,7 +2,6 @@ services:
   claudulhu:
     build: .
     ports:
-      - "8000:8000"
       - "${SSH_PORT:-2222}:${SSH_PORT:-2222}"
     environment:
       - GIT_URL=${GIT_URL}
