@@ -194,6 +194,9 @@ public class NoiseConnectionModule extends NativeNoiseConnectionSpec {
         // State
         byte[] h  = Arrays.copyOf(PROTOCOL_NAME, 32); // exactly 32 bytes
         byte[] ck = Arrays.copyOf(h, 32);
+        // MixHash(empty prologue) — required by Noise spec §5.6 even when prologue is empty.
+        // snow (server) calls this unconditionally; without it h diverges immediately.
+        h = mixHash(h, new byte[0]);
         byte[] k  = null;
         long   n  = 0;
 

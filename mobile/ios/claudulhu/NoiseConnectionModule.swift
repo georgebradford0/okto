@@ -138,7 +138,10 @@ private func fdWriteAll(_ fd: Int32, _ data: Data) throws {
         let n = data.withUnsafeBytes { ptr in
             Darwin.send(fd, ptr.baseAddress!.advanced(by: off), data.count - off, 0)
         }
-        guard n > 0 else { throw NoiseError.ioError }
+        if n <= 0 {
+            NSLog("[Noise] fdWriteAll: send=%d errno=%d off=%d/%d", n, errno, off, data.count)
+            throw NoiseError.ioError
+        }
         off += n
     }
 }
@@ -150,7 +153,10 @@ private func fdReadFully(_ fd: Int32, _ count: Int) throws -> Data {
         let n = buf.withUnsafeMutableBytes { ptr in
             Darwin.recv(fd, ptr.baseAddress!.advanced(by: off), count - off, 0)
         }
-        guard n > 0 else { throw NoiseError.ioError }
+        if n <= 0 {
+            NSLog("[Noise] fdReadFully: recv=%d errno=%d off=%d/%d", n, errno, off, count)
+            throw NoiseError.ioError
+        }
         off += n
     }
     return buf
@@ -179,12 +185,19 @@ private func runHandshake(remoteFd: Int32, serverPub: Data) throws -> NoiseTrans
     let sPriv = Curve25519.KeyAgreement.PrivateKey()
     let sPub  = Data(sPriv.publicKey.rawRepresentation)
 
+    // MixHash(empty prologue) — required by Noise spec §5.6 even when prologue is empty.
+    // snow (server) calls this unconditionally; without it h diverges immediately.
+    hs.mixHash(Data())
+
     // Message 1: → e
+    NSLog("[Noise] sending M1 (fd=%d)", remoteFd)
     hs.mixHash(ePub)
     try fdWriteFrame(remoteFd, ePub)
+    NSLog("[Noise] M1 sent, reading M2")
 
     // Message 2: ← e, ee, s, es  (96 bytes)
     let msg2 = try fdReadFrame(remoteFd)
+    NSLog("[Noise] M2 received len=%d", msg2.count)
     guard msg2.count == 96 else { throw NoiseError.badFrame("msg2 length \(msg2.count)") }
 
     let rePub = Data(msg2.prefix(32))
@@ -205,11 +218,13 @@ private func runHandshake(remoteFd: Int32, serverPub: Data) throws -> NoiseTrans
     _ = try hs.decryptAndHash(encEmpty2)
 
     // Message 3: → s, se
+    NSLog("[Noise] sending M3")
     let encS      = try hs.encryptAndHash(sPub)
     let se        = try x25519(priv: sPriv, pubBytes: rePub)
     hs.mixKey(se)
     let encEmpty3 = try hs.encryptAndHash(Data())
     try fdWriteFrame(remoteFd, encS + encEmpty3)
+    NSLog("[Noise] handshake complete")
 
     let (sendKey, recvKey) = hs.split()
     return NoiseTransport(sendKey: sendKey, recvKey: recvKey)
@@ -338,12 +353,14 @@ final class NoiseConnection: NSObject {
     }
 
     private func proxyConnection(localFd: Int32, host: String, port: Int, serverPub: Data) {
+        NSLog("[Noise] proxyConnection: connecting to %@:%d", host, port)
         let remoteFd = connectSocket(host: host, port: port)
         guard remoteFd >= 0 else {
-            NSLog("[NoiseConnection] failed to connect to \(host):\(port)")
+            NSLog("[Noise] connectSocket failed errno=%d", errno)
             Darwin.close(localFd)
             return
         }
+        NSLog("[Noise] TCP connected remoteFd=%d", remoteFd)
 
         do {
             let noise = try runHandshake(remoteFd: remoteFd, serverPub: serverPub)
@@ -377,7 +394,7 @@ final class NoiseConnection: NSObject {
 
             g.wait()
         } catch {
-            NSLog("[NoiseConnection] session error: \(error)")
+            NSLog("[Noise] session error: %@", error.localizedDescription)
         }
 
         Darwin.close(localFd)
