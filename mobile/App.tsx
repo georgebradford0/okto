@@ -18,16 +18,15 @@ import {
 } from 'react-native'
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
 import { Camera, useCameraDevice, useCodeScanner } from 'react-native-vision-camera'
-import SshTunnel from './src/NativeSshTunnel'
+import NoiseConnection from './src/NativeNoiseConnection'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-interface SshConnectionInfo {
+interface NoiseConnectionInfo {
   v:      number
   host:   string
   port:   number
-  hk:     string    // base64(SHA-256 fingerprint of ECDSA host key) — converted from QR base32
-  ck:     string    // base64(raw 32-byte Ed25519 private seed) — converted from QR base32
+  pk:     string    // base32-encoded 32-byte Curve25519 server static public key
   label?: string    // repo name, populated after first successful connect
 }
 
@@ -85,31 +84,16 @@ type ConnStatus = 'connecting' | 'ready' | 'resumed' | 'error' | 'disconnected'
 let _id = 0
 const uid = () => `m${++_id}`
 
-// Convert a base32 string (no padding) to a base64 string.
-// Used to decode the compact QR format where keys are base32-encoded.
-const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
-function base32ToBase64(b32: string): string {
-  let bits = 0, val = 0
-  const bytes: number[] = []
-  for (const c of b32) {
-    const idx = B32.indexOf(c)
-    if (idx < 0) continue
-    val = (val << 5) | idx
-    bits += 5
-    if (bits >= 8) { bytes.push((val >>> (bits - 8)) & 0xff); bits -= 8 }
-  }
-  return btoa(String.fromCharCode(...bytes))
-}
-
-function parseQrData(raw: string): SshConnectionInfo | null {
-  // Compact format v1: "1:host:port:hk_base32:ck_base32"
-  // All chars are in QR alphanumeric set → smaller QR code version.
+function parseQrData(raw: string): NoiseConnectionInfo | null {
+  // Format v2: "2:host:port:pk_base32"
+  // pk_base32 = base32(32-byte Curve25519 server static public key), 52 chars
+  // All chars uppercase+digits+colon → QR alphanumeric mode → compact QR.
   const parts = raw.split(':')
-  if (parts[0] === '1' && parts.length === 5) {
-    const [, host, portStr, hk32, ck32] = parts
+  if (parts[0] === '2' && parts.length === 4) {
+    const [, host, portStr, pk] = parts
     const port = parseInt(portStr, 10)
-    if (!host || isNaN(port)) return null
-    return { v: 1, host, port, hk: base32ToBase64(hk32), ck: base32ToBase64(ck32) }
+    if (!host || isNaN(port) || !pk) return null
+    return { v: 2, host, port, pk }
   }
   return null
 }
@@ -617,7 +601,7 @@ function ChatPane({ wsUrl, canSpawnWorker, onStatusChange, onWorkerCreated, init
 // ── ConnRow ───────────────────────────────────────────────────────────────────
 
 function ConnRow({ conn, isConnecting, error, onSelect, onDelete }: {
-  conn:         SshConnectionInfo
+  conn:         NoiseConnectionInfo
   isConnecting: boolean
   error:        string | null
   onSelect:     () => void
@@ -645,7 +629,7 @@ function ConnRow({ conn, isConnecting, error, onSelect, onDelete }: {
 // ── Root App ──────────────────────────────────────────────────────────────────
 
 function AppInner() {
-  const [sshConn,      setSshConn]      = useState<SshConnectionInfo | null>(null)
+  const [conn,         setConn]         = useState<NoiseConnectionInfo | null>(null)
   const [tunnelPort,   setTunnelPort]   = useState<number | null>(null)
   const [tunnelError,  setTunnelError]  = useState<string | null>(null)
   const [scanning,     setScanning]     = useState(false)
@@ -655,41 +639,33 @@ function AppInner() {
   const [branches,     setBranches]     = useState<Branch[]>([])
   const [showBranches, setShowBranches] = useState(false)
   const [repoName,     setRepoName]     = useState<string | null>(null)
-  const [savedConns,   setSavedConns]   = useState<SshConnectionInfo[]>([])
+  const [savedConns,   setSavedConns]   = useState<NoiseConnectionInfo[]>([])
 
-  // ── Load stored connections on mount (migrate old single-key format) ────────
+  // ── Load stored connections on mount ──────────────────────────────────────
   useEffect(() => {
-    AsyncStorage.multiGet(['sshConnections', 'sshConnection']).then(([[, newJson], [, oldJson]]) => {
-      let conns: SshConnectionInfo[] = []
-      if (newJson) {
-        try { conns = JSON.parse(newJson) } catch {}
-      } else if (oldJson) {
-        try {
-          conns = [JSON.parse(oldJson) as SshConnectionInfo]
-          AsyncStorage.setItem('sshConnections', JSON.stringify(conns))
-          AsyncStorage.removeItem('sshConnection')
-        } catch {}
-      }
+    AsyncStorage.getItem('noiseConnections').then(json => {
+      let conns: NoiseConnectionInfo[] = []
+      if (json) { try { conns = JSON.parse(json) } catch {} }
       setSavedConns(conns)
-      if (conns.length === 1) { setSshConn(conns[0]) }
+      if (conns.length === 1) { setConn(conns[0]) }
     })
   }, [])
 
-  // ── Establish SSH tunnel whenever sshConn changes ──────────────────────────
+  // ── Establish Noise tunnel whenever conn changes ──────────────────────────
   useEffect(() => {
     setTunnelPort(null)
     setTunnelError(null)
     setRepoName(null)
     setBranches([])
     setTabs([])
-    if (!sshConn) { return }
+    if (!conn) { return }
 
-    SshTunnel.connect(sshConn.host, sshConn.port, sshConn.hk, sshConn.ck)
+    NoiseConnection.connect(conn.host, conn.port, conn.pk)
       .then(port => { setTunnelPort(port) })
       .catch(e  => { setTunnelError(e?.message ?? String(e)) })
 
-    return () => { SshTunnel.disconnect() }
-  }, [sshConn])
+    return () => { NoiseConnection.disconnect() }
+  }, [conn])
 
   // ── Init tabs when tunnel is ready ─────────────────────────────────────────
   useEffect(() => {
@@ -701,7 +677,7 @@ function AppInner() {
 
   // ── Fetch repo name ────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!tunnelPort || !sshConn) { return }
+    if (!tunnelPort || !conn) { return }
     fetch(`http://127.0.0.1:${tunnelPort}/config`)
       .then(r => r.ok ? r.json() : null)
       .then((d: { repo?: string | null; name?: string | null } | null) => {
@@ -710,15 +686,15 @@ function AppInner() {
         if (name) {
           setSavedConns(prev => {
             const updated = prev.map(c =>
-              c.host === sshConn.host && c.port === sshConn.port ? { ...c, label: name } : c
+              c.host === conn.host && c.port === conn.port ? { ...c, label: name } : c
             )
-            AsyncStorage.setItem('sshConnections', JSON.stringify(updated))
+            AsyncStorage.setItem('noiseConnections', JSON.stringify(updated))
             return updated
           })
         }
       })
       .catch(() => {})
-  }, [tunnelPort, sshConn])
+  }, [tunnelPort, conn])
 
   // ── Poll branches ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -754,21 +730,21 @@ function AppInner() {
   const handleQrScanned = useCallback((raw: string) => {
     setScanning(false)
     console.log('[QR] raw:', JSON.stringify(raw))
-    const conn = parseQrData(raw)
-    console.log('[QR] parsed:', conn)
-    if (!conn) {
+    const parsed = parseQrData(raw)
+    console.log('[QR] parsed:', parsed)
+    if (!parsed) {
       setTunnelError('Invalid QR code — not a claudulhu connection QR')
       return
     }
     setSavedConns(prev => {
       const updated = [
-        ...prev.filter(c => !(c.host === conn.host && c.port === conn.port)),
-        conn,
+        ...prev.filter(c => !(c.host === parsed.host && c.port === parsed.port)),
+        parsed,
       ]
-      AsyncStorage.setItem('sshConnections', JSON.stringify(updated))
+      AsyncStorage.setItem('noiseConnections', JSON.stringify(updated))
       return updated
     })
-    setSshConn(conn)
+    setConn(parsed)
   }, [])
 
   const requestCameraAndScan = useCallback(async () => {
@@ -779,20 +755,20 @@ function AppInner() {
     setScanning(true)
   }, [])
 
-  const selectConn = useCallback((c: SshConnectionInfo) => {
-    setSshConn(c)
+  const selectConn = useCallback((c: NoiseConnectionInfo) => {
+    setConn(c)
   }, [])
 
-  const deleteConn = useCallback((c: SshConnectionInfo) => {
+  const deleteConn = useCallback((c: NoiseConnectionInfo) => {
     setSavedConns(prev => {
       const updated = prev.filter(x => !(x.host === c.host && x.port === c.port))
-      AsyncStorage.setItem('sshConnections', JSON.stringify(updated))
+      AsyncStorage.setItem('noiseConnections', JSON.stringify(updated))
       return updated
     })
-    if (sshConn?.host === c.host && sshConn?.port === c.port) {
-      setSshConn(null)
+    if (conn?.host === c.host && conn?.port === c.port) {
+      setConn(null)
     }
-  }, [sshConn])
+  }, [conn])
 
   const openTab = useCallback((branch: string, _worktreePath: string, initialMessage?: string) => {
     if (!tunnelPort) { return }
@@ -864,8 +840,8 @@ function AppInner() {
               renderItem={({ item }) => (
                 <ConnRow
                   conn={item}
-                  isConnecting={sshConn?.host === item.host && sshConn?.port === item.port && !tunnelError}
-                  error={sshConn?.host === item.host && sshConn?.port === item.port ? tunnelError : null}
+                  isConnecting={conn?.host === item.host && conn?.port === item.port && !tunnelError}
+                  error={conn?.host === item.host && conn?.port === item.port ? tunnelError : null}
                   onSelect={() => selectConn(item)}
                   onDelete={() => deleteConn(item)}
                 />
@@ -903,7 +879,7 @@ function AppInner() {
             <TouchableOpacity style={s.iconBtn} onPress={() => setShowBranches(true)}>
               <Text style={s.iconBtnText}>⎇ {activeWorktrees}</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={s.iconBtn} onPress={() => setSshConn(null)}>
+            <TouchableOpacity style={s.iconBtn} onPress={() => setConn(null)}>
               <Text style={s.iconBtnText}>⬡</Text>
             </TouchableOpacity>
           </View>

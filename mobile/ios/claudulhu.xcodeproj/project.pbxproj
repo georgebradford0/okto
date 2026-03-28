@@ -12,6 +12,8 @@
 		68C787C78F268F9A20A78F56 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
+		AA11BB221A68108700A75C1A /* NoiseConnectionModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11BB211A68108700A75C1A /* NoiseConnectionModule.swift */; };
+		AA11BB251A68108700A75C1A /* NoiseConnectionModule.m in Sources */ = {isa = PBXBuildFile; fileRef = AA11BB241A68108700A75C1A /* NoiseConnectionModule.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -24,6 +26,8 @@
 		5DCACB8F33CDC322A6C60F78 /* libPods-claudulhu.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-claudulhu.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = claudulhu/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = claudulhu/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		AA11BB211A68108700A75C1A /* NoiseConnectionModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NoiseConnectionModule.swift; path = claudulhu/NoiseConnectionModule.swift; sourceTree = "<group>"; };
+		AA11BB241A68108700A75C1A /* NoiseConnectionModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = NoiseConnectionModule.m; path = claudulhu/NoiseConnectionModule.m; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -44,6 +48,8 @@
 			children = (
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				761780EC2CA45674006654EE /* AppDelegate.swift */,
+				AA11BB211A68108700A75C1A /* NoiseConnectionModule.swift */,
+				AA11BB241A68108700A75C1A /* NoiseConnectionModule.m */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */,
 				13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */,
@@ -247,6 +253,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				761780ED2CA45674006654EE /* AppDelegate.swift in Sources */,
+				AA11BB221A68108700A75C1A /* NoiseConnectionModule.swift in Sources */,
+				AA11BB251A68108700A75C1A /* NoiseConnectionModule.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -260,6 +268,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Y9M847D6NV;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = claudulhu/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
@@ -290,6 +299,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Y9M847D6NV;
 				INFOPLIST_FILE = claudulhu/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (

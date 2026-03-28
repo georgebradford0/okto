@@ -123,7 +123,6 @@ dependencies {
         implementation jscFlavor
     }
 
-    // SSH tunnel dependencies
-    implementation("com.jcraft:jsch:0.1.55")
+    // Noise protocol crypto (Curve25519, ChaCha20-Poly1305, HMAC-SHA256)
     implementation("org.bouncycastle:bcprov-jdk15on:1.70")
 }

@@ -32,11 +32,9 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
     git \
-    openssh-server \
     qrencode \
     ca-certificates \
     curl \
-    openssl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/claudulhu-server /usr/local/bin/claudulhu-server
@@ -47,7 +45,7 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENV HOME=/root
 ENV CLAUDULHU_SKIP_SHELL_ENV=1
 
-# 8000: claudulhu WebSocket/HTTP  22: SSH tunnel endpoint
-EXPOSE 8000 2222
+# 9000: Noise TCP proxy (Noise_XX_25519_ChaChaPoly_SHA256)
+EXPOSE 9000
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

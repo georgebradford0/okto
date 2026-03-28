@@ -19,67 +19,26 @@ if [ -z "$PUBLIC_HOST" ]; then
     echo "[claudulhu] Detected public IP: ${PUBLIC_HOST}"
 fi
 
-SSH_PORT="${SSH_PORT:-2222}"
+NOISE_PORT="${NOISE_PORT:-9000}"
 
-# ── SSH host key ───────────────────────────────────────────────────────────────
-# ECDSA P-256: Android JCE supports it since API 11. Ed25519 JCE is API 33+
-# and JSch 0.1.55 uses JCE for host key verification, so Ed25519 fails on
-# older devices. Client auth still uses Ed25519 (our own BouncyCastle impl).
-rm -f /etc/ssh/ssh_host_ecdsa_key /etc/ssh/ssh_host_ecdsa_key.pub
-ssh-keygen -t ecdsa -b 256 -f /etc/ssh/ssh_host_ecdsa_key -N "" -q
-
-# ── SSH client key (for the mobile app) ───────────────────────────────────────
-CLIENT_KEY_FILE=/tmp/claudulhu_client
-rm -f "${CLIENT_KEY_FILE}" "${CLIENT_KEY_FILE}.pub"
-ssh-keygen -t ed25519 -f "${CLIENT_KEY_FILE}" -N "" -q
-
-mkdir -p /root/.ssh
-chmod 700 /root/.ssh
-# restrict to port-forwarding only — no shell, no X11, no agent forwarding
-printf 'restrict,port-forwarding %s\n' "$(cat "${CLIENT_KEY_FILE}.pub")" \
-    > /root/.ssh/authorized_keys
-chmod 600 /root/.ssh/authorized_keys
-
-# ── sshd config ───────────────────────────────────────────────────────────────
-mkdir -p /var/run/sshd
-cat > /etc/ssh/sshd_config << EOF
-Port ${SSH_PORT}
-HostKey /etc/ssh/ssh_host_ecdsa_key
-AuthorizedKeysFile /root/.ssh/authorized_keys
-PasswordAuthentication no
-ChallengeResponseAuthentication no
-KbdInteractiveAuthentication no
-UsePAM no
-AllowTcpForwarding yes
-GatewayPorts no
-X11Forwarding no
-PrintMotd no
-AcceptEnv LANG LC_*
-EOF
-
-/usr/sbin/sshd -f /etc/ssh/sshd_config
-echo "[claudulhu] SSH server listening on port ${SSH_PORT}"
+# ── Noise key ─────────────────────────────────────────────────────────────────
+# Generate (or load) the server's static Curve25519 keypair and print the
+# base32-encoded public key.  The key file is persisted across container
+# restarts so the client only needs to re-scan the QR if the volume is lost.
+mkdir -p /etc/claudulhu
+NOISE_PUBKEY=$(claudulhu-server --print-pubkey)
+echo "[claudulhu] Noise public key: ${NOISE_PUBKEY}"
 
 # ── QR code ───────────────────────────────────────────────────────────────────
-# hk: base32(SHA-256 fingerprint of server's ECDSA host key wire blob) — 52 chars
-# ck: base32(raw 32-byte Ed25519 client private key seed) — 52 chars
-# All chars uppercase+digits+colon+dot → QR alphanumeric mode → smaller QR version.
-# Colon-delimited format: "1:<host>:<port>:<hk52>:<ck52>"
-HOST_PUB_KEY=$(awk '{print $2}' /etc/ssh/ssh_host_ecdsa_key.pub \
-    | base64 -d | openssl dgst -sha256 -binary | base32 | tr -d '=\n')
-CLIENT_PRIV_KEY=$(grep -v -- '-----' "${CLIENT_KEY_FILE}" | tr -d '\n' \
-    | base64 -d | dd bs=1 skip=161 count=32 2>/dev/null | base32 | tr -d '=\n')
-
-QR_DATA="1:${PUBLIC_HOST}:${SSH_PORT}:${HOST_PUB_KEY}:${CLIENT_PRIV_KEY}"
+# Format v2: "2:<host>:<port>:<pubkey_base32>"
+# All chars uppercase+digits+colon → QR alphanumeric mode → compact QR.
+QR_DATA="2:${PUBLIC_HOST}:${NOISE_PORT}:${NOISE_PUBKEY}"
 
 echo ""
 echo "[claudulhu] Scan this QR code with the app to connect:"
 echo ""
 printf '%s' "${QR_DATA}" | qrencode -l L -m 4 -t UTF8 -o -
 echo ""
-
-# Private key no longer needed on disk — app has it from the QR
-rm -f "${CLIENT_KEY_FILE}" "${CLIENT_KEY_FILE}.pub"
 
 # ── Git authentication ────────────────────────────────────────────────────────
 if [ -n "$GIT_TOKEN" ]; then
