@@ -35,6 +35,8 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Camera is used to scan QR codes for server connection setup.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>This app does not use your location. This string is required because a framework dependency references location APIs.</string>
 <key>RCTNewArchEnabled</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>
