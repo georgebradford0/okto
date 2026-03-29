@@ -186,4 +186,14 @@ jobs:
           echo "Key file size: $(wc -c < /tmp/api_key.p8) bytes"
           IPA_PATH=$(find ios/build/ipa -name "*.ipa" | head -1)
           echo "Uploading: $IPA_PATH"
-          APP_STORE_CONNECT_API_KEY_PATH="/tmp/api_key.p8" IPA_PATH="$IPA_PATH" bundle exec fastlane ios testflight
+          # Verify auth works before uploading
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $(ruby -e "
+              require 'jwt'
+              key = OpenSSL::PKey::EC.new(File.read('/tmp/api_key.p8'))
+              payload = {iss: ENV['APP_STORE_CONNECT_API_KEY_ISSUER_ID'], exp: Time.now.to_i + 60, aud: 'appstoreconnect-v1'}
+              puts JWT.encode(payload, key, 'ES256', {kid: ENV['APP_STORE_CONNECT_API_KEY_ID'], typ: 'JWT'})
+            ")" \
+            https://api.appstoreconnect.apple.com/v1/apps 2>/dev/null || echo "ruby_error")
+          echo "App Store Connect API auth test: HTTP $HTTP"
+          APP_STORE_CONNECT_API_KEY_PATH="/tmp/api_key.p8" IPA_PATH="$IPA_PATH" bundle exec fastlane ios upload_tf
