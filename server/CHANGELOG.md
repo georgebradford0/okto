@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.0.4] - 2026-03-28
+
+### Changed
+- `GH_TOKEN` can now be supplied via a mounted secret file (`/run/secrets/gh_token`) as a fallback when the env var is not set:
+  ```
+  --mount type=secret,id=gh_token,target=/run/secrets/gh_token
+  ```
+
 ## [0.0.3] - 2026-03-28
 
 ### Fixed

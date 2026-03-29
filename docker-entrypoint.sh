@@ -41,10 +41,17 @@ printf '%s' "${QR_DATA}" | qrencode -l L -m 4 -t UTF8 -o -
 echo ""
 
 # ── Git authentication ────────────────────────────────────────────────────────
+# Allow token via env var or mounted secret file (/run/secrets/gh_token).
+if [ -z "$GH_TOKEN" ] && [ -f /run/secrets/gh_token ]; then
+    GH_TOKEN=$(cat /run/secrets/gh_token)
+fi
+
 case "$GIT_URL" in
   https://*)
     if [ -z "$GH_TOKEN" ]; then
-        echo "ERROR: GH_TOKEN is required for HTTPS git URLs. Pass -e GH_TOKEN=<token>." >&2
+        echo "ERROR: GH_TOKEN is required for HTTPS git URLs." >&2
+        echo "  Pass -e GH_TOKEN=<token>  or  mount a secret:" >&2
+        echo "  --mount type=secret,id=gh_token,target=/run/secrets/gh_token" >&2
         exit 1
     fi
     CLONE_URL=$(echo "$GIT_URL" | sed 's|https://\(.*@\)\?|https://'"$GH_TOKEN"'@|')
