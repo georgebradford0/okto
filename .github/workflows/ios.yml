@@ -119,8 +119,11 @@ jobs:
         env:
           PROFILE: ${{ secrets.PROVISIONING_PROFILE }}
         run: |
+          echo "$PROFILE" | base64 --decode > /tmp/profile.mobileprovision
+          UUID=$(security cms -D -i /tmp/profile.mobileprovision | plutil -extract UUID raw -)
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          echo "$PROFILE" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/profile.mobileprovision
+          cp /tmp/profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/${UUID}.mobileprovision
+          echo "PROFILE_UUID=$UUID" >> $GITHUB_ENV
 
       - name: Set build number
         run: |
@@ -129,16 +132,19 @@ jobs:
 
       - name: Archive
         run: |
+          set -o pipefail
           xcodebuild archive \
             -workspace ios/claudulhu.xcworkspace \
             -scheme claudulhu \
             -configuration Release \
             -archivePath ios/build/claudulhu.xcarchive \
             CODE_SIGN_STYLE=Manual \
+            PROVISIONING_PROFILE="$PROFILE_UUID" \
             | xcpretty
 
       - name: Export IPA
         run: |
+          set -o pipefail
           xcodebuild -exportArchive \
             -archivePath ios/build/claudulhu.xcarchive \
             -exportPath ios/build/ipa \
