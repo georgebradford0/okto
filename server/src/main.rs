@@ -1,12 +1,14 @@
 use std::{
     collections::HashMap,
+    fs,
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path, State,
+        Path, Query, State,
     },
     http::{Method, StatusCode},
     response::IntoResponse,
@@ -348,6 +350,43 @@ async fn health_handler() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
 
+#[derive(Deserialize)]
+struct CompletionQuery {
+    dir_part: Option<String>,
+    file_part: Option<String>,
+}
+
+async fn get_completions_handler(Query(params): Query<CompletionQuery>) -> Json<Vec<String>> {
+    let cfg      = read_config();
+    let repo     = effective_repo(&cfg);
+    let dir_part = params.dir_part.unwrap_or_default();
+    let file_part = params.file_part.unwrap_or_default();
+
+    let mut seen    = std::collections::HashSet::new();
+    let mut results = Vec::new();
+
+    let search_dir = PathBuf::from(&repo).join(&dir_part);
+    if let Ok(entries) = fs::read_dir(&search_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') && !file_part.starts_with('.') { continue; }
+            if !name.to_lowercase().starts_with(&file_part.to_lowercase()) { continue; }
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let completion = if is_dir {
+                format!("{}{}/", dir_part, name)
+            } else {
+                format!("{}{}", dir_part, name)
+            };
+            if seen.insert(completion.clone()) {
+                results.push(completion);
+            }
+        }
+    }
+
+    results.sort();
+    Json(results)
+}
+
 async fn get_branches_handler(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
     let cfg  = read_config();
     let repo = effective_repo(&cfg);
@@ -479,6 +518,7 @@ async fn main() {
     let app = Router::new()
         .route("/health",          get(health_handler))
         .route("/branches",        get(get_branches_handler))
+        .route("/completions",     get(get_completions_handler))
         .route("/config",          get(get_config_handler).put(update_config_handler))
         .route("/chat",            get(chat_ws_handler))
         .route("/workers/:branch", get(worker_ws_handler))

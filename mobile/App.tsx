@@ -325,19 +325,34 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
 
 interface ChatPaneProps {
   wsUrl:           string
+  tunnelPort:      number
+  branches:        Branch[]
   canSpawnWorker:  boolean
   onStatusChange:  (s: ConnStatus) => void
   onWorkerCreated: (branch: string, worktreePath: string, task: string) => void
   initialMessage?: string
 }
 
-function ChatPane({ wsUrl, canSpawnWorker, onStatusChange, onWorkerCreated, initialMessage }: ChatPaneProps) {
+function parseAtCompletion(text: string): { atPos: number; dirPart: string; filePart: string } | null {
+  const atIdx = text.lastIndexOf('@')
+  if (atIdx === -1) return null
+  const fragment = text.slice(atIdx + 1)
+  if (fragment.includes(' ')) return null
+  const slash = fragment.lastIndexOf('/')
+  const dirPart  = slash >= 0 ? fragment.slice(0, slash + 1) : ''
+  const filePart = slash >= 0 ? fragment.slice(slash + 1)    : fragment
+  return { atPos: atIdx, dirPart, filePart }
+}
+
+function ChatPane({ wsUrl, tunnelPort, branches, canSpawnWorker, onStatusChange, onWorkerCreated, initialMessage }: ChatPaneProps) {
   const [messages,        setMessages]        = useState<ChatMessage[]>([])
   const [status,          setStatus]          = useState<ConnStatus>('connecting')
   const [isStreaming,     setIsStreaming]      = useState(false)
   const [isPending,       setIsPending]       = useState(false)
   const [pendingQuestion, setPendingQuestion] = useState(false)
   const [input,           setInput]           = useState('')
+  const [completions,     setCompletions]     = useState<string[]>([])
+  const [compQuery,       setCompQuery]       = useState<{ atPos: number; dirPart: string; filePart: string } | null>(null)
 
   const wsRef              = useRef<WebSocket | null>(null)
   const inResponseRef      = useRef(false)
@@ -561,7 +576,7 @@ function ChatPane({ wsUrl, canSpawnWorker, onStatusChange, onWorkerCreated, init
       ws.send(JSON.stringify({ type: 'message', text }))
       setIsPending(true)
     }
-    setInput('')
+    setInput(''); setCompletions([]); setCompQuery(null)
   }, [input, isStreaming, pendingQuestion])
 
   const spawnWorker = useCallback(() => {
@@ -571,11 +586,47 @@ function ChatPane({ wsUrl, canSpawnWorker, onStatusChange, onWorkerCreated, init
     if (!ws || ws.readyState !== WebSocket.OPEN) { return }
     ws.send(JSON.stringify({ type: 'spawn_worker', task: text }))
     setMessages(prev => [...prev, { id: uid(), role: 'user', streaming: false, blocks: [{ kind: 'text', text }] }])
-    setInput('')
+    setInput(''); setCompletions([]); setCompQuery(null)
     setIsPending(true)
     inResponseRef.current = true
     setIsStreaming(true)
   }, [input, isStreaming])
+
+  const updateCompletions = useCallback((query: { atPos: number; dirPart: string; filePart: string }) => {
+    setCompQuery(query)
+    const worktreeItems = query.dirPart === ''
+      ? branches
+          .filter(b => b.worktree && b.name.toLowerCase().startsWith(query.filePart.toLowerCase()))
+          .map(b => `⎇ ${b.name}`)
+      : []
+    const params = new URLSearchParams({ dir_part: query.dirPart, file_part: query.filePart })
+    fetch(`http://127.0.0.1:${tunnelPort}/completions?${params}`)
+      .then(r => r.ok ? (r.json() as Promise<string[]>) : Promise.resolve([]))
+      .then(items => setCompletions([...worktreeItems, ...items]))
+      .catch(() => setCompletions(worktreeItems))
+  }, [branches, tunnelPort])
+
+  const handleInputChange = useCallback((text: string) => {
+    setInput(text)
+    const query = parseAtCompletion(text)
+    if (!query) { setCompletions([]); setCompQuery(null); return }
+    updateCompletions(query)
+  }, [updateCompletions])
+
+  const acceptCompletion = useCallback((completion: string) => {
+    if (!compQuery) return
+    const inserted = completion.startsWith('⎇ ') ? completion.slice(2) : completion
+    const suffix = inserted.endsWith('/') ? '' : ' '
+    const next = input.slice(0, compQuery.atPos + 1) + inserted + suffix
+    setInput(next)
+    const newQuery = inserted.endsWith('/') ? parseAtCompletion(next) : null
+    if (newQuery) {
+      updateCompletions(newQuery)
+    } else {
+      setCompletions([])
+      setCompQuery(null)
+    }
+  }, [compQuery, input, updateCompletions])
 
   const canSend = !!input.trim() && (pendingQuestion || (!isStreaming && (status === 'ready' || status === 'resumed')))
 
@@ -596,11 +647,20 @@ function ChatPane({ wsUrl, canSpawnWorker, onStatusChange, onWorkerCreated, init
         {isPending && <PendingEllipsis />}
       </ScrollView>
 
+      {completions.length > 0 && (
+        <ScrollView style={s.completionList} keyboardShouldPersistTaps="always">
+          {completions.map((c, i) => (
+            <TouchableOpacity key={`${c}${i}`} style={s.completionItem} onPress={() => acceptCompletion(c)}>
+              <Text style={s.completionText} numberOfLines={1}>{c}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      )}
       <View style={s.inputRow}>
         <TextInput
           style={s.input}
           value={input}
-          onChangeText={setInput}
+          onChangeText={handleInputChange}
           placeholder={pendingQuestion ? 'answer…' : 'message…'}
           placeholderTextColor={C.textMuted}
           multiline
@@ -938,6 +998,8 @@ function AppInner() {
           <View key={tab.id} style={tab.id === activeTab ? s.paneVisible : s.paneHidden}>
             <ChatPane
               wsUrl={tab.wsUrl}
+              tunnelPort={tunnelPort}
+              branches={branches}
               canSpawnWorker={tab.id === 'main'}
               onStatusChange={handleStatusChange(tab.id)}
               onWorkerCreated={handleWorkerCreated}
@@ -1110,6 +1172,11 @@ const s = StyleSheet.create({
   // Tool blocks
   toolLine:         { color: C.textMuted, fontSize: 12, fontFamily: MONO, marginTop: 4 },
   monoText:         { color: C.textSecondary, fontSize: 12, fontFamily: MONO, lineHeight: 18 },
+
+  // Completions
+  completionList:     { backgroundColor: C.surface, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, maxHeight: 160 },
+  completionItem:     { paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
+  completionText:     { color: C.textSecondary, fontSize: 13, fontFamily: MONO },
 
   // Input
   inputRow:         { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 12, paddingVertical: 10, paddingBottom: Platform.OS === 'android' ? 14 : 10, gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, backgroundColor: C.surface },
