@@ -58,16 +58,24 @@ jobs:
           ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
         run: echo "$ANDROID_KEYSTORE" | base64 --decode > /tmp/claudulhu-upload-key.keystore
 
-      - name: Set signing properties
+      - name: Write gradle.properties
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          echo "ORG_GRADLE_PROJECT_RELEASE_STORE_FILE=/tmp/claudulhu-upload-key.keystore" >> $GITHUB_ENV
-          echo "ORG_GRADLE_PROJECT_RELEASE_STORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> $GITHUB_ENV
-          echo "ORG_GRADLE_PROJECT_RELEASE_KEY_ALIAS=$ANDROID_KEY_ALIAS" >> $GITHUB_ENV
-          echo "ORG_GRADLE_PROJECT_RELEASE_KEY_PASSWORD=$ANDROID_KEY_PASSWORD" >> $GITHUB_ENV
+          printf '%s\n' \
+            'org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m' \
+            'android.useAndroidX=true' \
+            'reactNativeArchitectures=armeabi-v7a,arm64-v8a,x86,x86_64' \
+            'newArchEnabled=true' \
+            'hermesEnabled=true' \
+            'edgeToEdgeEnabled=false' \
+            "RELEASE_STORE_FILE=/tmp/claudulhu-upload-key.keystore" \
+            "RELEASE_STORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" \
+            "RELEASE_KEY_ALIAS=$ANDROID_KEY_ALIAS" \
+            "RELEASE_KEY_PASSWORD=$ANDROID_KEY_PASSWORD" \
+            > android/gradle.properties
 
       - name: Decode service account JSON
         env:
