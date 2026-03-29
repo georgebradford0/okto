@@ -3,7 +3,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Animated,
   ActivityIndicator,
+  AppState,
   FlatList,
+  Image,
   KeyboardAvoidingView,
   Modal,
   PermissionsAndroid,
@@ -240,6 +242,23 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       {message.blocks.map((block, i) => <BlockRenderer key={i} block={block} />)}
       {message.streaming && <Text style={s.cursor}>▋</Text>}
     </View>
+  )
+}
+
+// ── CreatureAnim ──────────────────────────────────────────────────────────────
+
+function CreatureAnim() {
+  const slideX = useRef(new Animated.Value(-300)).current
+
+  useEffect(() => {
+    Animated.timing(slideX, { toValue: 0, duration: 700, useNativeDriver: true }).start()
+  }, [])
+
+  return (
+    <Animated.Image
+      source={require('./assets/creature.png')}
+      style={[s.creatureImg, { transform: [{ translateX: slideX }] }]}
+    />
   )
 }
 
@@ -501,6 +520,17 @@ function ChatPane({ wsUrl, canSpawnWorker, onStatusChange, onWorkerCreated, init
       wsRef.current?.close()
     }
   }, [wsUrl, handleFrame, updateStatus])
+
+  // Force-reconnect when returning to foreground — iOS silently kills the socket
+  // while backgrounded, leaving readyState=OPEN but the connection dead.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', nextState => {
+      if (nextState === 'active') {
+        wsRef.current?.close()
+      }
+    })
+    return () => sub.remove()
+  }, [])
 
   // Send initial message once ready
   useEffect(() => {
@@ -818,7 +848,7 @@ function AppInner() {
       <SafeAreaView style={s.setupSafe} edges={['top', 'bottom']}>
         {savedConns.length === 0 ? (
           <View style={s.setupCenter}>
-            <Text style={s.setupMark}>⬡</Text>
+            <CreatureAnim />
             <Text style={s.setupTitle}>claudulhu</Text>
             <Text style={s.setupDesc}>Scan the QR code printed by the Docker container</Text>
             <TouchableOpacity style={s.setupBtn} onPress={requestCameraAndScan}>
@@ -828,7 +858,7 @@ function AppInner() {
         ) : (
           <View style={s.pickerWrap}>
             <View style={s.pickerHeader}>
-              <Text style={s.setupMark}>⬡</Text>
+              <CreatureAnim />
               <Text style={s.setupTitle}>claudulhu</Text>
             </View>
             <FlatList
@@ -974,30 +1004,32 @@ const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace'
 
 const s = StyleSheet.create({
   // Setup / connecting screen
-  setupSafe:        { flex: 1, backgroundColor: C.bg },
+  setupSafe:        { flex: 1, backgroundColor: '#EB4F0B' },
   setupCenter:      { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 40, gap: 16 },
-  setupMark:        { fontSize: 48, color: C.accent },
-  setupTitle:       { fontSize: 26, fontWeight: '700', color: C.textPrimary, letterSpacing: 2 },
-  setupDesc:        { fontSize: 15, color: C.textSecondary, textAlign: 'center', lineHeight: 22 },
-  setupStatus:      { fontSize: 15, color: C.textMuted, textAlign: 'center' },
-  setupError:       { fontSize: 14, color: C.red, textAlign: 'center', lineHeight: 20 },
-  setupBtn:         { backgroundColor: C.accent, borderRadius: 12, paddingVertical: 14, paddingHorizontal: 32, alignItems: 'center', marginTop: 8 },
-  setupBtnText:     { color: '#fff', fontWeight: '700', fontSize: 16 },
+  setupMark:        { fontSize: 48, color: '#fff' },
+  setupTitle:       { fontSize: 26, fontWeight: '700', color: '#fff', letterSpacing: 2 },
+  setupDesc:        { fontSize: 15, color: 'rgba(255,255,255,0.85)', textAlign: 'center', lineHeight: 22 },
+  setupStatus:      { fontSize: 15, color: 'rgba(255,255,255,0.7)', textAlign: 'center' },
+  setupError:       { fontSize: 14, color: '#ffe0d6', textAlign: 'center', lineHeight: 20 },
+  setupBtn:         { backgroundColor: '#fff', borderRadius: 12, paddingVertical: 14, paddingHorizontal: 32, alignItems: 'center', marginTop: 8 },
+  setupBtnText:     { color: '#EB4F0B', fontWeight: '700', fontSize: 16 },
 
   // Connection picker
-  pickerWrap:       { flex: 1 },
+  pickerWrap:       { flex: 1, backgroundColor: '#EB4F0B' },
   pickerHeader:     { alignItems: 'center', paddingTop: 48, paddingBottom: 24, gap: 8 },
   pickerFooter:     { paddingHorizontal: 24, paddingBottom: 24, paddingTop: 16 },
   pickerScanBtn:    { width: '100%' },
   connList:         { flex: 1 },
-  connRow:          { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 24, paddingVertical: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
+  connRow:          { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 24, paddingVertical: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(255,255,255,0.25)' },
   connInfo:         { flex: 1 },
-  connLabel:        { color: C.textPrimary, fontSize: 16, fontWeight: '600' },
-  connHost:         { color: C.textMuted, fontSize: 12, marginTop: 2 },
-  connError:        { color: C.red, fontSize: 12, marginTop: 4 },
-  connDelete:       { color: C.textMuted, fontSize: 18, paddingLeft: 16 },
+  connLabel:        { color: '#fff', fontSize: 16, fontWeight: '600' },
+  connHost:         { color: 'rgba(255,255,255,0.7)', fontSize: 12, marginTop: 2 },
+  connError:        { color: '#ffe0d6', fontSize: 12, marginTop: 4 },
+  connDelete:       { color: 'rgba(255,255,255,0.6)', fontSize: 18, paddingLeft: 16 },
 
   // QR scanner
+  creatureImg:       { width: 120, height: 120, borderRadius: 26, marginBottom: 12 },
+
   scannerFull:      { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', zIndex: 100 },
   scannerOverlay:   { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'space-between', paddingVertical: 60 },
   scannerTopBar:    { alignItems: 'center', gap: 8, paddingHorizontal: 32 },

@@ -1,0 +1,140 @@
+name: iOS Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build iOS (Simulator)
+    runs-on: macos-15
+
+    defaults:
+      run:
+        working-directory: mobile
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Install xcpretty
+        run: gem install xcpretty --no-document
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: mobile/ios/Pods
+          key: pods-${{ hashFiles('mobile/ios/Podfile.lock') }}
+          restore-keys: pods-
+
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          pod install --repo-update
+
+      - name: Build for simulator (no signing)
+        run: |
+          xcodebuild \
+            -workspace ios/claudulhu.xcworkspace \
+            -scheme claudulhu \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -derivedDataPath ios/build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty || cat /tmp/xcodebuild.log
+
+  # Uncomment and configure this job to upload to TestFlight.
+  # Requires these GitHub Secrets:
+  #   APPLE_ID              — your Apple ID email
+  #   APP_STORE_CONNECT_API_KEY_ID
+  #   APP_STORE_CONNECT_API_KEY_ISSUER_ID
+  #   APP_STORE_CONNECT_API_KEY_CONTENT  — base64-encoded .p8 key file
+  #   DISTRIBUTION_CERTIFICATE_P12       — base64-encoded .p12 cert
+  #   DISTRIBUTION_CERTIFICATE_PASSWORD  — password for the .p12
+  #   PROVISIONING_PROFILE               — base64-encoded .mobileprovision
+
+  # distribute:
+  #   name: TestFlight
+  #   runs-on: macos-15
+  #   needs: build
+  #   if: github.ref == 'refs/heads/main'
+  #
+  #   defaults:
+  #     run:
+  #       working-directory: mobile
+  #
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - uses: actions/setup-node@v4
+  #       with:
+  #         node-version: '22'
+  #         cache: 'npm'
+  #         cache-dependency-path: mobile/package-lock.json
+  #
+  #     - run: npm ci
+  #
+  #     - name: Import signing certificate
+  #       env:
+  #         CERT_P12: ${{ secrets.DISTRIBUTION_CERTIFICATE_P12 }}
+  #         CERT_PASSWORD: ${{ secrets.DISTRIBUTION_CERTIFICATE_PASSWORD }}
+  #       run: |
+  #         echo "$CERT_P12" | base64 --decode > /tmp/cert.p12
+  #         security create-keychain -p "" build.keychain
+  #         security import /tmp/cert.p12 -k build.keychain -P "$CERT_PASSWORD" -T /usr/bin/codesign
+  #         security list-keychains -s build.keychain
+  #         security set-keychain-settings build.keychain
+  #         security unlock-keychain -p "" build.keychain
+  #         security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
+  #
+  #     - name: Install provisioning profile
+  #       env:
+  #         PROFILE: ${{ secrets.PROVISIONING_PROFILE }}
+  #       run: |
+  #         mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+  #         echo "$PROFILE" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/profile.mobileprovision
+  #
+  #     - name: Install CocoaPods
+  #       run: cd ios && pod install --repo-update
+  #
+  #     - name: Archive
+  #       run: |
+  #         xcodebuild archive \
+  #           -workspace ios/claudulhu.xcworkspace \
+  #           -scheme claudulhu \
+  #           -configuration Release \
+  #           -archivePath ios/build/claudulhu.xcarchive \
+  #           | xcpretty
+  #
+  #     - name: Export IPA
+  #       run: |
+  #         xcodebuild -exportArchive \
+  #           -archivePath ios/build/claudulhu.xcarchive \
+  #           -exportPath ios/build/ipa \
+  #           -exportOptionsPlist ios/ExportOptions.plist \
+  #           | xcpretty
+  #
+  #     - name: Upload to TestFlight
+  #       env:
+  #         API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+  #         API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
+  #         API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+  #       run: |
+  #         mkdir -p ~/.appstoreconnect/private_keys
+  #         echo "$API_KEY_CONTENT" | base64 --decode > ~/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8
+  #         xcrun altool --upload-app \
+  #           --type ios \
+  #           --file ios/build/ipa/claudulhu.ipa \
+  #           --apiKey "$API_KEY_ID" \
+  #           --apiIssuer "$API_ISSUER_ID"
