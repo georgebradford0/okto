@@ -41,15 +41,22 @@ printf '%s' "${QR_DATA}" | qrencode -l L -m 4 -t UTF8 -o -
 echo ""
 
 # ── Git authentication ────────────────────────────────────────────────────────
-if [ -n "$GH_TOKEN" ]; then
+case "$GIT_URL" in
+  https://*)
+    if [ -z "$GH_TOKEN" ]; then
+        echo "ERROR: GH_TOKEN is required for HTTPS git URLs. Pass -e GH_TOKEN=<token>." >&2
+        exit 1
+    fi
     CLONE_URL=$(echo "$GIT_URL" | sed 's|https://\(.*@\)\?|https://'"$GH_TOKEN"'@|')
-else
+    ;;
+  *)
     CLONE_URL="$GIT_URL"
     if [ -f /root/.ssh/id_rsa ]; then
         chmod 600 /root/.ssh/id_rsa
         ssh-keyscan github.com gitlab.com bitbucket.org >> /root/.ssh/known_hosts 2>/dev/null
     fi
-fi
+    ;;
+esac
 
 # ── Clone or update repo ──────────────────────────────────────────────────────
 WORKSPACE=/workspace
