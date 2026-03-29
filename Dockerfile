@@ -45,7 +45,4 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENV HOME=/root
 ENV CLAUDULHU_SKIP_SHELL_ENV=1
 
-# 9000: Noise TCP proxy (Noise_XX_25519_ChaChaPoly_SHA256)
-EXPOSE 9000
-
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
