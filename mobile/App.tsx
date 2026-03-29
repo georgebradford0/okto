@@ -957,7 +957,6 @@ function AppInner() {
         {/* Header */}
         <View style={s.header}>
           <View style={s.headerLeft}>
-            <Text style={s.headerMark}>⬡</Text>
             <View>
               <Text style={s.headerTitle}>claudulhu</Text>
               {repoName && <Text style={s.headerRepo}>{repoName}</Text>}
