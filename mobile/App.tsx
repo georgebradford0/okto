@@ -216,7 +216,7 @@ function PendingEllipsis() {
   return (
     <View style={[s.messageWrap]}>
       <Text style={s.messageLabel}>claude</Text>
-      <View style={[s.bubble, s.bubbleAsst, { flexDirection: 'row', alignItems: 'center', gap: 4 }]}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
         {dots.map((dot, i) => (
           <Animated.Text key={i} style={[s.cursor, { opacity: dot }]}>●</Animated.Text>
         ))}
@@ -237,13 +237,8 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           {isUser ? 'you' : 'claude'}
         </Text>
       )}
-      <View style={[
-        s.bubble,
-        isUser ? s.bubbleUser : isInfo ? s.bubbleInfo : s.bubbleAsst,
-      ]}>
-        {message.blocks.map((block, i) => <BlockRenderer key={i} block={block} />)}
-        {message.streaming && <Text style={s.cursor}>▋</Text>}
-      </View>
+      {message.blocks.map((block, i) => <BlockRenderer key={i} block={block} />)}
+      {message.streaming && <Text style={s.cursor}>▋</Text>}
     </View>
   )
 }
@@ -1056,11 +1051,6 @@ const s = StyleSheet.create({
   messageLabel:     { fontSize: 11, color: C.textMuted, marginBottom: 4, marginLeft: 2, fontWeight: '600', letterSpacing: 0.5, textTransform: 'uppercase' },
   messageLabelRight:{ marginLeft: 0, marginRight: 2 },
 
-  // Bubbles
-  bubble:           { borderRadius: 14, padding: 12, maxWidth: '92%' },
-  bubbleUser:       { backgroundColor: C.userBubble, borderWidth: 1, borderColor: C.userBorder },
-  bubbleAsst:       { backgroundColor: C.asstBubble, borderWidth: StyleSheet.hairlineWidth, borderColor: C.asstBorder },
-  bubbleInfo:       { backgroundColor: C.infoBubble, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border },
   cursor:           { color: C.accent, fontSize: 14 },
 
   // Text blocks
