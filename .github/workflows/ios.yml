@@ -132,15 +132,14 @@ jobs:
 
       - name: Archive
         run: |
-          set -o pipefail
           xcodebuild archive \
             -workspace ios/claudulhu.xcworkspace \
             -scheme claudulhu \
             -configuration Release \
+            -destination 'generic/platform=iOS' \
             -archivePath ios/build/claudulhu.xcarchive \
             CODE_SIGN_STYLE=Manual \
-            PROVISIONING_PROFILE="$PROFILE_UUID" \
-            | xcpretty
+            PROVISIONING_PROFILE="$PROFILE_UUID"
 
       - name: Export IPA
         run: |
