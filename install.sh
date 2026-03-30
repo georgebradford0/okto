@@ -26,7 +26,13 @@ xattr -rd com.apple.quarantine "$APP_DEST" 2>/dev/null || true
 # Force Launch Services to re-register the new bundle
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_DEST"
 
+# Force Finder to re-read the bundle (clears cached Get Info metadata)
+killall Finder 2>/dev/null || true
+
+INSTALLED_VERSION=$(defaults read "$APP_DEST/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo "unknown")
+echo "Installed version: $INSTALLED_VERSION"
+
 echo "Launching claudulhu..."
 open "$APP_DEST"
 
-echo "Done. claudulhu installed to /Applications."
+echo "Done."
