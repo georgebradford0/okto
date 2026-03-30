@@ -920,11 +920,21 @@ function AppInner() {
     setTabs([])
     if (!conn) { return }
 
-    NoiseConnection.connect(conn.host, conn.port, conn.pk)
-      .then(port => { setTunnelPort(port) })
-      .catch(e  => { setTunnelError(e?.message ?? String(e)) })
+    // Debounce the connect call so React StrictMode's immediate
+    // cleanup+remount cycle doesn't trigger two full Noise handshakes.
+    // In StrictMode the cleanup fires in <1ms, cancelling the timer before
+    // it fires. In normal operation the 50ms delay is imperceptible.
+    let connected = false
+    const timer = setTimeout(() => {
+      NoiseConnection.connect(conn.host, conn.port, conn.pk)
+        .then(port => { connected = true; setTunnelPort(port) })
+        .catch(e  => { setTunnelError(e?.message ?? String(e)) })
+    }, 50)
 
-    return () => { NoiseConnection.disconnect() }
+    return () => {
+      clearTimeout(timer)
+      if (connected) { NoiseConnection.disconnect() }
+    }
   }, [conn])
 
   // ── Init tabs when tunnel is ready ─────────────────────────────────────────
