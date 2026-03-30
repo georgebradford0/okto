@@ -7,9 +7,9 @@ all: build desktop
 build:
 	cd desktop && npm run build
 
-# Build the desktop app (.app bundle)
+# Build the desktop app (DMG installer)
 desktop: build
-	cd desktop && npm run tauri:build -- --bundles app
+	cd desktop && npm run tauri:build -- --bundles dmg
 
 # Run the Tauri app in development mode
 dev:

@@ -5,35 +5,33 @@ echo "Building claudulhu..."
 touch desktop/src-tauri/src/main.rs
 make desktop
 
-APP_SRC="desktop/src-tauri/target/release/bundle/macos/claudulhu.app"
-APP_DEST="/Applications/claudulhu.app"
-
-if [ ! -d "$APP_SRC" ]; then
-  echo "Error: build output not found at $APP_SRC"
+DMG=$(find desktop/src-tauri/target/release/bundle/dmg -name "*.dmg" | head -1)
+if [ -z "$DMG" ]; then
+  echo "Error: DMG not found after build"
   exit 1
 fi
+echo "DMG: $DMG"
 
 echo "Killing existing app..."
 pkill -9 -x claudulhu 2>/dev/null || true
 sleep 1
 
-echo "Installing to $APP_DEST..."
-rm -rf "$APP_DEST"
-cp -r "$APP_SRC" "$APP_DEST"
+echo "Mounting DMG..."
+VOLUME=$(hdiutil attach "$DMG" -nobrowse | awk 'END{print $3}')
 
-# Strip quarantine so macOS doesn't translocate the bundle to a random path
-xattr -rd com.apple.quarantine "$APP_DEST" 2>/dev/null || true
+echo "Installing to /Applications..."
+rm -rf /Applications/claudulhu.app
+cp -r "$VOLUME/claudulhu.app" /Applications/claudulhu.app
+hdiutil detach "$VOLUME" -quiet
 
-# Force Launch Services to re-register the new bundle
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_DEST"
-
-# Force Finder to re-read the bundle (clears cached Get Info metadata)
+xattr -rd com.apple.quarantine /Applications/claudulhu.app 2>/dev/null || true
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/claudulhu.app
 killall Finder 2>/dev/null || true
 
-INSTALLED_VERSION=$(defaults read "$APP_DEST/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo "unknown")
+INSTALLED_VERSION=$(defaults read /Applications/claudulhu.app/Contents/Info.plist CFBundleShortVersionString 2>/dev/null || echo "unknown")
 echo "Installed version: $INSTALLED_VERSION"
 
 echo "Launching claudulhu..."
-open "$APP_DEST"
+open /Applications/claudulhu.app
 
 echo "Done."
