@@ -382,6 +382,11 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
   // Set to true by the AppState handler before closing the socket so that
   // onclose reconnects immediately instead of waiting the 3-second backoff.
   const reconnectImmediatelyRef = useRef(false)
+  // Ref to the current connect function and any pending reconnect timer, so
+  // the AppState handler can trigger an immediate reconnect even when the
+  // socket is already closed (mid backoff timer).
+  const connectFnRef            = useRef<(() => void) | null>(null)
+  const pendingReconnectTimer   = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   onStatusChangeRef.current  = onStatusChange
   onWorkerCreatedRef.current = onWorkerCreated
@@ -503,13 +508,14 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
         sessionIdRef.current = frame.session_id
         AsyncStorage.setItem(`session_${storageKey}`, frame.session_id).catch(() => {})
         if (!frame.resumed) {
-          // New session — clear any stale local state.
-          storedSeqRef.current      = 0
-          eventCountRef.current     = 0
-          storedMessagesRef.current = []
-          setMessages([])
-          AsyncStorage.multiRemove([`messages_${storageKey}`, `seq_${storageKey}`]).catch(() => {})
-          dbg('ready: new session, cleared state')
+          // New server session — reset sequence counters but keep local chat
+          // history visible. History is only wiped by the user explicitly via
+          // "start new chat", not by a server-side session boundary.
+          storedSeqRef.current  = 0
+          eventCountRef.current = 0
+          // storedMessagesRef keeps the existing messages as the replay baseline
+          // so reconnects continue to show history correctly.
+          dbg('ready: new session, keeping', storedMessagesRef.current.length, 'stored messages')
         } else {
           // Reset messages to the last clean save point so that replayed events
           // are applied to a known-good base rather than the previous connection's
@@ -611,6 +617,7 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
     }
 
     const connect = () => {
+      pendingReconnectTimer.current = null
       if (cancelled) { dbg('connect: skipped (cancelled)'); return }
       const connectUrl = buildConnectUrl()
       dbg('connect: url=', connectUrl, 'sessionId=', sessionIdRef.current, 'seq=', storedSeqRef.current)
@@ -661,7 +668,7 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
           setMessages(prev => prev.map((m, i) => i < prev.length - 1 ? m : { ...m, streaming: false }))
           updateStatus('disconnected')
           dbg('ws onclose: scheduling reconnect in', immediate ? '0ms (foreground)' : '3s')
-          setTimeout(connect, immediate ? 0 : 3000)
+          pendingReconnectTimer.current = setTimeout(connect, immediate ? 0 : 3000)
         } else {
           dbg('ws onclose: cancelled, not reconnecting')
         }
@@ -682,18 +689,22 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
       }
     }
 
+    connectFnRef.current = connect
     connect()
     return () => {
       dbg('ws effect: cleanup, setting cancelled=true')
       cancelled = true
+      connectFnRef.current = null
+      if (pendingReconnectTimer.current !== null) {
+        clearTimeout(pendingReconnectTimer.current)
+        pendingReconnectTimer.current = null
+      }
       wsRef.current?.close()
     }
   }, [wsUrl, handleFrame, updateStatus, sessionLoaded])
 
   // Force-reconnect when returning to foreground — iOS silently kills the socket
   // while backgrounded, leaving readyState=OPEN but the connection dead.
-  // Only close if the socket is already OPEN; closing a CONNECTING socket aborts an
-  // in-progress reconnect and can leave the UI stuck on "connecting to server…".
   useEffect(() => {
     const sub = AppState.addEventListener('change', nextState => {
       const ws = wsRef.current
@@ -707,12 +718,20 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
         setIsStreaming(false)
         setIsPending(false)
         setPendingQuestion(false)
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          dbg('AppState active: closing OPEN socket to force reconnect')
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+          // Close OPEN (silently dead) or CONNECTING (stuck) sockets so onclose
+          // fires and reconnects immediately.
+          dbg('AppState active: closing socket (readyState=', ws.readyState, ') to force reconnect')
           reconnectImmediatelyRef.current = true
           ws.close()
         } else {
-          dbg('AppState active: socket not OPEN (', ws?.readyState, '), skipping close')
+          // Socket is already closed — cancel the slow backoff timer and reconnect now.
+          dbg('AppState active: socket closed/null, triggering immediate reconnect')
+          if (pendingReconnectTimer.current !== null) {
+            clearTimeout(pendingReconnectTimer.current)
+            pendingReconnectTimer.current = null
+          }
+          connectFnRef.current?.()
         }
       } else {
         // App going to background — reset so input re-focuses on next active.
