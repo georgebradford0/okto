@@ -6,8 +6,6 @@ import {
   AppState,
   FlatList,
   Image,
-  Keyboard,
-  KeyboardAvoidingView,
   Modal,
   PermissionsAndroid,
   Platform,
@@ -20,6 +18,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native'
+import { KeyboardProvider, KeyboardStickyView } from 'react-native-keyboard-controller'
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Camera, useCameraDevice, useCodeScanner } from 'react-native-vision-camera'
 import NoiseConnection from './src/NativeNoiseConnection'
@@ -348,7 +347,6 @@ function parseAtCompletion(text: string): { atPos: number; dirPart: string; file
 
 const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branches, canSpawnWorker, onStatusChange, onWorkerCreated, initialMessage }: ChatPaneProps) {
   const insets = useSafeAreaInsets()
-  const [keyboardVisible, setKeyboardVisible] = useState(false)
 
   const [messages,        setMessages]        = useState<ChatMessage[]>([])
   const [status,          setStatus]          = useState<ConnStatus>('connecting')
@@ -399,12 +397,6 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
     }
   }, [status])
 
-  // Track keyboard visibility so we can tighten bottom padding while it's open.
-  useEffect(() => {
-    const show = Keyboard.addListener('keyboardDidShow', () => setKeyboardVisible(true))
-    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardVisible(false))
-    return () => { show.remove(); hide.remove() }
-  }, [])
 
   // Stable debug logger — useMemo so it doesn't recreate on every render.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -872,47 +864,49 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
         {isPending && <PendingEllipsis />}
       </ScrollView>
 
-      {completions.length > 0 && (
-        <ScrollView style={s.completionList} keyboardShouldPersistTaps="always">
-          {completions.map((c, i) => (
-            <TouchableOpacity key={`${c}${i}`} style={s.completionItem} onPress={() => acceptCompletion(c)}>
-              <Text style={s.completionText} numberOfLines={1}>{c}</Text>
+      <KeyboardStickyView offset={{ closed: insets.bottom, opened: 0 }}>
+        {completions.length > 0 && (
+          <ScrollView style={s.completionList} keyboardShouldPersistTaps="always">
+            {completions.map((c, i) => (
+              <TouchableOpacity key={`${c}${i}`} style={s.completionItem} onPress={() => acceptCompletion(c)}>
+                <Text style={s.completionText} numberOfLines={1}>{c}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
+        <View style={s.inputRow}>
+          {canSpawnWorker && messages.length > 0 && !isStreaming && !isPending && (
+            <TouchableOpacity style={s.btnNewChat} onPress={startNewChat}>
+              <Text style={s.btnNewChatText}>↺</Text>
             </TouchableOpacity>
-          ))}
-        </ScrollView>
-      )}
-      <View style={[s.inputRow, Platform.OS === 'ios' && { paddingBottom: keyboardVisible ? 8 : insets.bottom + 8 }]}>
-        {canSpawnWorker && messages.length > 0 && !isStreaming && !isPending && (
-          <TouchableOpacity style={s.btnNewChat} onPress={startNewChat}>
-            <Text style={s.btnNewChatText}>↺</Text>
-          </TouchableOpacity>
-        )}
-        <TextInput
-          ref={inputRef}
-          style={s.input}
-          value={input}
-          onChangeText={handleInputChange}
-          placeholder={pendingQuestion ? 'answer…' : 'message…'}
-          placeholderTextColor={C.textMuted}
-          multiline
-          returnKeyType="default"
-          editable={pendingQuestion || status === 'ready' || status === 'resumed'}
-        />
-        {canSpawnWorker && !!input.trim() && !isStreaming && (status === 'ready' || status === 'resumed') && !pendingQuestion && (
-          <TouchableOpacity style={[s.btnSend, { backgroundColor: C.yellow }]} onPress={spawnWorker}>
-            <Text style={s.btnSendText}>⎇</Text>
-          </TouchableOpacity>
-        )}
-        {isStreaming ? (
-          <TouchableOpacity style={s.btnStop} onPress={() => wsRef.current?.send(JSON.stringify({ type: 'interrupt' }))}>
-            <Text style={s.btnStopText}>■</Text>
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity style={[s.btnSend, !canSend && s.btnDisabled]} onPress={sendMessage} disabled={!canSend}>
-            <Text style={s.btnSendText}>↑</Text>
-          </TouchableOpacity>
-        )}
-      </View>
+          )}
+          <TextInput
+            ref={inputRef}
+            style={s.input}
+            value={input}
+            onChangeText={handleInputChange}
+            placeholder={pendingQuestion ? 'answer…' : 'message…'}
+            placeholderTextColor={C.textMuted}
+            multiline
+            returnKeyType="default"
+            editable={pendingQuestion || status === 'ready' || status === 'resumed'}
+          />
+          {canSpawnWorker && !!input.trim() && !isStreaming && (status === 'ready' || status === 'resumed') && !pendingQuestion && (
+            <TouchableOpacity style={[s.btnSend, { backgroundColor: C.yellow }]} onPress={spawnWorker}>
+              <Text style={s.btnSendText}>⎇</Text>
+            </TouchableOpacity>
+          )}
+          {isStreaming ? (
+            <TouchableOpacity style={s.btnStop} onPress={() => wsRef.current?.send(JSON.stringify({ type: 'interrupt' }))}>
+              <Text style={s.btnStopText}>■</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity style={[s.btnSend, !canSend && s.btnDisabled]} onPress={sendMessage} disabled={!canSend}>
+              <Text style={s.btnSendText}>↑</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </KeyboardStickyView>
     </View>
   )
 })
@@ -1205,11 +1199,7 @@ function AppInner() {
   // ── Main UI ────────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
-      <KeyboardAvoidingView
-        style={s.paneArea}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={0}
-      >
+      <View style={s.paneArea}>
         {/* Header */}
         <View style={s.header}>
           <View style={s.headerLeft}>
@@ -1263,7 +1253,7 @@ function AppInner() {
             />
           </View>
         ))}
-      </KeyboardAvoidingView>
+      </View>
 
       {/* Branches bottom sheet */}
       <Modal visible={showBranches} animationType="slide" transparent onRequestClose={() => setShowBranches(false)}>
@@ -1309,10 +1299,12 @@ function AppInner() {
 
 export default function App() {
   return (
-    <SafeAreaProvider>
-      <StatusBar barStyle="light-content" backgroundColor={C.bg} />
-      <AppInner />
-    </SafeAreaProvider>
+    <KeyboardProvider>
+      <SafeAreaProvider>
+        <StatusBar barStyle="light-content" backgroundColor={C.bg} />
+        <AppInner />
+      </SafeAreaProvider>
+    </KeyboardProvider>
   )
 }
 
