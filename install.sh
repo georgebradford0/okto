@@ -12,11 +12,16 @@ if [ ! -d "$APP_SRC" ]; then
   exit 1
 fi
 
-echo "Uninstalling existing app..."
+echo "Quitting existing app..."
+osascript -e 'quit app "claudulhu"' 2>/dev/null || true
+sleep 1
 pkill -x claudulhu 2>/dev/null || true
 rm -rf "$APP_DEST"
 
 echo "Installing to $APP_DEST..."
 cp -r "$APP_SRC" "$APP_DEST"
+
+echo "Launching claudulhu..."
+open "$APP_DEST"
 
 echo "Done. claudulhu installed to /Applications."
