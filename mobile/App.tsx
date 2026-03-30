@@ -325,6 +325,7 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
 
 interface ChatPaneProps {
   wsUrl:           string
+  storageKey:      string   // unique key for AsyncStorage (tab.id)
   tunnelPort:      number
   branches:        Branch[]
   canSpawnWorker:  boolean
@@ -344,7 +345,7 @@ function parseAtCompletion(text: string): { atPos: number; dirPart: string; file
   return { atPos: atIdx, dirPart, filePart }
 }
 
-function ChatPane({ wsUrl, tunnelPort, branches, canSpawnWorker, onStatusChange, onWorkerCreated, initialMessage }: ChatPaneProps) {
+function ChatPane({ wsUrl, storageKey, tunnelPort, branches, canSpawnWorker, onStatusChange, onWorkerCreated, initialMessage }: ChatPaneProps) {
   const [messages,        setMessages]        = useState<ChatMessage[]>([])
   const [status,          setStatus]          = useState<ConnStatus>('connecting')
   const [isStreaming,     setIsStreaming]      = useState(false)
@@ -353,6 +354,9 @@ function ChatPane({ wsUrl, tunnelPort, branches, canSpawnWorker, onStatusChange,
   const [input,           setInput]           = useState('')
   const [completions,     setCompletions]     = useState<string[]>([])
   const [compQuery,       setCompQuery]       = useState<{ atPos: number; dirPart: string; filePart: string } | null>(null)
+  // True once AsyncStorage has been checked so the WebSocket doesn't connect before
+  // we know whether to include session_id in the URL.
+  const [sessionLoaded,   setSessionLoaded]   = useState(false)
 
   const wsRef              = useRef<WebSocket | null>(null)
   const inResponseRef      = useRef(false)
@@ -361,8 +365,43 @@ function ChatPane({ wsUrl, tunnelPort, branches, canSpawnWorker, onStatusChange,
   const onStatusChangeRef  = useRef(onStatusChange)
   const onWorkerCreatedRef = useRef(onWorkerCreated)
 
+  // Session-resumption refs — persisted across reconnects via AsyncStorage.
+  const sessionIdRef  = useRef<string | null>(null)  // server-assigned session UUID
+  const storedSeqRef  = useRef<number>(0)             // event count at last save
+  const eventCountRef = useRef<number>(0)             // running event count this session
+
   onStatusChangeRef.current  = onStatusChange
   onWorkerCreatedRef.current = onWorkerCreated
+
+  // Load persisted session state (session_id, messages, seq) before connecting.
+  useEffect(() => {
+    let cancelled = false
+    AsyncStorage.multiGet([
+      `session_${storageKey}`,
+      `messages_${storageKey}`,
+      `seq_${storageKey}`,
+    ]).then(pairs => {
+      if (cancelled) { return }
+      const [[, sessionId], [, messagesJson], [, seqStr]] = pairs
+      if (sessionId) { sessionIdRef.current = sessionId }
+      if (seqStr !== null) {
+        const n = parseInt(seqStr, 10)
+        if (!isNaN(n)) {
+          storedSeqRef.current  = n
+          eventCountRef.current = n
+        }
+      }
+      if (messagesJson) {
+        try {
+          const msgs = JSON.parse(messagesJson) as ChatMessage[]
+          setMessages(msgs)
+        } catch {}
+      }
+    }).catch(() => {}).finally(() => {
+      if (!cancelled) { setSessionLoaded(true) }
+    })
+    return () => { cancelled = true }
+  }, [storageKey])
 
   const updateStatus = useCallback((s: ConnStatus) => {
     setStatus(s)
@@ -401,12 +440,33 @@ function ChatPane({ wsUrl, tunnelPort, branches, canSpawnWorker, onStatusChange,
     setPendingQuestion(false)
     // Clear streaming on ALL messages, not just the last — belt-and-suspenders in
     // case an earlier bubble was left streaming by a skipped completeResponse.
-    setMessages(prev => prev.map(m => m.streaming ? { ...m, streaming: false } : m))
-  }, [])
+    // Also persist the completed state so it survives app closure.
+    setMessages(prev => {
+      const updated = prev.map(m => m.streaming ? { ...m, streaming: false } : m)
+      storedSeqRef.current = eventCountRef.current
+      AsyncStorage.setItem(`messages_${storageKey}`, JSON.stringify(updated)).catch(() => {})
+      AsyncStorage.setItem(`seq_${storageKey}`, String(eventCountRef.current)).catch(() => {})
+      return updated
+    })
+  }, [storageKey])
 
   const handleFrame = useCallback((frame: ServerFrame) => {
+    // Count every event except 'ready' (which is connection-level, not session-level).
+    if (frame.type !== 'ready') {
+      eventCountRef.current++
+    }
     switch (frame.type) {
       case 'ready':
+        // Persist the session ID so we can resume after app restarts.
+        sessionIdRef.current = frame.session_id
+        AsyncStorage.setItem(`session_${storageKey}`, frame.session_id).catch(() => {})
+        if (!frame.resumed) {
+          // New session — clear any stale local state.
+          storedSeqRef.current  = 0
+          eventCountRef.current = 0
+          setMessages([])
+          AsyncStorage.multiRemove([`messages_${storageKey}`, `seq_${storageKey}`]).catch(() => {})
+        }
         updateStatus(frame.resumed ? 'resumed' : 'ready')
         break
       case 'text':
@@ -477,20 +537,37 @@ function ChatPane({ wsUrl, tunnelPort, branches, canSpawnWorker, onStatusChange,
     }
   }, [appendBlock, completeResponse, ensureAssistantMsg, updateStatus])
 
-  // WebSocket connection
+  // WebSocket connection — only starts after AsyncStorage has been read.
   useEffect(() => {
+    if (!sessionLoaded) { return }
     let cancelled = false
+
+    // Build the WebSocket URL, appending session resumption params.
+    const buildConnectUrl = (): string => {
+      const isWorker = wsUrl.includes('/workers/')
+      const seq      = storedSeqRef.current
+      if (isWorker) {
+        return `${wsUrl}?seq=${seq}`
+      }
+      const sid = sessionIdRef.current
+      return sid
+        ? `${wsUrl}?session_id=${encodeURIComponent(sid)}&seq=${seq}`
+        : wsUrl
+    }
 
     const connect = () => {
       if (cancelled) { return }
-      console.log('[ws] connecting to', wsUrl)
+      const connectUrl = buildConnectUrl()
+      console.log('[ws] connecting to', connectUrl)
       updateStatus('connecting')
-      const ws = new WebSocket(wsUrl)
+      const ws = new WebSocket(connectUrl)
       wsRef.current = ws
 
       ws.onopen = () => {
-        console.log('[ws] connected to', wsUrl)
-        updateStatus('ready')
+        console.log('[ws] connected to', connectUrl)
+        // Reset the running event counter to the last saved position so we can
+        // track how many new events arrive in this connection.
+        eventCountRef.current = storedSeqRef.current
       }
 
       ws.onmessage = ({ data }) => {
@@ -534,7 +611,7 @@ function ChatPane({ wsUrl, tunnelPort, branches, canSpawnWorker, onStatusChange,
       cancelled = true
       wsRef.current?.close()
     }
-  }, [wsUrl, handleFrame, updateStatus])
+  }, [wsUrl, handleFrame, updateStatus, sessionLoaded])
 
   // Force-reconnect when returning to foreground — iOS silently kills the socket
   // while backgrounded, leaving readyState=OPEN but the connection dead.
@@ -567,12 +644,20 @@ function ChatPane({ wsUrl, tunnelPort, branches, canSpawnWorker, onStatusChange,
     if (!ws || ws.readyState !== WebSocket.OPEN) { return }
 
     if (pendingQuestion) {
-      setMessages(prev => [...prev, { id: uid(), role: 'user', streaming: false, blocks: [{ kind: 'text', text }] }])
+      setMessages(prev => {
+        const updated = [...prev, { id: uid(), role: 'user' as const, streaming: false, blocks: [{ kind: 'text' as const, text }] }]
+        AsyncStorage.setItem(`messages_${storageKey}`, JSON.stringify(updated)).catch(() => {})
+        return updated
+      })
       ws.send(JSON.stringify({ type: 'answer', answer: text }))
       setPendingQuestion(false)
       setIsPending(true)
     } else {
-      setMessages(prev => [...prev, { id: uid(), role: 'user', streaming: false, blocks: [{ kind: 'text', text }] }])
+      setMessages(prev => {
+        const updated = [...prev, { id: uid(), role: 'user' as const, streaming: false, blocks: [{ kind: 'text' as const, text }] }]
+        AsyncStorage.setItem(`messages_${storageKey}`, JSON.stringify(updated)).catch(() => {})
+        return updated
+      })
       ws.send(JSON.stringify({ type: 'message', text }))
       setIsPending(true)
     }
@@ -591,6 +676,24 @@ function ChatPane({ wsUrl, tunnelPort, branches, canSpawnWorker, onStatusChange,
     inResponseRef.current = true
     setIsStreaming(true)
   }, [input, isStreaming])
+
+  const startNewChat = useCallback(() => {
+    sessionIdRef.current  = null
+    storedSeqRef.current  = 0
+    eventCountRef.current = 0
+    setMessages([])
+    setIsStreaming(false)
+    setIsPending(false)
+    setPendingQuestion(false)
+    inResponseRef.current = false
+    AsyncStorage.multiRemove([
+      `session_${storageKey}`,
+      `messages_${storageKey}`,
+      `seq_${storageKey}`,
+    ]).catch(() => {})
+    // Close the WebSocket — onclose will reconnect without session_id.
+    wsRef.current?.close()
+  }, [storageKey])
 
   const updateCompletions = useCallback((query: { atPos: number; dirPart: string; filePart: string }) => {
     setCompQuery(query)
@@ -657,6 +760,11 @@ function ChatPane({ wsUrl, tunnelPort, branches, canSpawnWorker, onStatusChange,
         </ScrollView>
       )}
       <View style={s.inputRow}>
+        {canSpawnWorker && messages.length > 0 && !isStreaming && !isPending && (
+          <TouchableOpacity style={s.btnNewChat} onPress={startNewChat}>
+            <Text style={s.btnNewChatText}>↺</Text>
+          </TouchableOpacity>
+        )}
         <TextInput
           style={s.input}
           value={input}
@@ -997,6 +1105,7 @@ function AppInner() {
           <View key={tab.id} style={tab.id === activeTab ? s.paneVisible : s.paneHidden}>
             <ChatPane
               wsUrl={tab.wsUrl}
+              storageKey={tab.id}
               tunnelPort={tunnelPort}
               branches={branches}
               canSpawnWorker={tab.id === 'main'}
@@ -1179,6 +1288,8 @@ const s = StyleSheet.create({
 
   // Input
   inputRow:         { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 12, paddingVertical: 10, paddingBottom: Platform.OS === 'android' ? 14 : 10, gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, backgroundColor: C.surface },
+  btnNewChat:       { padding: 8, justifyContent: 'center', alignItems: 'center' },
+  btnNewChatText:   { fontSize: 18, color: C.textMuted },
   input:            { flex: 1, backgroundColor: C.inputBg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, color: C.textPrimary, fontSize: 17, lineHeight: 24, maxHeight: 140 },
   btnSend:          { width: 40, height: 40, backgroundColor: C.accent, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   btnSendText:      { color: '#fff', fontSize: 15 },

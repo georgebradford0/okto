@@ -116,7 +116,7 @@ pub enum ContentBlock {
 
 // ── Chat Events ───────────────────────────────────────────────────────────────
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ChatEvent {
     Ready              { session_id: String, resumed: bool },

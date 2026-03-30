@@ -1,8 +1,9 @@
 use std::{
     collections::HashMap,
     fs,
+    io::Write as _,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex},
 };
 
 use axum::{
@@ -22,10 +23,9 @@ use claudulhu_core::{
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use std::sync::atomic::Ordering;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    sync::mpsc,
+    sync::{mpsc, Notify},
 };
 use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
@@ -198,11 +198,147 @@ async fn run_noise_proxy(static_private: Vec<u8>, noise_port: u16, http_port: u1
     }
 }
 
+// ── Session Persistence ───────────────────────────────────────────────────────
+
+fn sessions_dir() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").unwrap_or_default())
+        .join(".claudulhu")
+        .join("sessions")
+}
+
+fn session_dir(session_id: &str) -> PathBuf {
+    sessions_dir().join(session_id)
+}
+
+fn persist_meta(session_id: &str, cwd: &str, system_prompt: &str) {
+    let dir = session_dir(session_id);
+    fs::create_dir_all(&dir).ok();
+    let meta = serde_json::json!({ "cwd": cwd, "system_prompt": system_prompt });
+    fs::write(dir.join("meta.json"), meta.to_string()).ok();
+}
+
+fn persist_messages(session_id: &str, messages: &[ApiMessage]) {
+    let dir = session_dir(session_id);
+    fs::create_dir_all(&dir).ok();
+    if let Ok(json) = serde_json::to_string(messages) {
+        fs::write(dir.join("messages.json"), json).ok();
+    }
+}
+
+fn append_event_to_disk(session_id: &str, event: &ChatEvent) {
+    let dir = session_dir(session_id);
+    fs::create_dir_all(&dir).ok();
+    if let Ok(json) = serde_json::to_string(event) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true).append(true)
+            .open(dir.join("events.jsonl"))
+        {
+            let _ = writeln!(f, "{}", json);
+        }
+    }
+}
+
+/// Load a persisted session from disk. Returns (messages, events, cwd, system_prompt).
+fn load_session_from_disk(session_id: &str) -> Option<(Vec<ApiMessage>, Vec<ChatEvent>, String, String)> {
+    let dir = session_dir(session_id);
+    if !dir.exists() { return None; }
+
+    let meta: serde_json::Value = fs::read_to_string(dir.join("meta.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let cwd           = meta["cwd"].as_str().unwrap_or_default().to_string();
+    let system_prompt = meta["system_prompt"].as_str().unwrap_or_default().to_string();
+
+    let messages: Vec<ApiMessage> = fs::read_to_string(dir.join("messages.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    let events: Vec<ChatEvent> = fs::read_to_string(dir.join("events.jsonl"))
+        .ok()
+        .map(|s| {
+            s.lines()
+                .filter_map(|l| serde_json::from_str::<ChatEvent>(l).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if cwd.is_empty() { return None; }
+    Some((messages, events, cwd, system_prompt))
+}
+
+// ── Active Session ────────────────────────────────────────────────────────────
+
+/// A session that persists across WebSocket disconnects.
+/// The agentic loop runs independently; events accumulate and are replayed on reconnect.
+struct ActiveSession {
+    id:           String,
+    inner:        Arc<Mutex<Session>>,
+    /// Append-only log of all ChatEvents produced for this session.
+    events:       Arc<Mutex<Vec<ChatEvent>>>,
+    /// Notified (via notify_one) whenever a new event is appended.
+    notify:       Arc<Notify>,
+    /// Sender end of the accumulator channel. Kept alive to keep the accumulator task running.
+    /// The agentic loop clones this to send events.
+    loop_tx:      mpsc::Sender<ChatEvent>,
+    /// True while the agentic loop task is running.
+    loop_running: Arc<AtomicBool>,
+}
+
+fn new_active_session(
+    id:            String,
+    system_prompt: String,
+    cwd:           String,
+) -> Arc<ActiveSession> {
+    new_active_session_with_data(id, system_prompt, cwd, Vec::new(), Vec::new())
+}
+
+fn new_active_session_with_data(
+    id:             String,
+    system_prompt:  String,
+    cwd:            String,
+    messages:       Vec<ApiMessage>,
+    existing_events: Vec<ChatEvent>,
+) -> Arc<ActiveSession> {
+    let events = Arc::new(Mutex::new(existing_events));
+    let notify = Arc::new(Notify::new());
+    let (loop_tx, mut loop_rx) = mpsc::channel::<ChatEvent>(256);
+
+    let events_c = events.clone();
+    let notify_c = notify.clone();
+    let id_c     = id.clone();
+    tokio::spawn(async move {
+        while let Some(event) = loop_rx.recv().await {
+            append_event_to_disk(&id_c, &event);
+            events_c.lock().unwrap().push(event);
+            notify_c.notify_one();
+        }
+    });
+
+    let inner = Arc::new(Mutex::new(Session {
+        messages,
+        system_prompt,
+        cwd,
+        aborted:          Arc::new(AtomicBool::new(false)),
+        pending_question: Arc::new(tokio::sync::Mutex::new(None)),
+    }));
+
+    Arc::new(ActiveSession {
+        id,
+        inner,
+        events,
+        notify,
+        loop_tx,
+        loop_running: Arc::new(AtomicBool::new(false)),
+    })
+}
+
 // ── App State ─────────────────────────────────────────────────────────────────
 
 struct AppState {
-    sessions:        Mutex<HashMap<String, Arc<Mutex<Session>>>>,
-    worker_sessions: Mutex<HashMap<String, Arc<Mutex<Session>>>>,
+    sessions:        Mutex<HashMap<String, Arc<ActiveSession>>>,
+    worker_sessions: Mutex<HashMap<String, Arc<ActiveSession>>>,
 }
 
 // ── Client Messages (client → server, WebSocket) ──────────────────────────────
@@ -216,14 +352,30 @@ enum ClientMessage {
     Answer      { answer: String },
 }
 
+// ── URL Query Params ──────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Default)]
+struct ChatQuery {
+    /// Client provides the session_id it received in a previous `ready` frame.
+    session_id: Option<String>,
+    /// Last event seq the client successfully received (0-indexed count of events received).
+    /// Server replays from this index onwards.
+    seq: Option<usize>,
+}
+
+#[derive(Deserialize, Default)]
+struct WorkerQuery {
+    /// Last event seq the client successfully received for this worker session.
+    seq: Option<usize>,
+}
+
 // ── Spawn Worker ──────────────────────────────────────────────────────────────
 
 async fn spawn_worker(
-    app_state:  &Arc<AppState>,
-    _session_id: &str,
-    task:       &str,
-    repo:       &str,
-    tx:         mpsc::Sender<ChatEvent>,
+    app_state: &Arc<AppState>,
+    task:      &str,
+    repo:      &str,
+    tx:        mpsc::Sender<ChatEvent>,
 ) {
     tx.send(ChatEvent::Spawning { task: task.to_string() }).await.ok();
 
@@ -236,55 +388,101 @@ async fn spawn_worker(
         Err(e) => { tx.send(ChatEvent::WorkerError { message: e }).await.ok(); return; }
     };
 
-    tx.send(ChatEvent::WorkerCreated { branch: branch.clone(), worktree_path: worktree_path.clone(), task: task.to_string() }).await.ok();
+    tx.send(ChatEvent::WorkerCreated {
+        branch: branch.clone(),
+        worktree_path: worktree_path.clone(),
+        task: task.to_string(),
+    }).await.ok();
+
+    let system_prompt  = build_system_prompt(repo, Some(&branch), Some(&worktree_path));
+    let worker_active  = new_active_session(branch.clone(), system_prompt, worktree_path.clone());
+
+    app_state.worker_sessions.lock().unwrap().insert(branch.clone(), worker_active);
 
     let worker_session_id = Uuid::new_v4().to_string();
-    let system_prompt     = build_system_prompt(repo, Some(&branch), Some(&worktree_path));
-    let worker_session    = Arc::new(Mutex::new(Session {
-        messages:         Vec::new(),
-        system_prompt,
-        cwd:              worktree_path.clone(),
-        aborted:          Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        pending_question: Arc::new(tokio::sync::Mutex::new(None)),
-    }));
-
-    app_state.worker_sessions.lock().unwrap().insert(branch.clone(), worker_session.clone());
-
     tx.send(ChatEvent::WorkerSessionReady {
         branch:            branch.clone(),
         worktree_path:     worktree_path.clone(),
-        worker_session_id: worker_session_id.clone(),
+        worker_session_id,
         task:              task.to_string(),
     }).await.ok();
+}
 
-    app_state.sessions.lock().unwrap().insert(worker_session_id, worker_session);
+// ── Delivery Task ─────────────────────────────────────────────────────────────
+
+/// Streams events from the session's event log to the WebSocket sender channel,
+/// starting at `start_idx` and following new events as they arrive.
+async fn deliver_events(
+    events:    Arc<Mutex<Vec<ChatEvent>>>,
+    notify:    Arc<Notify>,
+    ws_tx:     mpsc::Sender<String>,
+    start_idx: usize,
+) {
+    let mut idx = start_idx;
+    loop {
+        // Drain all available events from idx onwards.
+        loop {
+            let event = events.lock().unwrap().get(idx).cloned();
+            match event {
+                Some(e) => {
+                    let json = match serde_json::to_string(&e) {
+                        Ok(s)  => s,
+                        Err(_) => { idx += 1; continue; }
+                    };
+                    if ws_tx.send(json).await.is_err() { return; }
+                    idx += 1;
+                }
+                None => break,
+            }
+        }
+        // Wait for new events. notify_one() stores a permit so we never miss a signal.
+        notify.notified().await;
+    }
 }
 
 // ── WebSocket Session Handler ─────────────────────────────────────────────────
 
-async fn run_session(socket: WebSocket, session: Arc<Mutex<Session>>, session_id: String, app_state: Arc<AppState>, repo: String) {
+async fn run_session(
+    socket:    WebSocket,
+    active:    Arc<ActiveSession>,
+    app_state: Arc<AppState>,
+    repo:      String,
+    start_idx: usize,
+    resumed:   bool,
+) {
     let (mut ws_sink, mut ws_stream) = socket.split();
 
-    let (tx, mut rx) = mpsc::channel::<ChatEvent>(256);
+    // Unbounded channel from delivery/direct sends → WebSocket writer task.
+    let (ws_tx, mut ws_rx) = mpsc::channel::<String>(1024);
 
-    let send_task = tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            let json = match serde_json::to_string(&event) {
-                Ok(s)  => s,
-                Err(_) => continue,
-            };
+    // WebSocket writer task.
+    let write_task = tokio::spawn(async move {
+        while let Some(json) = ws_rx.recv().await {
             if ws_sink.send(Message::Text(json)).await.is_err() { break; }
         }
     });
 
-    tx.send(ChatEvent::Ready { session_id: session_id.clone(), resumed: false }).await.ok();
+    // Send `ready` directly (not stored in the event log).
+    let ready = ChatEvent::Ready { session_id: active.id.clone(), resumed };
+    if let Ok(json) = serde_json::to_string(&ready) {
+        ws_tx.send(json).await.ok();
+    }
 
+    // Delivery task: replays historical events then streams new ones.
+    let deliver_task = tokio::spawn(deliver_events(
+        active.events.clone(),
+        active.notify.clone(),
+        ws_tx.clone(),
+        start_idx,
+    ));
+
+    // Incoming message loop.
     while let Some(Ok(msg)) = ws_stream.next().await {
         let text = match msg {
-            Message::Text(t)   => t,
-            Message::Close(_)  => break,
-            Message::Ping(_) | Message::Pong(_) => continue,
-            Message::Binary(_) => continue,
+            Message::Text(t)                     => t,
+            Message::Close(_)                    => break,
+            Message::Ping(_) | Message::Pong(_)  => continue,
+            Message::Binary(_)                   => continue,
         };
 
         let client_msg: ClientMessage = match serde_json::from_str(&text) {
@@ -297,51 +495,71 @@ async fn run_session(socket: WebSocket, session: Arc<Mutex<Session>>, session_id
                 let cfg     = read_config();
                 let api_key = match resolve_api_key() {
                     Some(k) => k,
-                    None    => { tx.send(ChatEvent::Error { message: "no API key configured".to_string() }).await.ok(); continue; }
+                    None    => {
+                        active.loop_tx.send(ChatEvent::Error {
+                            message: "no API key configured".to_string(),
+                        }).await.ok();
+                        continue;
+                    }
                 };
                 let model = cfg.model.unwrap_or_else(|| "claude-sonnet-4-6".to_string());
 
                 {
-                    let mut s = session.lock().unwrap();
+                    let mut s = active.inner.lock().unwrap();
                     s.aborted.store(false, Ordering::Relaxed);
                     s.messages.push(ApiMessage {
                         role:    "user".to_string(),
                         content: vec![ContentBlock::Text { text }],
                     });
+                    persist_messages(&active.id, &s.messages);
                 }
 
-                let session_clone = session.clone();
-                let sid_clone     = session_id.clone();
-                let tx_clone      = tx.clone();
-                tokio::spawn(async move {
-                    run_agentic_loop(session_clone, sid_clone, api_key, model, tx_clone).await;
-                });
+                // Start the agentic loop only if it isn't already running.
+                if !active.loop_running.swap(true, Ordering::SeqCst) {
+                    let session_c     = active.inner.clone();
+                    let sid_c         = active.id.clone();
+                    let tx_c          = active.loop_tx.clone();
+                    let running_c     = active.loop_running.clone();
+                    let inner_c       = active.inner.clone();
+                    let id_c          = active.id.clone();
+                    tokio::spawn(async move {
+                        run_agentic_loop(session_c, sid_c, api_key, model, tx_c).await;
+                        // Persist final message history when loop ends.
+                        let msgs = inner_c.lock().unwrap().messages.clone();
+                        persist_messages(&id_c, &msgs);
+                        running_c.store(false, Ordering::Relaxed);
+                    });
+                } else {
+                    eprintln!("[{}] warning: message received while loop already running", active.id);
+                }
             }
 
             ClientMessage::Interrupt => {
-                session.lock().unwrap().aborted.store(true, Ordering::Relaxed);
+                active.inner.lock().unwrap().aborted.store(true, Ordering::Relaxed);
             }
 
             ClientMessage::SpawnWorker { task } => {
-                let state_clone = app_state.clone();
-                let sid_clone   = session_id.clone();
-                let tx_clone    = tx.clone();
-                let repo_clone  = repo.clone();
+                let state_c = app_state.clone();
+                let tx_c    = active.loop_tx.clone();
+                let repo_c  = repo.clone();
                 tokio::spawn(async move {
-                    spawn_worker(&state_clone, &sid_clone, &task, &repo_clone, tx_clone).await;
+                    spawn_worker(&state_c, &task, &repo_c, tx_c).await;
                 });
             }
 
             ClientMessage::Answer { answer } => {
-                let pending_question = session.lock().unwrap().pending_question.clone();
-                let mut slot = pending_question.lock().await;
+                let pq   = active.inner.lock().unwrap().pending_question.clone();
+                let mut slot = pq.lock().await;
                 if let Some(sender) = slot.take() { sender.send(answer).ok(); }
             }
         }
     }
 
-    session.lock().unwrap().aborted.store(true, Ordering::Relaxed);
-    send_task.abort();
+    // WebSocket disconnected — clean up delivery but do NOT abort the agentic loop.
+    deliver_task.abort();
+    drop(ws_tx);
+    let _ = write_task.await;
+    println!("[{}] WebSocket disconnected (loop_running={})", active.id, active.loop_running.load(Ordering::Relaxed));
 }
 
 // ── HTTP Handlers ─────────────────────────────────────────────────────────────
@@ -352,14 +570,14 @@ async fn health_handler() -> impl IntoResponse {
 
 #[derive(Deserialize)]
 struct CompletionQuery {
-    dir_part: Option<String>,
+    dir_part:  Option<String>,
     file_part: Option<String>,
 }
 
 async fn get_completions_handler(Query(params): Query<CompletionQuery>) -> Json<Vec<String>> {
     let cfg      = read_config();
     let repo     = effective_repo(&cfg);
-    let dir_part = params.dir_part.unwrap_or_default();
+    let dir_part  = params.dir_part.unwrap_or_default();
     let file_part = params.file_part.unwrap_or_default();
 
     let mut seen    = std::collections::HashSet::new();
@@ -413,64 +631,87 @@ async fn update_config_handler(Json(patch): Json<Config>) -> StatusCode {
 
 async fn chat_ws_handler(
     ws:           WebSocketUpgrade,
+    Query(query): Query<ChatQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
-        let session_id = Uuid::new_v4().to_string();
-        let cfg        = read_config();
-        let repo       = effective_repo(&cfg);
-        let system     = build_system_prompt(&repo, None, None);
+        let cfg  = read_config();
+        let repo = effective_repo(&cfg);
 
-        let session = Arc::new(Mutex::new(Session {
-            messages:         Vec::new(),
-            system_prompt:    system,
-            cwd:              repo.clone(),
-            aborted:          Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            pending_question: Arc::new(tokio::sync::Mutex::new(None)),
-        }));
-        state.sessions.lock().unwrap().insert(session_id.clone(), session.clone());
-        println!("[{}] /chat connected (repo: {})", session_id, repo);
+        let (active, start_idx, resumed) = if let Some(sid) = query.session_id {
+            // Try in-memory first.
+            let existing = state.sessions.lock().unwrap().get(&sid).cloned();
+            if let Some(sess) = existing {
+                let idx = query.seq.unwrap_or(0);
+                println!("[{}] /chat reconnect (seq={})", sid, idx);
+                (sess, idx, true)
+            } else if let Some((msgs, evs, cwd, sys)) = load_session_from_disk(&sid) {
+                // Restore from disk.
+                let active = new_active_session_with_data(sid.clone(), sys, cwd, msgs, evs);
+                persist_meta(&sid, &active.inner.lock().unwrap().cwd, &active.inner.lock().unwrap().system_prompt);
+                state.sessions.lock().unwrap().insert(sid.clone(), active.clone());
+                let idx = query.seq.unwrap_or(0);
+                println!("[{}] /chat restored from disk (seq={})", sid, idx);
+                (active, idx, true)
+            } else {
+                // Session not found — create fresh.
+                let new_id = Uuid::new_v4().to_string();
+                let system = build_system_prompt(&repo, None, None);
+                let active = new_active_session(new_id.clone(), system.clone(), repo.clone());
+                persist_meta(&new_id, &repo, &system);
+                state.sessions.lock().unwrap().insert(new_id.clone(), active.clone());
+                println!("[{}] /chat new session (requested {} not found)", new_id, sid);
+                (active, 0, false)
+            }
+        } else {
+            // Brand-new session.
+            let session_id = Uuid::new_v4().to_string();
+            let system     = build_system_prompt(&repo, None, None);
+            let active     = new_active_session(session_id.clone(), system.clone(), repo.clone());
+            persist_meta(&session_id, &repo, &system);
+            state.sessions.lock().unwrap().insert(session_id.clone(), active.clone());
+            println!("[{}] /chat new session (repo: {})", session_id, repo);
+            (active, 0, false)
+        };
 
-        run_session(socket, session, session_id.clone(), state.clone(), repo).await;
-
-        state.sessions.lock().unwrap().remove(&session_id);
-        println!("[{}] /chat disconnected", session_id);
+        run_session(socket, active, state, repo, start_idx, resumed).await;
     })
 }
 
 async fn worker_ws_handler(
     ws:           WebSocketUpgrade,
     Path(branch): Path<String>,
+    Query(query): Query<WorkerQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
-        let existing = state.worker_sessions.lock().unwrap().remove(&branch);
+        let cfg  = read_config();
+        let repo = effective_repo(&cfg);
 
-        let (session, repo) = if let Some(sess) = existing {
-            let cwd = sess.lock().unwrap().cwd.clone();
-            (sess, cwd)
-        } else {
-            let cfg    = read_config();
-            let repo   = effective_repo(&cfg);
-            let system = build_system_prompt(&repo, Some(&branch), None);
-            let sess   = Arc::new(Mutex::new(Session {
-                messages:         Vec::new(),
-                system_prompt:    system,
-                cwd:              repo.clone(),
-                aborted:          Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                pending_question: Arc::new(tokio::sync::Mutex::new(None)),
-            }));
-            (sess, repo)
+        let (active, start_idx, resumed) = {
+            let existing = state.worker_sessions.lock().unwrap().get(&branch).cloned();
+            if let Some(sess) = existing {
+                let idx = query.seq.unwrap_or(0);
+                println!("[{}] /workers/{} reconnect (seq={})", sess.id, branch, idx);
+                (sess, idx, true)
+            } else if let Some((msgs, evs, cwd, sys)) = load_session_from_disk(&branch) {
+                let active = new_active_session_with_data(branch.clone(), sys, cwd, msgs, evs);
+                state.worker_sessions.lock().unwrap().insert(branch.clone(), active.clone());
+                let idx = query.seq.unwrap_or(0);
+                println!("[{}] /workers/{} restored from disk (seq={})", branch, branch, idx);
+                (active, idx, true)
+            } else {
+                let system = build_system_prompt(&repo, Some(&branch), None);
+                let active = new_active_session(branch.clone(), system.clone(), repo.clone());
+                persist_meta(&branch, &repo, &system);
+                state.worker_sessions.lock().unwrap().insert(branch.clone(), active.clone());
+                println!("[{}] /workers/{} new session", branch, branch);
+                (active, 0, false)
+            }
         };
 
-        let session_id = Uuid::new_v4().to_string();
-        state.sessions.lock().unwrap().insert(session_id.clone(), session.clone());
-        println!("[{}] /workers/{} connected (repo: {})", session_id, branch, repo);
-
-        run_session(socket, session, session_id.clone(), state.clone(), repo).await;
-
-        state.sessions.lock().unwrap().remove(&session_id);
-        println!("[{}] /workers/{} disconnected", session_id, branch);
+        let cwd = active.inner.lock().unwrap().cwd.clone();
+        run_session(socket, active, state, cwd, start_idx, resumed).await;
     })
 }
 
