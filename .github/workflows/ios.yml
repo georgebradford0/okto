@@ -6,7 +6,7 @@ on:
       testflight:
         description: 'Upload to TestFlight'
         type: boolean
-        default: false
+        default: true
 
 jobs:
   build:
