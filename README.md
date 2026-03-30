@@ -85,6 +85,42 @@ docker run -d \
 
 Ports 9000–9099 are available on the default AWS deployment. Each container needs its own named volumes so keypairs (and therefore QR codes) and conversation history persist independently across restarts.
 
+### AWS quick deploy
+
+Create a new Ubuntu EC2 instance with the container running on startup:
+
+```sh
+SG=$(aws ec2 create-security-group --group-name claudulhu-sg --description "claudulhu" --query 'GroupId' --output text) && \
+aws ec2 authorize-security-group-ingress --group-id $SG --protocol tcp --port 9000 --cidr 0.0.0.0/0 && \
+aws ec2 run-instances \
+  --image-id resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
+  --instance-type t3.micro \
+  --key-name <your-key-pair> \
+  --security-group-ids $SG \
+  --user-data '#!/bin/bash
+apt-get update -y
+apt-get install -y docker.io
+systemctl enable --now docker
+docker run -d --name claudulhu --restart unless-stopped \
+  -p 9000:9000 \
+  -v claudulhu-noise-key:/etc/claudulhu \
+  -v claudulhu-data:/data \
+  -e GIT_URL=https://github.com/user/repo \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  ghcr.io/georgebradford0/claudulhu-server:latest' \
+  --count 1 \
+  --region us-east-1
+```
+
+Once the instance is running, get its public IP and check the logs for the QR code:
+
+```sh
+INSTANCE_ID=<instance-id>
+aws ec2 describe-instances --instance-ids $INSTANCE_ID \
+  --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
+ssh -i ~/.ssh/<your-key-pair>.pem ubuntu@<public-ip> "docker logs claudulhu"
+```
+
 ### PR/MR creation
 
 The agentic loop has a `create_pull_request` tool that opens a GitHub PR or GitLab MR after pushing a branch. Requires `GH_TOKEN` with `repo` (GitHub) or `api` (GitLab) scope. Not available when using SSH authentication.
