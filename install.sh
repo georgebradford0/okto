@@ -2,6 +2,7 @@
 set -e
 
 echo "Building claudulhu..."
+touch desktop/src-tauri/src/main.rs
 make desktop
 
 APP_SRC="desktop/src-tauri/target/release/bundle/macos/claudulhu.app"
