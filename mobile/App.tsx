@@ -19,7 +19,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native'
-import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Camera, useCameraDevice, useCodeScanner } from 'react-native-vision-camera'
 import NoiseConnection from './src/NativeNoiseConnection'
 
@@ -346,6 +346,8 @@ function parseAtCompletion(text: string): { atPos: number; dirPart: string; file
 }
 
 const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branches, canSpawnWorker, onStatusChange, onWorkerCreated, initialMessage }: ChatPaneProps) {
+  const insets = useSafeAreaInsets()
+
   const [messages,        setMessages]        = useState<ChatMessage[]>([])
   const [status,          setStatus]          = useState<ConnStatus>('connecting')
   const [isStreaming,     setIsStreaming]      = useState(false)
@@ -361,7 +363,9 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
   const wsRef              = useRef<WebSocket | null>(null)
   const inResponseRef      = useRef(false)
   const scrollRef          = useRef<ScrollView>(null)
+  const inputRef           = useRef<TextInput>(null)
   const initialMessageSent = useRef(false)
+  const hasFocusedInput    = useRef(false)
   const onStatusChangeRef  = useRef(onStatusChange)
   const onWorkerCreatedRef = useRef(onWorkerCreated)
 
@@ -379,6 +383,14 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
 
   onStatusChangeRef.current  = onStatusChange
   onWorkerCreatedRef.current = onWorkerCreated
+
+  // Auto-focus the input the first time the connection becomes ready.
+  useEffect(() => {
+    if (!hasFocusedInput.current && (status === 'ready' || status === 'resumed')) {
+      hasFocusedInput.current = true
+      inputRef.current?.focus()
+    }
+  }, [status])
 
   // Stable debug logger — useMemo so it doesn't recreate on every render.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -831,13 +843,14 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
           ))}
         </ScrollView>
       )}
-      <View style={s.inputRow}>
+      <View style={[s.inputRow, Platform.OS === 'ios' && { paddingBottom: insets.bottom + 10 }]}>
         {canSpawnWorker && messages.length > 0 && !isStreaming && !isPending && (
           <TouchableOpacity style={s.btnNewChat} onPress={startNewChat}>
             <Text style={s.btnNewChatText}>↺</Text>
           </TouchableOpacity>
         )}
         <TextInput
+          ref={inputRef}
           style={s.input}
           value={input}
           onChangeText={handleInputChange}
