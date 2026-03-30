@@ -237,10 +237,13 @@ pub const TOOL_OUTPUT_LIMIT: usize = 20_000;
 
 pub fn truncate_tool_output(s: String) -> String {
     if s.len() <= TOOL_OUTPUT_LIMIT { return s; }
+    let boundary = (0..=TOOL_OUTPUT_LIMIT).rev()
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(0);
     format!(
         "{}\n[output truncated — {} chars omitted]",
-        &s[..TOOL_OUTPUT_LIMIT],
-        s.len() - TOOL_OUTPUT_LIMIT,
+        &s[..boundary],
+        s.len() - boundary,
     )
 }
 
@@ -727,7 +730,12 @@ pub fn compact_history(messages: &[ApiMessage], keep_full: usize) -> Vec<ApiMess
                 ContentBlock::ToolResult { tool_use_id, content } => {
                     let text = content.first().and_then(|v| v["text"].as_str()).unwrap_or("");
                     let stub = if text.len() > STUB_LIMIT {
-                        format!("{}…[truncated]", &text[..STUB_LIMIT])
+                        // Find the largest char boundary ≤ STUB_LIMIT to avoid
+                        // slicing inside a multi-byte UTF-8 character.
+                        let boundary = (0..=STUB_LIMIT).rev()
+                            .find(|&i| text.is_char_boundary(i))
+                            .unwrap_or(0);
+                        format!("{}…[truncated]", &text[..boundary])
                     } else { text.to_string() };
                     ContentBlock::ToolResult {
                         tool_use_id: tool_use_id.clone(),
