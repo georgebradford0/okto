@@ -791,26 +791,24 @@ export default function App() {
     const folder = await tauriPickFolder()
     if (!folder) return
 
-    // Show loading indicator and unmount existing panes immediately
     setIsChangingRepo(true)
-
-    // Persist the new repo and pre-create the session with the definitive path
-    await tauriInvoke('set_repo', { repo: folder })
-    const sessionId = await tauriInvoke<string>('chat_new_session', {
-      sessionType: 'main',
-      branch: null,
-      worktreePath: null,
-      repo: folder,
-    })
-
-    // Batch all state updates: reveal fresh ChatPane with pre-created session
-    setRepoPath(folder)
-    setRepoReady(true)
-    setTabs([{ id: 'main', label: 'main', wsUrl: MAIN_WS_URL, sessionId }])
-    setActiveTab('main')
-    setTabStatuses({ main: 'connecting' })
-    setMainPaneKey(k => k + 1)
-    setIsChangingRepo(false)
+    try {
+      await tauriInvoke('set_repo', { repo: folder })
+      const sessionId = await tauriInvoke<string>('chat_new_session', {
+        sessionType: 'main',
+        branch: null,
+        worktreePath: null,
+        repo: folder,
+      })
+      setRepoPath(folder)
+      setRepoReady(true)
+      setTabs([{ id: 'main', label: 'main', wsUrl: MAIN_WS_URL, sessionId }])
+      setActiveTab('main')
+      setTabStatuses({ main: 'connecting' })
+      setMainPaneKey(k => k + 1)
+    } finally {
+      setIsChangingRepo(false)
+    }
   }, [])
 
   const saveApiKey = useCallback(async () => {
@@ -998,6 +996,11 @@ export default function App() {
 
   return (
     <div className="app">
+      {isChangingRepo && (
+        <div className="repo-switch-overlay">
+          <div className="repo-switch-spinner" />
+        </div>
+      )}
       <header className="app-header">
         <div className="app-title">
           <span className="title-mark">⬡</span>
@@ -1014,53 +1017,47 @@ export default function App() {
       <main className="app-body">
         {/* ── Chat section ── */}
         <section className="chat-section">
-          {isChangingRepo ? (
-            <div className="empty-state">connecting…</div>
-          ) : (
-            <>
-              <div className="tab-bar">
-                {tabs.map(tab => (
-                  <div
-                    key={tab.id}
-                    className={`tab${activeTab === tab.id ? ' tab--active' : ''}`}
-                    onClick={() => setActiveTab(tab.id)}
-                  >
-                    <span className={`tab-dot ${statusDotClass(tabStatuses[tab.id] ?? 'connecting')}`} />
-                    <span className="tab-label">{tab.label}</span>
-                    {tab.id !== 'main' && (
-                      <button
-                        className="tab-close"
-                        onClick={e => { e.stopPropagation(); closeTab(tab.id) }}
-                      >×</button>
-                    )}
-                  </div>
-                ))}
+          <div className="tab-bar">
+            {tabs.map(tab => (
+              <div
+                key={tab.id}
+                className={`tab${activeTab === tab.id ? ' tab--active' : ''}`}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                <span className={`tab-dot ${statusDotClass(tabStatuses[tab.id] ?? 'connecting')}`} />
+                <span className="tab-label">{tab.label}</span>
+                {tab.id !== 'main' && (
+                  <button
+                    className="tab-close"
+                    onClick={e => { e.stopPropagation(); closeTab(tab.id) }}
+                  >×</button>
+                )}
               </div>
+            ))}
+          </div>
 
-              <div className="chat-panes">
-                {tabs.map(tab => (
-                  <div
-                    key={tab.id === 'main' ? `main-${mainPaneKey}` : tab.id}
-                    className={`chat-pane-wrapper${activeTab === tab.id ? ' chat-pane-wrapper--active' : ''}`}
-                  >
-                    <ChatPane
-                      wsUrl={tab.wsUrl}
-                      sessionId={tab.sessionId}
-                      worktreePath={tab.worktreePath}
-                      active={activeTab === tab.id}
-                      canSpawnWorker={tab.id === 'main'}
-                      repo={repoPath ?? ''}
-                      completionRoots={completionRoots}
-                      worktreeNames={worktreeNames}
-                      initialMessage={tab.initialMessage}
-                      onStatusChange={handleStatusChange(tab.id)}
-                      onWorkerCreated={handleWorkerCreated}
-                    />
-                  </div>
-                ))}
+          <div className="chat-panes">
+            {tabs.map(tab => (
+              <div
+                key={tab.id === 'main' ? `main-${mainPaneKey}` : tab.id}
+                className={`chat-pane-wrapper${activeTab === tab.id ? ' chat-pane-wrapper--active' : ''}`}
+              >
+                <ChatPane
+                  wsUrl={tab.wsUrl}
+                  sessionId={tab.sessionId}
+                  worktreePath={tab.worktreePath}
+                  active={activeTab === tab.id}
+                  canSpawnWorker={tab.id === 'main'}
+                  repo={repoPath ?? ''}
+                  completionRoots={completionRoots}
+                  worktreeNames={worktreeNames}
+                  initialMessage={tab.initialMessage}
+                  onStatusChange={handleStatusChange(tab.id)}
+                  onWorkerCreated={handleWorkerCreated}
+                />
               </div>
-            </>
-          )}
+            ))}
+          </div>
         </section>
 
         {/* ── Branches ── */}

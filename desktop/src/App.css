@@ -55,6 +55,33 @@
   border-color: var(--border-mid);
 }
 
+/* ── Repo switch overlay ──────────────────────────────────────────────────── */
+
+.repo-switch-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(246, 244, 241, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.repo-switch-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--border-mid);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ── Repo picker screen ───────────────────────────────────────────────────── */
 
 .repo-picker {
