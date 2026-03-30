@@ -1,3 +1,0 @@
-#!/bin/zsh
-
-cp /Users/georgebalch/claudulhu/cli/.venv/bin/claudulhu /Users/georgebalch/.local/bin/
