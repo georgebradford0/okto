@@ -4,7 +4,13 @@ An agentic coding assistant that runs a Rust server, exposing a WebSocket API fo
 
 ## Docker
 
-The server is available as a multi-platform Docker image (`linux/amd64`, `linux/arm64`):
+The server is available as a multi-platform Docker image (`linux/amd64`, `linux/arm64`).
+
+Pull the latest image:
+
+```sh
+docker pull ghcr.io/georgebradford0/claudulhu-server:latest
+```
 
 ```sh
 docker run -d \
