@@ -1077,7 +1077,12 @@ pub fn init_shell_env() {
     }
     let output = std::process::Command::new("zsh")
         .args(["-l", "-c", "source ~/.zshrc 2>/dev/null; env -0"])
-        .output();
+        .output()
+        .or_else(|_| {
+            std::process::Command::new("bash")
+                .args(["-l", "-c", "source ~/.bashrc 2>/dev/null; env -0"])
+                .output()
+        });
     let Ok(output) = output else { return };
     let Ok(env_str) = std::str::from_utf8(&output.stdout) else { return };
     for entry in env_str.split('\0') {
