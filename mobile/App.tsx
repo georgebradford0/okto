@@ -915,21 +915,14 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
             placeholder={pendingQuestion ? 'answer…' : 'message…'}
             placeholderTextColor={C.textMuted}
             multiline
-            returnKeyType="default"
+            returnKeyType="send"
+            blurOnSubmit
+            onSubmitEditing={() => { sendMessage(); inputRef.current?.focus() }}
             editable={!isStreaming || pendingQuestion}
           />
-          {canSpawnWorker && !!input.trim() && !isStreaming && (status === 'ready' || status === 'resumed') && !pendingQuestion && (
-            <TouchableOpacity style={[s.btnSend, { backgroundColor: C.yellow }]} onPress={spawnWorker}>
-              <Text style={s.btnSendText}>⎇</Text>
-            </TouchableOpacity>
-          )}
-          {isStreaming ? (
+          {isStreaming && (
             <TouchableOpacity style={s.btnStop} onPress={() => wsRef.current?.send(JSON.stringify({ type: 'interrupt' }))}>
               <Text style={s.btnStopText}>■</Text>
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity style={[s.btnSend, !canSend && s.btnDisabled]} onPress={sendMessage} disabled={!canSend}>
-              <Text style={s.btnSendText}>↑</Text>
             </TouchableOpacity>
           )}
         </View>
