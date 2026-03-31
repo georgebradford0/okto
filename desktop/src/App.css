@@ -28,7 +28,16 @@
   color: var(--text);
 }
 
+.title-mark { color: var(--blue); font-size: 15px; }
 
+.header-repo {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 400;
+  padding-left: 4px;
+  border-left: 1px solid var(--border);
+  margin-left: 4px;
+}
 
 .btn-change-repo {
   font-size: 11px;
