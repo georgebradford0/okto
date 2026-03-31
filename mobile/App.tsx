@@ -747,12 +747,28 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
   }, [status, initialMessage])
 
   const sendMessage = useCallback(() => {
-    const text = input.trim()
-    if (!text) { return }
+    const raw = input.trim()
+    if (!raw) { return }
     if (isStreaming && !pendingQuestion) { return }
     const ws = wsRef.current
     if (!ws || ws.readyState !== WebSocket.OPEN) { return }
 
+    // & prefix → spawn a new worktree tab (mirrors desktop behaviour)
+    if (canSpawnWorker && !pendingQuestion && raw.startsWith('&')) {
+      const task = raw.slice(1).trim()
+      if (task) {
+        ws.send(JSON.stringify({ type: 'spawn_worker', task }))
+        setMessages(prev => [...prev, { id: uid(), role: 'user' as const, streaming: false, blocks: [{ kind: 'text' as const, text: raw }] }])
+        isAtBottomRef.current = true
+        setInput(''); setCompletions([]); setCompQuery(null)
+        setIsPending(true)
+        inResponseRef.current = true
+        setIsStreaming(true)
+        return
+      }
+    }
+
+    const text = raw
     if (pendingQuestion) {
       setMessages(prev => {
         const updated = [...prev, { id: uid(), role: 'user' as const, streaming: false, blocks: [{ kind: 'text' as const, text }] }]
@@ -775,7 +791,7 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
     }
     isAtBottomRef.current = true
     setInput(''); setCompletions([]); setCompQuery(null)
-  }, [input, isStreaming, pendingQuestion])
+  }, [input, isStreaming, pendingQuestion, canSpawnWorker])
 
   const spawnWorker = useCallback(() => {
     const text = input.trim()
@@ -901,12 +917,15 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
             ))}
           </ScrollView>
         )}
-        <View style={s.inputRow}>
-          {canSpawnWorker && messages.length > 0 && !isStreaming && !isPending && (
-            <TouchableOpacity style={s.btnNewChat} onPress={startNewChat}>
-              <Text style={s.btnNewChatText}>↺</Text>
+        {/* Stop button — appears above input row on the right, only while streaming */}
+        {isStreaming && (
+          <View style={s.stopAboveRow}>
+            <TouchableOpacity style={s.btnStop} onPress={() => wsRef.current?.send(JSON.stringify({ type: 'interrupt' }))}>
+              <Text style={s.btnStopText}>■</Text>
             </TouchableOpacity>
-          )}
+          </View>
+        )}
+        <View style={s.inputRow}>
           <TextInput
             ref={inputRef}
             style={s.input}
@@ -915,16 +934,16 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
               if (text.includes('\n')) { sendMessage(); return }
               handleInputChange(text)
             }}
-            placeholder={pendingQuestion ? 'answer…' : 'message…'}
+            placeholder={canSpawnWorker ? (pendingQuestion ? 'answer…' : '& for new worktree, or message…') : (pendingQuestion ? 'answer…' : 'message…')}
             placeholderTextColor={C.textMuted}
             multiline
             returnKeyType="send"
             blurOnSubmit={false}
             editable={!isStreaming || pendingQuestion}
           />
-          {isStreaming && (
-            <TouchableOpacity style={s.btnStop} onPress={() => wsRef.current?.send(JSON.stringify({ type: 'interrupt' }))}>
-              <Text style={s.btnStopText}>■</Text>
+          {canSpawnWorker && messages.length > 0 && !isStreaming && !isPending && (
+            <TouchableOpacity style={s.btnNewChat} onPress={startNewChat} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={s.btnNewChatText}>↺</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -1455,6 +1474,7 @@ const s = StyleSheet.create({
 
   // Input
   inputRow:         { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 12, paddingVertical: 10, paddingBottom: Platform.OS === 'android' ? 14 : 10, gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, backgroundColor: C.surface },
+  stopAboveRow:     { flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 12, paddingBottom: 6, backgroundColor: C.surface },
   btnNewChat:       { padding: 8, justifyContent: 'center', alignItems: 'center' },
   btnNewChatText:   { fontSize: 18, color: C.textMuted },
   input:            { flex: 1, backgroundColor: C.inputBg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, color: C.textPrimary, fontSize: 17, lineHeight: 24, maxHeight: 140 },
