@@ -20,18 +20,14 @@ The tool list (last tool definition block) is also static. It receives a breakpo
 The remaining 2 breakpoints are distributed across the compacted message history. The positions are calculated in `core/src/lib.rs` just before the API request is serialised:
 
 ```
-breakpoint A  →  messages[n / 3]
-breakpoint B  →  messages[(2 * n) / 3]
-breakpoint C  →  messages[n - 2]   ← most-recent stable turn
+breakpoint A  →  messages[n - 2]   ← caches entire history up to current turn
+breakpoint B  →  messages[n / 2]   ← TTL fallback if A expires
 ```
 
-For small histories (`n < 4`) only breakpoint C is placed.
+For small histories (`n < 4`) only breakpoint A is placed.
 
-#### Why three positions?
-With a single breakpoint at `n-2`, turns deep into a long session still pay full price for all earlier messages because the cache only covers the prefix up to that one point. By spreading across thirds:
-
-- Turn 20 (~40 messages): breakpoints at ~13, ~26, ~38 → the vast majority of history is cached.
-- Turn 50 (~98 messages): breakpoints at ~33, ~65, ~96 → same coverage ratio.
+#### Why two positions?
+A single breakpoint at `n-2` caches the **entire** conversation history as one prefix — no earlier messages pay full price. The second breakpoint at `n/2` is a TTL resilience fallback: if the `n-2` cache expires after 5 minutes of inactivity, the API can still return a partial hit for the first half of history instead of billing the full history at input token rates.
 
 ---
 
@@ -39,7 +35,15 @@ With a single breakpoint at `n-2`, turns deep into a long session still pay full
 
 Anthropic's ephemeral cache entries expire after **5 minutes** of inactivity. In a session with slow turns (e.g. long tool calls or human think-time), the oldest breakpoint may expire and be re-written as a cache miss on the next turn. This is charged at the normal write rate — not a correctness problem, but it means the oldest breakpoint has diminishing returns in very slow sessions.
 
-For sessions where turns are spaced >5 min apart, consider biasing breakpoints toward the recent end of history (e.g. `n/2`, `3n/4`, `n-2`). This has not been implemented yet.
+The current placement (`n-2`, `n/2`) already biases toward recent history: if the `n-2` entry expires, the `n/2` fallback covers the more recent half of the conversation — the portion most likely to still be in cache.
+
+### Practical advice: don't leave conversations idle
+
+If you step away for more than 5 minutes and then send another message, **all cache entries will have expired**. That turn pays full input token rates for the system prompt, tools, and the entire conversation history — identical in cost to starting a brand new conversation from scratch.
+
+The TTL is per cache entry, not per session. Entries stay warm as long as *any* request hits them within the 5-minute window. On a busy server with many concurrent users sharing the same system prompt, that entry may effectively never expire. But a single idle conversation has no such benefit.
+
+**Recommendation:** if you know you're stepping away for a while, start a fresh conversation when you return. You'll pay the same cost for the first turn either way, but a fresh context avoids sending a large stale history that will be billed at full rate.
 
 ---
 

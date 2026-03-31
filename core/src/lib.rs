@@ -854,23 +854,23 @@ pub async fn stream_turn(
         .map(|m| serde_json::to_value(m).unwrap())
         .collect();
 
-    // Distribute up to 3 cache breakpoints across the message history
-    // (the system prompt and tool list consume the other 1 of Anthropic's 4-
-    // breakpoint limit).  Spreading them out means later turns hit multiple
-    // cached prefixes instead of just the most recent one, which dramatically
-    // cuts costs in long agentic sessions.
+    // Distribute up to 2 cache breakpoints across the message history.
+    // The system prompt and tool list each consume one of Anthropic's 4
+    // breakpoint limit, leaving 2 for message history.  Spreading them out
+    // means later turns hit multiple cached prefixes instead of just the most
+    // recent one, which cuts costs in long agentic sessions.
     //
     // We always anchor one breakpoint at the second-to-last message (the most
     // recent stable point before the current user input) and spread the
-    // remaining two evenly through the earlier history.
+    // remaining one through the earlier history.
     let n = messages_json.len();
     if n >= 2 {
         // Candidate indices: evenly spaced, always including n-2.
         let candidates: Vec<usize> = if n < 4 {
             vec![n - 2]
         } else {
-            // 3 breakpoints: 1/3, 2/3, and the end of the stable history.
-            vec![n / 3, (2 * n) / 3, n - 2]
+            // 2 breakpoints: full history cached at n-2; n/2 as TTL fallback.
+            vec![n - 2, n / 2]
         };
 
         // Deduplicate and apply.
