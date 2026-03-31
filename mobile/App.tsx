@@ -889,7 +889,7 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
         </View>
       )}
 
-      <KeyboardStickyView offset={{ closed: insets.bottom, opened: 0 }}>
+      <KeyboardStickyView offset={{ closed: -insets.bottom, opened: 0 }}>
         {completions.length > 0 && (
           <ScrollView style={s.completionList} keyboardShouldPersistTaps="always">
             {completions.map((c, i) => (
