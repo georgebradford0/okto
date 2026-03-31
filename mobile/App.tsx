@@ -875,7 +875,6 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
           isAtBottomRef.current = distanceFromBottom < 80
         }}
         scrollEventThrottle={100}
-        keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         initialNumToRender={30}
       />
