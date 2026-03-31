@@ -247,9 +247,28 @@ pub fn truncate_tool_output(s: String) -> String {
     )
 }
 
-pub fn cost_usd(model: &str, input_tokens: u64, output_tokens: u64) -> f64 {
-    let (input_rate, output_rate) = if model.contains("opus") { (15.0, 75.0) } else { (3.0, 15.0) };
-    (input_tokens as f64 * input_rate + output_tokens as f64 * output_rate) / 1_000_000.0
+pub fn cost_usd(
+    model: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_creation_input_tokens: u64,
+    cache_read_input_tokens: u64,
+) -> f64 {
+    let (input_rate, output_rate) = if model.contains("opus") {
+        (15.0_f64, 75.0_f64)
+    } else if model.contains("haiku") {
+        (0.80_f64, 4.0_f64)
+    } else {
+        // sonnet and any other models
+        (3.0_f64, 15.0_f64)
+    };
+    // Cache writes are billed at 125% of the normal input rate.
+    // Cache reads are billed at 10% of the normal input rate.
+    (input_tokens as f64 * input_rate
+        + output_tokens as f64 * output_rate
+        + cache_creation_input_tokens as f64 * input_rate * 1.25
+        + cache_read_input_tokens as f64 * input_rate * 0.10)
+        / 1_000_000.0
 }
 
 pub fn slug(text: &str) -> String {
@@ -702,7 +721,12 @@ pub async fn execute_tool(
 
 // ── Anthropic Streaming ───────────────────────────────────────────────────────
 
-pub struct StreamUsage { pub input_tokens: u64, pub output_tokens: u64 }
+pub struct StreamUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cache_read_input_tokens: u64,
+}
 
 enum PartialBlock {
     Text    { text: String },
@@ -795,6 +819,8 @@ pub async fn stream_turn(
     let mut completed: Vec<(usize, ContentBlock)> = Vec::new();
     let mut input_tokens:  u64 = 0;
     let mut output_tokens: u64 = 0;
+    let mut cache_creation_input_tokens: u64 = 0;
+    let mut cache_read_input_tokens:     u64 = 0;
     let mut stop_reason = "end_turn".to_string();
 
     while let Some(chunk) = stream.next().await {
@@ -818,9 +844,10 @@ pub async fn stream_turn(
 
             match ev["type"].as_str().unwrap_or("") {
                 "message_start" => {
-                    if let Some(u) = ev["message"]["usage"]["input_tokens"].as_u64() {
-                        input_tokens = u;
-                    }
+                    let usage = &ev["message"]["usage"];
+                    if let Some(u) = usage["input_tokens"].as_u64()                  { input_tokens = u; }
+                    if let Some(u) = usage["cache_creation_input_tokens"].as_u64()   { cache_creation_input_tokens = u; }
+                    if let Some(u) = usage["cache_read_input_tokens"].as_u64()        { cache_read_input_tokens = u; }
                 }
                 "content_block_start" => {
                     let idx = ev["index"].as_u64().unwrap_or(0) as usize;
@@ -886,7 +913,7 @@ pub async fn stream_turn(
 
     completed.sort_by_key(|(i, _)| *i);
     let blocks: Vec<ContentBlock> = completed.into_iter().map(|(_, b)| b).collect();
-    Ok((blocks, stop_reason, StreamUsage { input_tokens, output_tokens }))
+    Ok((blocks, stop_reason, StreamUsage { input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens }))
 }
 
 // ── Agentic Loop ──────────────────────────────────────────────────────────────
@@ -898,9 +925,11 @@ pub async fn run_agentic_loop(
     model:      String,
     tx:         mpsc::Sender<ChatEvent>,
 ) {
-    let mut turns        = 0usize;
-    let mut total_input  = 0u64;
-    let mut total_output = 0u64;
+    let mut turns                        = 0usize;
+    let mut total_input                  = 0u64;
+    let mut total_output                 = 0u64;
+    let mut total_cache_creation_input   = 0u64;
+    let mut total_cache_read_input       = 0u64;
 
     loop {
         let (messages, system, cwd, aborted, pending_question) = {
@@ -923,9 +952,11 @@ pub async fn run_agentic_loop(
                 return;
             }
             Ok((blocks, stop_reason, usage)) => {
-                turns        += 1;
-                total_input  += usage.input_tokens;
-                total_output += usage.output_tokens;
+                turns                      += 1;
+                total_input                += usage.input_tokens;
+                total_output               += usage.output_tokens;
+                total_cache_creation_input += usage.cache_creation_input_tokens;
+                total_cache_read_input     += usage.cache_read_input_tokens;
 
                 {
                     let mut s = session.lock().unwrap();
@@ -933,7 +964,7 @@ pub async fn run_agentic_loop(
                 }
 
                 if stop_reason != "tool_use" {
-                    let cost = cost_usd(&model, total_input, total_output);
+                    let cost = cost_usd(&model, total_input, total_output, total_cache_creation_input, total_cache_read_input);
                     tx.send(ChatEvent::Result {
                         cost_usd: cost, turns, session_id: session_id.clone(), result: None,
                     }).await.ok();
