@@ -911,13 +911,15 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
             ref={inputRef}
             style={s.input}
             value={input}
-            onChangeText={handleInputChange}
+            onChangeText={text => {
+              if (text.includes('\n')) { sendMessage(); return }
+              handleInputChange(text)
+            }}
             placeholder={pendingQuestion ? 'answer…' : 'message…'}
             placeholderTextColor={C.textMuted}
             multiline
             returnKeyType="send"
-            blurOnSubmit
-            onSubmitEditing={() => { sendMessage(); inputRef.current?.focus() }}
+            blurOnSubmit={false}
             editable={!isStreaming || pendingQuestion}
           />
           {isStreaming && (
