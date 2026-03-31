@@ -362,7 +362,8 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
 
   const wsRef              = useRef<WebSocket | null>(null)
   const inResponseRef      = useRef(false)
-  const scrollRef          = useRef<ScrollView>(null)
+  const scrollRef          = useRef<FlatList<ChatMessage>>(null)
+  const isAtBottomRef      = useRef(true)
   const inputRef           = useRef<TextInput>(null)
   const initialMessageSent = useRef(false)
   const hasFocusedInput    = useRef(false)
@@ -659,8 +660,8 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
           setPendingQuestion(false)
           setMessages(prev => prev.map((m, i) => i < prev.length - 1 ? m : { ...m, streaming: false }))
           updateStatus('disconnected')
-          dbg('ws onclose: scheduling reconnect in', immediate ? '0ms (foreground)' : '3s')
-          pendingReconnectTimer.current = setTimeout(connect, immediate ? 0 : 3000)
+          dbg('ws onclose: scheduling reconnect in', immediate ? '0ms (foreground)' : '1s')
+          pendingReconnectTimer.current = setTimeout(connect, immediate ? 0 : 1000)
         } else {
           dbg('ws onclose: cancelled, not reconnecting')
         }
@@ -772,6 +773,7 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
       ws.send(JSON.stringify({ type: 'message', text }))
       setIsPending(true)
     }
+    isAtBottomRef.current = true
     setInput(''); setCompletions([]); setCompQuery(null)
   }, [input, isStreaming, pendingQuestion])
 
@@ -782,6 +784,7 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
     if (!ws || ws.readyState !== WebSocket.OPEN) { return }
     ws.send(JSON.stringify({ type: 'spawn_worker', task: text }))
     setMessages(prev => [...prev, { id: uid(), role: 'user', streaming: false, blocks: [{ kind: 'text', text }] }])
+    isAtBottomRef.current = true
     setInput(''); setCompletions([]); setCompQuery(null)
     setIsPending(true)
     inResponseRef.current = true
@@ -845,24 +848,46 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
 
   const canSend = !!input.trim() && (pendingQuestion || (!isStreaming && (status === 'ready' || status === 'resumed')))
 
-  const scrollToBottom = useCallback(() => scrollRef.current?.scrollToEnd({ animated: false }), [])
+  const scrollToBottom = useCallback((force?: boolean) => {
+    if (force || isAtBottomRef.current) {
+      scrollRef.current?.scrollToEnd({ animated: false })
+    }
+  }, [])
 
   return (
     <View style={s.pane}>
-      <ScrollView
+      <FlatList
         ref={scrollRef}
         style={s.messageList}
         contentContainerStyle={s.messageListContent}
-        onContentSizeChange={scrollToBottom}
-      >
-        {messages.length === 0 && (
+        data={messages}
+        keyExtractor={m => m.id}
+        renderItem={({ item }) => <MessageBubble message={item} />}
+        ListEmptyComponent={
           <Text style={s.emptyState}>
             {status === 'connecting' || status === 'disconnected' ? 'connecting to server…' : 'send a message to begin'}
           </Text>
-        )}
-        {messages.map(m => <MessageBubble key={m.id} message={m} />)}
-        {isPending && <PendingEllipsis />}
-      </ScrollView>
+        }
+        ListFooterComponent={isPending ? <PendingEllipsis /> : null}
+        onContentSizeChange={() => scrollToBottom()}
+        onScroll={({ nativeEvent: { contentOffset, contentSize, layoutMeasurement } }) => {
+          const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y
+          isAtBottomRef.current = distanceFromBottom < 80
+        }}
+        scrollEventThrottle={100}
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
+        initialNumToRender={30}
+      />
+
+      {(status === 'connecting' || status === 'disconnected' || status === 'error') && (
+        <View style={s.reconnectBanner}>
+          {status !== 'error' && <ActivityIndicator size="small" color={C.yellow} style={{ marginRight: 6 }} />}
+          <Text style={s.reconnectText}>
+            {status === 'error' ? 'connection error — retrying…' : 'reconnecting…'}
+          </Text>
+        </View>
+      )}
 
       <KeyboardStickyView offset={{ closed: insets.bottom, opened: 0 }}>
         {completions.length > 0 && (
@@ -889,7 +914,7 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
             placeholderTextColor={C.textMuted}
             multiline
             returnKeyType="default"
-            editable={pendingQuestion || status === 'ready' || status === 'resumed'}
+            editable={!isStreaming || pendingQuestion}
           />
           {canSpawnWorker && !!input.trim() && !isStreaming && (status === 'ready' || status === 'resumed') && !pendingQuestion && (
             <TouchableOpacity style={[s.btnSend, { backgroundColor: C.yellow }]} onPress={spawnWorker}>
@@ -1388,6 +1413,8 @@ const s = StyleSheet.create({
   messageList:      { flex: 1 },
   messageListContent: { paddingVertical: 16, paddingBottom: 8 },
   emptyState:       { textAlign: 'center', color: C.textMuted, fontSize: 14, marginTop: 80 },
+  reconnectBanner:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 7, backgroundColor: '#fffbeb', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#fef3c7' },
+  reconnectText:    { color: C.yellow, fontSize: 12, fontWeight: '500' },
 
   // Messages
   messageWrap:      { paddingHorizontal: 14, marginBottom: 14 },
