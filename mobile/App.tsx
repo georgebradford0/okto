@@ -380,6 +380,7 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
   const [input,           setInput]           = useState('')
   const [completions,     setCompletions]     = useState<string[]>([])
   const [compQuery,       setCompQuery]       = useState<{ atPos: number; dirPart: string; filePart: string } | null>(null)
+  const [inputBarHeight,  setInputBarHeight]  = useState(0)
   // True once AsyncStorage has been checked so the WebSocket doesn't connect before
   // we know whether to include session_id in the URL.
   const [sessionLoaded,   setSessionLoaded]   = useState(false)
@@ -920,6 +921,8 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets={false}
         initialNumToRender={30}
+        contentInset={{ bottom: inputBarHeight }}
+        scrollIndicatorInsets={{ bottom: inputBarHeight }}
       />
 
       {(status === 'connecting' || status === 'disconnected' || status === 'error') && (
@@ -931,7 +934,7 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
         </View>
       )}
 
-      <KeyboardStickyView offset={{ closed: -insets.bottom, opened: 0 }}>
+      <KeyboardStickyView offset={{ closed: -insets.bottom, opened: 0 }} onLayout={e => setInputBarHeight(e.nativeEvent.layout.height)} style={{ position: 'absolute', bottom: 0, left: 0, right: 0 }}>
         {completions.length > 0 && (
           <ScrollView style={s.completionList} keyboardShouldPersistTaps="always">
             {completions.map((c, i) => (
