@@ -161,10 +161,25 @@ function ToolResultBlock({ content: _ }: { content: unknown }) {
 
 // ── BlockRenderer ─────────────────────────────────────────────────────────────
 
+/** Split text on **…** markers and render bold spans inline. */
+function renderBoldText(text: string, baseStyle: object) {
+  const parts = text.split(/\*\*(.+?)\*\*/gs)
+  if (parts.length === 1) return <Text style={baseStyle}>{text}</Text>
+  return (
+    <Text style={baseStyle}>
+      {parts.map((part, i) =>
+        i % 2 === 1
+          ? <Text key={i} style={{ fontWeight: '900' }}>{part}</Text>
+          : part
+      )}
+    </Text>
+  )
+}
+
 const BlockRenderer = memo(function BlockRenderer({ block }: { block: Block }) {
   switch (block.kind) {
     case 'text':
-      return <Text style={s.textBlock}>{block.text}</Text>
+      return renderBoldText(block.text, s.textBlock)
     case 'tool_use':
       return <ToolUseBlock tool={block.tool} input={block.input} />
     case 'tool_result':

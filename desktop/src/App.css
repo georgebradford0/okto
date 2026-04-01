@@ -363,6 +363,8 @@
 
 .message--user .text-block { color: #2145B8; }
 
+.text-block strong { font-weight: 900; }
+
 /* ── Cursor ───────────────────────────────────────────────────────────────── */
 
 .cursor {
