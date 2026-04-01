@@ -103,13 +103,29 @@ const MAIN_WS_URL  = 'ws://localhost:8000/chat'
 
 // ── ToolUseBlock ──────────────────────────────────────────────────────────────
 
+function toolSummary(tool: string, input: Record<string, unknown>): string {
+  const arg =
+    (input.command as string | undefined) ??
+    (input.pattern as string | undefined) ??
+    (input.query as string | undefined) ??
+    (input.file_path as string | undefined) ??
+    (input.path as string | undefined) ??
+    (input.skill as string | undefined) ??
+    (input.prompt as string | undefined) ??
+    Object.values(input)[0]
+  if (arg === undefined) return `${tool}()`
+  const str = typeof arg === 'string' ? arg : JSON.stringify(arg)
+  const truncated = str.length > 60 ? str.slice(0, 60) + '…' : str
+  return `${tool}("${truncated}")`
+}
+
 function ToolUseBlock({ block }: { block: Extract<Block, { kind: 'tool_use' }> }) {
   const [open, setOpen] = useState(false)
+  const summary = toolSummary(block.tool, block.input)
   return (
     <div className="tool-block">
       <button className="tool-header" onClick={() => setOpen(o => !o)}>
-        <span className="tool-icon">⚙</span>
-        <span className="tool-name">{block.tool}</span>
+        <span className="tool-summary">{summary}</span>
         <span className="tool-toggle">{open ? '▲' : '▼'}</span>
       </button>
       {open && <pre className="tool-body">{JSON.stringify(block.input, null, 2)}</pre>}

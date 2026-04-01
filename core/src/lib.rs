@@ -314,7 +314,7 @@ pub fn slug(text: &str) -> String {
 // ── Tool Definitions ──────────────────────────────────────────────────────────
 
 pub fn tool_definitions() -> Vec<AnthropicTool> {
-    vec![
+    let mut tools = vec![
         AnthropicTool { name: "bash".into(),
             description: "Run a shell command in the repository directory. Returns stdout/stderr.".into(),
             input_schema: serde_json::json!({ "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] }) },
@@ -366,9 +366,6 @@ pub fn tool_definitions() -> Vec<AnthropicTool> {
         AnthropicTool { name: "web_fetch".into(),
             description: "Fetch a URL and return its text content (HTML stripped). Truncated at 50 000 chars.".into(),
             input_schema: serde_json::json!({ "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"] }) },
-        AnthropicTool { name: "web_search".into(),
-            description: "Search the web via Brave Search. Requires BRAVE_API_KEY env var.".into(),
-            input_schema: serde_json::json!({ "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"] }) },
         AnthropicTool { name: "create_pull_request".into(),
             description: "Create a pull request (GitHub) or merge request (GitLab) from the current branch. Requires GH_TOKEN env var. Detects the host from the repo's git remote URL. Use after pushing a branch to propose merging it into the base branch.".into(),
             input_schema: serde_json::json!({ "type": "object", "properties": {
@@ -377,7 +374,13 @@ pub fn tool_definitions() -> Vec<AnthropicTool> {
                 "head":  { "type": "string", "description": "Source branch to merge from (defaults to current branch)" },
                 "base":  { "type": "string", "description": "Target branch to merge into (defaults to main)" }
             }, "required": ["title"] }) },
-    ]
+    ];
+    if std::env::var("BRAVE_API_KEY").ok().filter(|s| !s.is_empty()).is_some() {
+        tools.push(AnthropicTool { name: "web_search".into(),
+            description: "Search the web via Brave Search.".into(),
+            input_schema: serde_json::json!({ "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"] }) });
+    }
+    tools
 }
 
 // ── Tool Execution ─────────────────────────────────────────────────────────────
