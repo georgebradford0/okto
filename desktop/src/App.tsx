@@ -58,8 +58,8 @@ type ServerFrame =
 
 type Block =
   | { kind: 'text';           text: string }
-  | { kind: 'tool_use';       tool: string; input: Record<string, unknown> }
-  | { kind: 'tool_result';    content: unknown }
+  | { kind: 'tool_use';       tool: string; input: Record<string, unknown>; result?: unknown }
+  | { kind: 'tool_result';    content: unknown }  // kept for type compat, not rendered
   | { kind: 'result';         cost_usd: number; turns: number }
   | { kind: 'error';          message: string }
   | { kind: 'interrupted' }
@@ -122,36 +122,29 @@ function toolSummary(tool: string, input: Record<string, unknown>): string {
 function ToolUseBlock({ block }: { block: Extract<Block, { kind: 'tool_use' }> }) {
   const [open, setOpen] = useState(false)
   const summary = toolSummary(block.tool, block.input)
+  const resultText = block.result === undefined
+    ? null
+    : typeof block.result === 'string'
+      ? block.result
+      : JSON.stringify(block.result, null, 2)
+  const hasResult = resultText !== null
   return (
-    <div className="tool-block">
-      <button className="tool-header" onClick={() => setOpen(o => !o)}>
-        <span className="tool-summary">{summary}</span>
-        <span className="tool-toggle">{open ? '▲' : '▼'}</span>
+    <div className="tool-line">
+      <button
+        className="tool-line-btn"
+        onClick={() => hasResult && setOpen(o => !o)}
+        style={{ cursor: hasResult ? 'pointer' : 'default' }}
+      >
+        <span className="tool-line-indicator">{open ? '▾' : '▸'}</span>
+        <span className="tool-line-summary">{summary}</span>
       </button>
-      {open && <pre className="tool-body">{JSON.stringify(block.input, null, 2)}</pre>}
+      {open && hasResult && (
+        <pre className="tool-line-output">{resultText}</pre>
+      )}
     </div>
   )
 }
 
-// ── ToolResultBlock ───────────────────────────────────────────────────────────
-
-function ToolResultBlock({ block }: { block: Extract<Block, { kind: 'tool_result' }> }) {
-  const [open, setOpen] = useState(false)
-  const text = typeof block.content === 'string'
-    ? block.content
-    : JSON.stringify(block.content, null, 2)
-  const preview = text.slice(0, 60).replace(/\n/g, ' ')
-  return (
-    <div className="tool-result-block">
-      <button className="tool-result-header" onClick={() => setOpen(o => !o)}>
-        <span className="result-icon">↩</span>
-        <span className="result-preview">{preview}{text.length > 60 ? '…' : ''}</span>
-        <span className="tool-toggle">{open ? '▲' : '▼'}</span>
-      </button>
-      {open && <pre className="tool-body">{text}</pre>}
-    </div>
-  )
-}
 
 // ── BlockRenderer ─────────────────────────────────────────────────────────────
 
@@ -162,7 +155,7 @@ function BlockRenderer({ block }: { block: Block }) {
     case 'tool_use':
       return <ToolUseBlock block={block} />
     case 'tool_result':
-      return <ToolResultBlock block={block} />
+      return null  // result is merged into the tool_use block above it
     case 'result':
       return (
         <div className="result-footer">
@@ -337,6 +330,23 @@ function ChatPane({
     })
   }, [])
 
+  // Attach a tool result to the last tool_use block in the last streaming message
+  const patchLastToolResult = useCallback((content: unknown) => {
+    setMessages(prev => {
+      const lastIdx = prev.length - 1
+      const last = prev[lastIdx]
+      if (!last) return prev
+      // find the last tool_use block
+      const blockIdx = [...last.blocks].map((b, i) => ({ b, i })).reverse()
+        .find(({ b }) => b.kind === 'tool_use')?.i
+      if (blockIdx === undefined) return prev
+      const updated = last.blocks.map((b, i) =>
+        i === blockIdx && b.kind === 'tool_use' ? { ...b, result: content } : b
+      )
+      return prev.map((m, i) => i < lastIdx ? m : { ...m, blocks: updated })
+    })
+  }, [])
+
   const completeResponse = useCallback(() => {
     inResponseRef.current = false
     setIsPending(false)
@@ -361,7 +371,7 @@ function ChatPane({
         appendBlock({ kind: 'tool_use', tool: frame.tool, input: frame.input })
         break
       case 'tool_result':
-        appendBlock({ kind: 'tool_result', content: frame.content })
+        patchLastToolResult(frame.content)
         // After tool results, we're waiting for the next API turn
         inResponseRef.current = false
         setIsStreaming(false)
@@ -426,7 +436,7 @@ function ChatPane({
         completeResponse()
         break
     }
-  }, [appendBlock, completeResponse, ensureAssistantMsg, updateStatus])
+  }, [appendBlock, completeResponse, ensureAssistantMsg, patchLastToolResult, updateStatus])
 
   // ── Tauri event path ────────────────────────────────────────────────────────
 
