@@ -246,16 +246,16 @@ pub fn resolve_path(p: &str, cwd: &str) -> PathBuf {
 pub fn tool_output_limit(tool: &str) -> usize {
     match tool {
         // Shell commands and file reads can produce large but meaningful output.
-        "bash"        => 20_000,
-        "read_file"   => 20_000,
+        "bash"        => 10_000,
+        "read_file"   => 10_000,
         // Web pages contain lots of useful prose; strip_html already reduces them.
-        "web_fetch"   => 20_000,
+        "web_fetch"   => 10_000,
         // Task output is subprocess/agent output — can be substantial.
-        "task_output" =>  8_000,
+        "task_output" =>  6_000,
         // Search results: 10 results × ~400 chars each saturates well under 4 k.
         "web_search"  =>  4_000,
         // Match lists: more than ~6 k of grep hits is noise the model won't act on.
-        "grep"        =>  6_000,
+        "grep"        =>  4_000,
         // Task records are short structured JSON.
         "task_get"    =>  2_000,
         // Task lists and file-path lists are inherently short.
@@ -848,7 +848,7 @@ pub async fn stream_turn(
         last["cache_control"] = serde_json::json!({"type": "ephemeral"});
     }
 
-    let compacted = compact_history(messages, 6);
+    let compacted = compact_history(messages, 3);
 
     // Serialize messages to JSON so we can inject cache_control without
     // polluting the ContentBlock data model with API transport concerns.
@@ -891,7 +891,7 @@ pub async fn stream_turn(
 
     let body = serde_json::json!({
         "model": model,
-        "max_tokens": 16000,
+        "max_tokens": 8192,
         "system": [{"type":"text","text":system,"cache_control":{"type":"ephemeral"}}],
         "tools": tools,
         "messages": messages_json,
