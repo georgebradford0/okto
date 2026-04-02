@@ -1005,6 +1005,7 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
             multiline
             returnKeyType="send"
             blurOnSubmit={false}
+            onSubmitEditing={() => sendMessageRef.current()}
             editable={!isStreaming || pendingQuestion}
           />
           {canSpawnWorker && messages.length > 0 && !isStreaming && !isPending && (

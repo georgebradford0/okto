@@ -1106,7 +1106,13 @@ pub fn build_system_prompt(repo_path: &str, branch: Option<&str>, worktree_path:
         \n- Use grep to locate the exact lines before reading or editing.\
         \n- Use write_file only for creating new files.\
         \n- Be concise and precise.\
-        \n\nResponse style: answers should be concise but informative — get to the point without unnecessary padding, but include all details that are genuinely useful.";
+        \n\nResponse style: answers should be concise but informative — get to the point without unnecessary padding, but include all details that are genuinely useful.\
+        \n\nVerbosity rules (CRITICAL):\
+        \n- Do NOT narrate tool calls. Never say what you are about to do before calling a tool.\
+        \n- Do NOT summarise tool results in prose after they return. Let the results speak for themselves.\
+        \n- Only write prose when you have a direct answer or question for the user.\
+        \n- Never use filler phrases like \"I'll now...\", \"Let me...\", \"I've completed...\", \"Sure!\" etc.\
+        \n- Never pad responses.";
 
     let claude_md = std::fs::read_to_string(format!("{}/CLAUDE.md", repo_path))
         .map(|s| format!("\n\n# Project instructions (CLAUDE.md)\n{}", s))
