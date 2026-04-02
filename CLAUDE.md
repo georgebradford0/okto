@@ -21,3 +21,7 @@ docker buildx build \
 ```
 
 **Never** use `claudulhu:latest` or any name that omits `-server`.
+
+## GitHub CLI
+
+`gh` (v2.89.0) is installed and available in `$PATH`. Use it for GitHub operations (triggering workflows, creating PRs, etc.) in preference to raw `curl` API calls. `GH_TOKEN` is set in the environment so no separate `gh auth login` is needed.
