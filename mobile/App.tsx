@@ -385,7 +385,7 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
   const { height: keyboardHeight } = useReanimatedKeyboardAnimation()
   const listContainerStyle = useAnimatedStyle(() => ({
     flex: 1,
-    marginBottom: inputBarHeight.value + keyboardHeight.value,
+    marginBottom: inputBarHeight.value - keyboardHeight.value,
   }))
   // True once AsyncStorage has been checked so the WebSocket doesn't connect before
   // we know whether to include session_id in the URL.
