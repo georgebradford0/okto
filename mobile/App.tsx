@@ -423,6 +423,7 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
   // socket is already closed (mid backoff timer).
   const connectFnRef            = useRef<(() => void) | null>(null)
   const pendingReconnectTimer   = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const sendMessageRef          = useRef<() => void>(() => {})
 
   onStatusChangeRef.current  = onStatusChange
   onWorkerCreatedRef.current = onWorkerCreated
@@ -829,6 +830,7 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
     isAtBottomRef.current = true
     setInput(''); setCompletions([]); setCompQuery(null)
   }, [input, isStreaming, pendingQuestion, canSpawnWorker])
+  sendMessageRef.current = sendMessage
 
   const spawnWorker = useCallback(() => {
     const text = input.trim()
@@ -981,7 +983,7 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
             style={s.input}
             value={input}
             onChangeText={text => {
-              if (text.includes('\n')) { sendMessage(); return }
+              if (text.includes('\n')) { sendMessageRef.current(); return }
               handleInputChange(text)
             }}
             placeholder={canSpawnWorker ? (pendingQuestion ? 'answer…' : '& for new worktree, or message…') : (pendingQuestion ? 'answer…' : 'message…')}
