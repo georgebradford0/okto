@@ -382,10 +382,16 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
   const [completions,     setCompletions]     = useState<string[]>([])
   const [compQuery,       setCompQuery]       = useState<{ atPos: number; dirPart: string; filePart: string } | null>(null)
   const inputBarHeight = useSharedValue(0)
-  const { height: keyboardHeight } = useReanimatedKeyboardAnimation()
+  const { height: keyboardHeight, progress: keyboardProgress } = useReanimatedKeyboardAnimation()
   const listContainerStyle = useAnimatedStyle(() => ({
     flex: 1,
     marginBottom: inputBarHeight.value - keyboardHeight.value,
+  }))
+  const inputBarStyle = useAnimatedStyle(() => ({
+    paddingBottom: insets.bottom * (1 - keyboardProgress.value),
+  }))
+  const bottomFillStyle = useAnimatedStyle(() => ({
+    height: insets.bottom * (1 - keyboardProgress.value),
   }))
   // True once AsyncStorage has been checked so the WebSocket doesn't connect before
   // we know whether to include session_id in the URL.
@@ -914,7 +920,7 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
   return (
     <View style={s.pane}>
       {/* Fills the home-indicator zone with the input bar colour so there's no colour mismatch below the sticky view */}
-      <View style={[s.bottomFill, { height: insets.bottom }]} />
+      <Reanimated.View style={[s.bottomFill, bottomFillStyle]} />
       <Reanimated.View style={listContainerStyle}>
         <FlatList
           ref={scrollRef}
@@ -950,7 +956,8 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
         </View>
       )}
 
-      <KeyboardStickyView onLayout={e => { inputBarHeight.value = e.nativeEvent.layout.height }} style={{ position: 'absolute', bottom: 0, left: 0, right: 0, paddingBottom: insets.bottom, backgroundColor: C.surface }}>
+      <KeyboardStickyView onLayout={e => { inputBarHeight.value = e.nativeEvent.layout.height }} style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: C.surface }}>
+        <Reanimated.View style={inputBarStyle}>
         {completions.length > 0 && (
           <ScrollView style={s.completionList} keyboardShouldPersistTaps="always">
             {completions.map((c, i) => (
@@ -990,6 +997,7 @@ const ChatPane = memo(function ChatPane({ wsUrl, storageKey, tunnelPort, branche
             </TouchableOpacity>
           )}
         </View>
+        </Reanimated.View>
       </KeyboardStickyView>
     </View>
   )
