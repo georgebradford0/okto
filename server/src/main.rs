@@ -17,7 +17,8 @@ use axum::{
 };
 use claudulhu_core::{
     build_system_prompt, effective_repo, get_branches_for_repo, init_shell_env, read_config,
-    resolve_api_key, write_config, ApiMessage, ChatEvent, Config, ContentBlock, Session,
+    resolve_api_key, run_agentic_loop, write_config, ApiMessage, ChatEvent, Config, ContentBlock,
+    Session,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
