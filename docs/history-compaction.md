@@ -21,13 +21,19 @@ each API request.
 
 ### The `keep_full` window
 
-`compact_history` is called with `keep_full = 3`. This means the **3 most recent
+`compact_history` is called with `keep_full = 20`. This means the **20 most recent
 tool-result user messages** and their paired assistant turns are kept at full fidelity.
 Everything older is stubbed.
 
 The window exists because the model frequently needs to refer back to recent tool
 results (e.g. a file it just read, the output of the last bash command). Stubbing
-those would hurt task quality. Turns beyond 3 steps ago are rarely consulted.
+those would hurt task quality.
+
+`keep_full = 20` is a deliberately generous setting chosen to prioritise task quality
+over token cost while the impact of the new stub preview format (see below) is being
+evaluated. The tradeoff is straightforward: a larger window means more input tokens
+per turn but fewer re-exploration loops. For most tasks (< 20 tool calls) this means
+the full history is never compacted at all.
 
 ### What counts as a "tool-result message"
 
@@ -79,26 +85,31 @@ place.
 
 ---
 
+## Max turns
+
+`run_agentic_loop` enforces a hard limit of **100 turns**. If the model reaches this
+limit the loop emits a `ChatEvent::Error` and exits. This prevents runaway sessions
+from accumulating unbounded cost when the model stalls.
+
 ## Token impact
 
-For a session with T total turns and `keep_full = 3`:
+For a session with T total turns and `keep_full = 20`:
 
-- **Tool-result messages:** turns 1 through T−3 go from their full output size (up
-  to 10 000 chars / ~2 500 tokens each) down to a single stub line (~10 tokens).
-- **Paired assistant messages:** turns 1 through T−3 go from full reasoning text
-  (typically 100–500 tokens each) down to one `[truncated]` text block plus
-  minimal `ToolUse` stubs.
+- **Tool-result messages:** turns 1 through T−20 go from their full output size (up
+  to 10 000 chars / ~2 500 tokens each) down to a stub with a 300-char preview.
+- **Paired assistant messages:** turns 1 through T−20 go from full reasoning text
+  (typically 100–500 tokens each) down to a 200-char preview plus minimal `ToolUse` stubs.
 
-In a 20-turn session this reduces the compacted history sent to the API by roughly
-80–90% compared to sending the full history, and by 50–70% compared to the previous
-approach that only stubbed tool-results.
+For sessions under 20 tool-result turns, nothing is compacted at all. For longer
+sessions, compaction still reduces old-turn token cost substantially while the
+preview format retains the key finding from each step.
 
 ---
 
 ## Call site
 
 ```
-stream_turn()  →  compact_history(messages, 3)  →  messages_json (sent to API)
+stream_turn()  →  compact_history(messages, 20)  →  messages_json (sent to API)
 ```
 
 Compaction runs on the in-memory session snapshot before each API call and does not

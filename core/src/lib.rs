@@ -868,7 +868,7 @@ pub async fn stream_turn(
         last["cache_control"] = serde_json::json!({"type": "ephemeral"});
     }
 
-    let compacted = compact_history(messages, 3);
+    let compacted = compact_history(messages, 20);
 
     // Serialize messages to JSON so we can inject cache_control without
     // polluting the ContentBlock data model with API transport concerns.
@@ -1050,7 +1050,16 @@ pub async fn run_agentic_loop(
     let mut total_cache_creation_input   = 0u64;
     let mut total_cache_read_input       = 0u64;
 
+    const MAX_TURNS: usize = 100;
+
     loop {
+        if turns >= MAX_TURNS {
+            tx.send(ChatEvent::Error {
+                message: format!("Stopped after {MAX_TURNS} turns to prevent runaway loop"),
+            }).await.ok();
+            return;
+        }
+
         let (messages, system, cwd, aborted, pending_question) = {
             let s = session.lock().unwrap();
             (s.messages.clone(), s.system_prompt.clone(), s.cwd.clone(), s.aborted.clone(), s.pending_question.clone())
