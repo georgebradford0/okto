@@ -256,13 +256,6 @@ const ChatPane = memo(function ChatPane({
     onStatusChange(s)
   }, [onStatusChange])
 
-  // Scroll to bottom when messages change
-  useEffect(() => {
-    if (isAtBottomRef.current && messages.length > 0) {
-      listRef.current?.scrollToEnd({ animated: true })
-    }
-  }, [messages])
-
   // WebSocket connection lifecycle
   useEffect(() => {
     let cancelled = false
