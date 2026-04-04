@@ -295,6 +295,7 @@ const ChatPane = memo(function ChatPane({
   const [input,          setInput]          = useState('')
   const [pendingQuestion, setPendingQuestion] = useState(false)
   const [completions,    setCompletions]    = useState<string[]>([])
+  const [showScrollBtn,  setShowScrollBtn]  = useState(false)
 
   const httpBase = wsUrl.replace(/^ws:/, 'http:').replace(/\/chat$/, '')
 
@@ -569,10 +570,13 @@ const ChatPane = memo(function ChatPane({
           onContentSizeChange={() => {
             if (isAtBottomRef.current) {
               listRef.current?.scrollToEnd({ animated: true })
+              setShowScrollBtn(false)
             }
           }}
           onScroll={({ nativeEvent: { layoutMeasurement, contentOffset, contentSize } }) => {
-            isAtBottomRef.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 40
+            const atBottom = contentOffset.y + layoutMeasurement.height >= contentSize.height - 40
+            isAtBottomRef.current = atBottom
+            setShowScrollBtn(!atBottom)
           }}
           scrollEventThrottle={100}
           keyboardShouldPersistTaps="handled"
@@ -586,6 +590,22 @@ const ChatPane = memo(function ChatPane({
             <Text style={s.reconnectText}>
               {status === 'error' ? 'connection error — retrying…' : 'reconnecting…'}
             </Text>
+          </View>
+        )}
+
+        {showScrollBtn && (
+          <View style={s.scrollBtnWrap} pointerEvents="box-none">
+            <TouchableOpacity
+              style={s.scrollBtn}
+              onPress={() => {
+                isAtBottomRef.current = true
+                setShowScrollBtn(false)
+                listRef.current?.scrollToEnd({ animated: true })
+              }}
+              activeOpacity={0.75}
+            >
+              <Text style={s.scrollBtnIcon}>↓</Text>
+            </TouchableOpacity>
           </View>
         )}
 
@@ -965,6 +985,11 @@ const s = StyleSheet.create({
   emptyState:        { textAlign: 'center', color: C.textMuted, fontSize: 14, marginTop: 80 },
   reconnectBanner:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 7, backgroundColor: '#fffbeb', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#fef3c7' },
   reconnectText:     { color: C.yellow, fontSize: 12, fontWeight: '500' },
+
+  // Scroll-to-bottom button
+  scrollBtnWrap:     { position: 'absolute', bottom: 0, left: 0, right: 0, alignItems: 'center', pointerEvents: 'box-none' },
+  scrollBtn:         { backgroundColor: C.bg, borderRadius: 20, width: 36, height: 36, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 4, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, marginBottom: 8 },
+  scrollBtnIcon:     { fontSize: 18, color: C.textSecondary, lineHeight: 22 },
 
   // Messages
   messageWrap:       { paddingHorizontal: 14, marginBottom: 14 },
