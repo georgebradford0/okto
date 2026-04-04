@@ -227,12 +227,13 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
 // ── ChatPane ──────────────────────────────────────────────────────────────────
 
 const ChatPane = memo(function ChatPane({
-  wsUrl, connKey, onStatusChange, clearRef,
+  wsUrl, connKey, onStatusChange, clearRef, interruptRef,
 }: {
   wsUrl:          string
   connKey:        string
   onStatusChange: (s: ConnStatus) => void
   clearRef:       React.MutableRefObject<() => void>
+  interruptRef:   React.MutableRefObject<() => void>
 }) {
   const insets                     = useSafeAreaInsets()
   const { height: keyboardHeight } = useReanimatedKeyboardAnimation()
@@ -399,9 +400,14 @@ const ChatPane = memo(function ChatPane({
   const clearConversation = useCallback(() => {
     wsRef.current?.send(JSON.stringify({ type: 'clear' }))
     setMessages([])
+    setPendingQuestion(false)
     AsyncStorage.removeItem(`msgs_${connKey}`).catch(() => {})
   }, [connKey])
   clearRef.current = clearConversation
+
+  interruptRef.current = () => {
+    wsRef.current?.send(JSON.stringify({ type: 'interrupt' }))
+  }
 
   const isPending = status === 'streaming' && messages.length > 0 && !messages[messages.length - 1]?.streaming
 
@@ -446,16 +452,6 @@ const ChatPane = memo(function ChatPane({
         )}
 
         <View style={{ backgroundColor: C.surface }}>
-          {status === 'streaming' && (
-            <View style={s.stopAboveRow}>
-              <TouchableOpacity
-                style={s.btnStop}
-                onPress={() => wsRef.current?.send(JSON.stringify({ type: 'interrupt' }))}
-              >
-                <Text style={s.btnStopText}>■</Text>
-              </TouchableOpacity>
-            </View>
-          )}
           <View style={s.inputRow}>
             <TextInput
               style={s.input}
@@ -513,7 +509,8 @@ function AppInner() {
   const [savedConns,  setSavedConns]  = useState<NoiseConnectionInfo[]>([])
   const [repoName,    setRepoName]    = useState<string | null>(null)
   const [chatStatus,  setChatStatus]  = useState<ConnStatus>('connecting')
-  const clearChatRef  = useRef<() => void>(() => {})
+  const clearChatRef     = useRef<() => void>(() => {})
+  const interruptChatRef = useRef<() => void>(() => {})
 
   // Load saved connections on mount; auto-connect if exactly one saved.
   useEffect(() => {
@@ -713,14 +710,24 @@ function AppInner() {
               {repoName && <Text style={s.headerRepo}>{repoName}</Text>}
             </View>
           </View>
-          <TouchableOpacity
-            style={s.clearBtn}
-            onPress={() => clearChatRef.current()}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            disabled={chatStatus === 'streaming'}
-          >
-            <Text style={[s.clearBtnText, chatStatus === 'streaming' && { opacity: 0.3 }]}>clear</Text>
-          </TouchableOpacity>
+          {chatStatus === 'streaming' ? (
+            <TouchableOpacity
+              style={s.clearBtn}
+              onPress={() => interruptChatRef.current()}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={s.stopBtnText}>■ stop</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={s.clearBtn}
+              onPress={() => clearChatRef.current()}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              disabled={chatStatus !== 'ready'}
+            >
+              <Text style={[s.clearBtnText, chatStatus !== 'ready' && { opacity: 0.3 }]}>clear</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         <ChatPane
@@ -728,6 +735,7 @@ function AppInner() {
           connKey={connKeyFor(conn)}
           onStatusChange={setChatStatus}
           clearRef={clearChatRef}
+          interruptRef={interruptChatRef}
         />
       </View>
     </SafeAreaView>
@@ -818,9 +826,7 @@ const s = StyleSheet.create({
 
   // Input bar
   inputRow:     { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 12, paddingVertical: 10, paddingBottom: Platform.OS === 'android' ? 14 : 10, gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, backgroundColor: C.surface },
-  stopAboveRow: { flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 12, paddingBottom: 6, backgroundColor: C.surface },
   input:        { flex: 1, backgroundColor: C.bg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, color: C.textPrimary, fontSize: 17, lineHeight: 24, maxHeight: 140 },
-  btnStop:      { width: 40, height: 40, backgroundColor: C.red, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  btnStopText:  { color: '#fff', fontSize: 13 },
+  stopBtnText:  { fontSize: 14, color: C.red, fontWeight: '600' },
 })
 
