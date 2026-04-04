@@ -244,6 +244,7 @@ const ChatPane = memo(function ChatPane({
   const [messages,       setMessages]       = useState<Message[]>([])
   const [status,         setStatus]         = useState<ConnStatus>('connecting')
   const [input,          setInput]          = useState('')
+  const [inputHeight,    setInputHeight]    = useState(48)
   const [pendingQuestion, setPendingQuestion] = useState(false)
 
   const wsRef           = useRef<WebSocket | null>(null)
@@ -387,6 +388,7 @@ const ChatPane = memo(function ChatPane({
     updateStatus('streaming')
 
     setInput('')
+    setInputHeight(48)
   }, [input, pendingQuestion, status])
 
   sendMessageRef.current = sendMessage
@@ -447,12 +449,15 @@ const ChatPane = memo(function ChatPane({
         <View style={{ backgroundColor: C.surface }}>
           <View style={s.inputRow}>
             <TextInput
-              style={s.input}
+              style={[s.input, { height: inputHeight }]}
               value={input}
               onChangeText={text => {
                 if (text.includes('\n')) { sendMessageRef.current(); return }
                 setInput(text)
               }}
+              onContentSizeChange={e =>
+                setInputHeight(Math.min(e.nativeEvent.contentSize.height, 140))
+              }
               onSubmitEditing={() => sendMessageRef.current()}
               placeholder={pendingQuestion ? 'answer…' : 'message…'}
               placeholderTextColor={C.textMuted}
@@ -819,7 +824,7 @@ const s = StyleSheet.create({
 
   // Input bar
   inputRow:     { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 12, paddingVertical: 10, paddingBottom: Platform.OS === 'android' ? 14 : 10, gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, backgroundColor: C.surface },
-  input:        { flex: 1, backgroundColor: C.bg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, color: C.textPrimary, fontSize: 17, lineHeight: 24, maxHeight: 140 },
+  input:        { flex: 1, backgroundColor: C.bg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, color: C.textPrimary, fontSize: 17, lineHeight: 24 },
   stopBtnText:  { fontSize: 14, color: C.red, fontWeight: '600' },
 })
 
