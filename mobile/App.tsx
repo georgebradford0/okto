@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
-import { useCallback, useEffect, memo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, memo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Animated,
@@ -13,8 +13,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native'
-import { KeyboardProvider, KeyboardStickyView, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller'
-import Reanimated, { useAnimatedStyle } from 'react-native-reanimated'
+import { KeyboardAvoidingView, KeyboardProvider } from 'react-native-keyboard-controller'
+import Reanimated from 'react-native-reanimated'
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Camera, useCameraDevice, useCodeScanner } from 'react-native-vision-camera'
 import NoiseConnection from './src/NativeNoiseConnection'
@@ -227,11 +227,12 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
 // ── ChatPane ──────────────────────────────────────────────────────────────────
 
 const ChatPane = memo(function ChatPane({
-  wsUrl, connKey, onStatusChange,
+  wsUrl, connKey, onStatusChange, clearRef,
 }: {
   wsUrl:          string
   connKey:        string
   onStatusChange: (s: ConnStatus) => void
+  clearRef:       React.MutableRefObject<() => void>
 }) {
   const insets = useSafeAreaInsets()
 
@@ -239,19 +240,11 @@ const ChatPane = memo(function ChatPane({
   const [status,         setStatus]         = useState<ConnStatus>('connecting')
   const [input,          setInput]          = useState('')
   const [pendingQuestion, setPendingQuestion] = useState(false)
-  const [inputBarH,      setInputBarH]      = useState(0)
 
   const wsRef           = useRef<WebSocket | null>(null)
   const sendMessageRef  = useRef<() => void>(() => {})
   const listRef         = useRef<FlatList<Message>>(null)
   const isAtBottomRef   = useRef(true)
-
-  const { height: kbHeight } = useReanimatedKeyboardAnimation()
-  const inputBarStyle = useAnimatedStyle(() => ({
-    // kbHeight.value is negative while keyboard is up; interpolate bottom safe-area
-    // inset from full (keyboard hidden) to zero (keyboard fully shown).
-    paddingBottom: Math.max(0, insets.bottom + kbHeight.value),
-  }))
 
   const updateStatus = useCallback((s: ConnStatus) => {
     setStatus(s)
@@ -399,16 +392,23 @@ const ChatPane = memo(function ChatPane({
 
   sendMessageRef.current = sendMessage
 
+  const clearConversation = useCallback(() => {
+    wsRef.current?.send(JSON.stringify({ type: 'clear' }))
+    setMessages([])
+    AsyncStorage.removeItem(`msgs_${connKey}`).catch(() => {})
+  }, [connKey])
+  clearRef.current = clearConversation
+
   const isPending = status === 'streaming' && messages.length > 0 && !messages[messages.length - 1]?.streaming
 
   return (
-    <View style={s.pane}>
+    <KeyboardAvoidingView behavior="padding" style={s.pane}>
       <FlatList
         ref={listRef}
         data={messages}
         keyExtractor={m => m.id}
         renderItem={({ item }) => <MessageBubble message={item} />}
-        contentContainerStyle={[s.messageListContent, { paddingBottom: inputBarH + 8 }]}
+        contentContainerStyle={[s.messageListContent, { paddingBottom: 8 }]}
         style={s.messageList}
         ListEmptyComponent={<Text style={s.emptyState}>say something</Text>}
         onContentSizeChange={() => {
@@ -435,41 +435,36 @@ const ChatPane = memo(function ChatPane({
         </View>
       )}
 
-      <KeyboardStickyView
-        onLayout={e => setInputBarH(e.nativeEvent.layout.height)}
-        style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: C.surface }}
-      >
-        <Reanimated.View style={inputBarStyle}>
-          {status === 'streaming' && (
-            <View style={s.stopAboveRow}>
-              <TouchableOpacity
-                style={s.btnStop}
-                onPress={() => wsRef.current?.send(JSON.stringify({ type: 'interrupt' }))}
-              >
-                <Text style={s.btnStopText}>■</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-          <View style={s.inputRow}>
-            <TextInput
-              style={s.input}
-              value={input}
-              onChangeText={text => {
-                if (text.includes('\n')) { sendMessageRef.current(); return }
-                setInput(text)
-              }}
-              onSubmitEditing={() => sendMessageRef.current()}
-              placeholder={pendingQuestion ? 'answer…' : 'message…'}
-              placeholderTextColor={C.textMuted}
-              multiline
-              returnKeyType="send"
-              blurOnSubmit={false}
-              editable={status !== 'streaming'}
-            />
+      <View style={{ backgroundColor: C.surface, paddingBottom: insets.bottom }}>
+        {status === 'streaming' && (
+          <View style={s.stopAboveRow}>
+            <TouchableOpacity
+              style={s.btnStop}
+              onPress={() => wsRef.current?.send(JSON.stringify({ type: 'interrupt' }))}
+            >
+              <Text style={s.btnStopText}>■</Text>
+            </TouchableOpacity>
           </View>
-        </Reanimated.View>
-      </KeyboardStickyView>
-    </View>
+        )}
+        <View style={s.inputRow}>
+          <TextInput
+            style={s.input}
+            value={input}
+            onChangeText={text => {
+              if (text.includes('\n')) { sendMessageRef.current(); return }
+              setInput(text)
+            }}
+            onSubmitEditing={() => sendMessageRef.current()}
+            placeholder={pendingQuestion ? 'answer…' : 'message…'}
+            placeholderTextColor={C.textMuted}
+            multiline
+            returnKeyType="send"
+            blurOnSubmit={false}
+            editable={status !== 'streaming'}
+          />
+        </View>
+      </View>
+    </KeyboardAvoidingView>
   )
 })
 
@@ -503,6 +498,7 @@ function AppInner() {
   const [savedConns,  setSavedConns]  = useState<NoiseConnectionInfo[]>([])
   const [repoName,    setRepoName]    = useState<string | null>(null)
   const [chatStatus,  setChatStatus]  = useState<ConnStatus>('connecting')
+  const clearChatRef  = useRef<() => void>(() => {})
 
   // Load saved connections on mount; auto-connect if exactly one saved.
   useEffect(() => {
@@ -702,12 +698,21 @@ function AppInner() {
               {repoName && <Text style={s.headerRepo}>{repoName}</Text>}
             </View>
           </View>
+          <TouchableOpacity
+            style={s.clearBtn}
+            onPress={() => clearChatRef.current()}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            disabled={chatStatus === 'streaming'}
+          >
+            <Text style={[s.clearBtnText, chatStatus === 'streaming' && { opacity: 0.3 }]}>clear</Text>
+          </TouchableOpacity>
         </View>
 
         <ChatPane
           wsUrl={`ws://127.0.0.1:${tunnelPort}/chat`}
           connKey={connKeyFor(conn)}
           onStatusChange={setChatStatus}
+          clearRef={clearChatRef}
         />
       </View>
     </SafeAreaView>
@@ -773,6 +778,8 @@ const s = StyleSheet.create({
   headerLeft:   { flexDirection: 'row', alignItems: 'center', gap: 8 },
   backBtn:      { paddingRight: 4, paddingVertical: 2 },
   backBtnText:  { fontSize: 32, lineHeight: 34, color: C.accent, fontWeight: '300' },
+  clearBtn:     { paddingVertical: 4, paddingHorizontal: 2 },
+  clearBtnText: { fontSize: 14, color: C.textSecondary, fontWeight: '500' },
   headerTitle:  { fontSize: 17, fontWeight: '700', color: C.textPrimary, letterSpacing: 1 },
   headerRepo:   { fontSize: 11, color: C.textSecondary, marginTop: 1 },
   connDot:      { width: 8, height: 8, borderRadius: 4 },

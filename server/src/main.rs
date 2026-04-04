@@ -219,6 +219,7 @@ enum ClientMsg {
     Message   { text: String },
     Interrupt,
     Answer    { answer: String },
+    Clear,
 }
 
 // ── Session persistence ───────────────────────────────────────────────────────
@@ -456,6 +457,12 @@ async fn chat_ws_handler(
                     let pq   = state.session.lock().unwrap().pending_question.clone();
                     let mut slot = pq.lock().await;
                     if let Some(sender) = slot.take() { sender.send(answer).ok(); }
+                }
+
+                ClientMsg::Clear => {
+                    let mut s = state.session.lock().unwrap();
+                    s.messages.clear();
+                    save_messages(&s.messages);
                 }
             }
         }
