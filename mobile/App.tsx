@@ -13,8 +13,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native'
-import { KeyboardAvoidingView, KeyboardProvider } from 'react-native-keyboard-controller'
-import Reanimated from 'react-native-reanimated'
+import { KeyboardProvider, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller'
+import Reanimated, { useAnimatedStyle } from 'react-native-reanimated'
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Camera, useCameraDevice, useCodeScanner } from 'react-native-vision-camera'
 import NoiseConnection from './src/NativeNoiseConnection'
@@ -234,7 +234,11 @@ const ChatPane = memo(function ChatPane({
   onStatusChange: (s: ConnStatus) => void
   clearRef:       React.MutableRefObject<() => void>
 }) {
-  const insets = useSafeAreaInsets()
+  const insets                     = useSafeAreaInsets()
+  const { height: keyboardHeight } = useReanimatedKeyboardAnimation()
+  const spacerStyle                = useAnimatedStyle(() => ({
+    height: Math.max(insets.bottom, -keyboardHeight.value),
+  }))
 
   const [messages,       setMessages]       = useState<Message[]>([])
   const [status,         setStatus]         = useState<ConnStatus>('connecting')
@@ -402,69 +406,80 @@ const ChatPane = memo(function ChatPane({
   const isPending = status === 'streaming' && messages.length > 0 && !messages[messages.length - 1]?.streaming
 
   return (
-    <KeyboardAvoidingView behavior="padding" style={s.pane}>
-      <FlatList
-        ref={listRef}
-        data={messages}
-        keyExtractor={m => m.id}
-        renderItem={({ item }) => <MessageBubble message={item} />}
-        contentContainerStyle={[s.messageListContent, { paddingBottom: 8 }]}
-        style={s.messageList}
-        ListEmptyComponent={<Text style={s.emptyState}>say something</Text>}
-        onContentSizeChange={() => {
-          if (isAtBottomRef.current) {
-            listRef.current?.scrollToEnd({ animated: true })
-          }
-        }}
-        onScroll={({ nativeEvent: { layoutMeasurement, contentOffset, contentSize } }) => {
-          isAtBottomRef.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 40
-        }}
-        scrollEventThrottle={100}
-        keyboardShouldPersistTaps="handled"
-        automaticallyAdjustKeyboardInsets={false}
-      />
+    <View style={s.pane}>
+      <View style={{ flex: 1 }}>
+        <FlatList
+          ref={listRef}
+          data={messages}
+          keyExtractor={m => m.id}
+          renderItem={({ item }) => <MessageBubble message={item} />}
+          contentContainerStyle={[s.messageListContent, { paddingBottom: 8 }]}
+          style={s.messageList}
+          ListEmptyComponent={<Text style={s.emptyState}>say something</Text>}
+          onLayout={() => {
+            if (isAtBottomRef.current) {
+              listRef.current?.scrollToEnd({ animated: false })
+            }
+          }}
+          onContentSizeChange={() => {
+            if (isAtBottomRef.current) {
+              listRef.current?.scrollToEnd({ animated: true })
+            }
+          }}
+          onScroll={({ nativeEvent: { layoutMeasurement, contentOffset, contentSize } }) => {
+            isAtBottomRef.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 40
+          }}
+          scrollEventThrottle={100}
+          keyboardShouldPersistTaps="handled"
+          automaticallyAdjustKeyboardInsets={false}
+        />
 
-      {isPending && <PendingEllipsis />}
+        {isPending && <PendingEllipsis />}
 
-      {(status === 'connecting' || status === 'error') && (
-        <View style={s.reconnectBanner}>
-          {status !== 'error' && <ActivityIndicator size="small" color={C.yellow} style={{ marginRight: 6 }} />}
-          <Text style={s.reconnectText}>
-            {status === 'error' ? 'connection error — retrying…' : 'reconnecting…'}
-          </Text>
-        </View>
-      )}
-
-      <View style={{ backgroundColor: C.surface, paddingBottom: insets.bottom }}>
-        {status === 'streaming' && (
-          <View style={s.stopAboveRow}>
-            <TouchableOpacity
-              style={s.btnStop}
-              onPress={() => wsRef.current?.send(JSON.stringify({ type: 'interrupt' }))}
-            >
-              <Text style={s.btnStopText}>■</Text>
-            </TouchableOpacity>
+        {(status === 'connecting' || status === 'error') && (
+          <View style={s.reconnectBanner}>
+            {status !== 'error' && <ActivityIndicator size="small" color={C.yellow} style={{ marginRight: 6 }} />}
+            <Text style={s.reconnectText}>
+              {status === 'error' ? 'connection error — retrying…' : 'reconnecting…'}
+            </Text>
           </View>
         )}
-        <View style={s.inputRow}>
-          <TextInput
-            style={s.input}
-            value={input}
-            onChangeText={text => {
-              if (text.includes('\n')) { sendMessageRef.current(); return }
-              setInput(text)
-            }}
-            onSubmitEditing={() => sendMessageRef.current()}
-            placeholder={pendingQuestion ? 'answer…' : 'message…'}
-            placeholderTextColor={C.textMuted}
-            multiline
-            returnKeyType="send"
-            blurOnSubmit={false}
-            editable={status !== 'streaming'}
-          />
+
+        <View style={{ backgroundColor: C.surface }}>
+          {status === 'streaming' && (
+            <View style={s.stopAboveRow}>
+              <TouchableOpacity
+                style={s.btnStop}
+                onPress={() => wsRef.current?.send(JSON.stringify({ type: 'interrupt' }))}
+              >
+                <Text style={s.btnStopText}>■</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          <View style={s.inputRow}>
+            <TextInput
+              style={s.input}
+              value={input}
+              onChangeText={text => {
+                if (text.includes('\n')) { sendMessageRef.current(); return }
+                setInput(text)
+              }}
+              onSubmitEditing={() => sendMessageRef.current()}
+              placeholder={pendingQuestion ? 'answer…' : 'message…'}
+              placeholderTextColor={C.textMuted}
+              multiline
+              returnKeyType="send"
+              blurOnSubmit={false}
+              editable={status !== 'streaming'}
+            />
+          </View>
         </View>
       </View>
-    </KeyboardAvoidingView>
+      {/* Spacer whose height matches the keyboard height (or bottom safe area when
+          keyboard is hidden). Growing this spacer shrinks the flex:1 content above,
+          so the entire conversation+input block moves up with the keyboard. */}
+      <Reanimated.View style={[{ backgroundColor: C.surface }, spacerStyle]} />
+    </View>
   )
 })
 
