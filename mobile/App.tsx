@@ -36,7 +36,7 @@ type ServerFrame =
   | { type: 'token';    text: string }
   | { type: 'tool';     name: string }
   | { type: 'question'; question: string }
-  | { type: 'done' }
+  | { type: 'done'; cost_usd: number }
   | { type: 'error';    message: string }
 
 interface HistMsg { role: 'user' | 'assistant'; text: string }
@@ -47,12 +47,16 @@ interface Message {
   text:        string
   streaming?:  boolean
   isQuestion?: boolean
+  cost?:       number
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 let _id = 0
 const uid = () => `m${Date.now()}_${++_id}`
+
+const formatCost = (usd: number) =>
+  usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`
 
 function parseQrData(raw: string): NoiseConnectionInfo | null {
   const parts = raw.split(':')
@@ -162,6 +166,9 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: Messag
       {message.isQuestion && <Text style={s.questionMark}>?</Text>}
       {renderBoldText(message.text, s.textBlock)}
       {message.streaming && <Text style={s.cursor}>▋</Text>}
+      {message.cost != null && (
+        <Text style={s.costLabel}>{formatCost(message.cost)}</Text>
+      )}
     </View>
   )
 })
@@ -305,7 +312,14 @@ const ChatPane = memo(function ChatPane({
             break
           }
           case 'done': {
-            setMessages(prev => prev.map(m => m.streaming ? { ...m, streaming: false } : m))
+            const cost = frame.cost_usd
+            setMessages(prev => prev.map((m, i) => {
+              const isLast = i === prev.length - 1
+              const updates: Partial<Message> = {}
+              if (m.streaming)                            updates.streaming = false
+              if (cost > 0 && isLast && m.role === 'assistant') updates.cost = cost
+              return Object.keys(updates).length ? { ...m, ...updates } : m
+            }))
             updateStatus('ready')
             setPendingQuestion(false)
             break
@@ -821,6 +835,7 @@ const s = StyleSheet.create({
   textBlock:         { color: C.textPrimary, fontSize: 17, lineHeight: 26 },
   cursor:            { color: C.accent, fontSize: 14 },
   questionMark:      { color: C.yellow, fontWeight: '700', fontSize: 15, marginBottom: 2 },
+  costLabel:         { fontSize: 11, color: C.textMuted, marginTop: 4, marginLeft: 2 },
 
   // Input bar
   inputRow:     { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 12, paddingVertical: 10, paddingBottom: Platform.OS === 'android' ? 14 : 10, gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, backgroundColor: C.surface },

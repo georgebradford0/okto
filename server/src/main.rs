@@ -201,7 +201,7 @@ enum WsFrame {
     /// Claude is asking the user a question and needs an answer.
     Question { question: String },
     /// Current response is complete.
-    Done,
+    Done { cost_usd: f64 },
     /// Current response ended with an error.
     Error    { message: String },
 }
@@ -294,8 +294,8 @@ fn chat_event_to_frame(event: &ChatEvent) -> Option<WsFrame> {
     match v["type"].as_str()? {
         "text"          => Some(WsFrame::Token    { text:     v["text"].as_str()?.to_string() }),
         "tool_use"      => Some(WsFrame::Tool     { name:     v["tool"].as_str()?.to_string() }),
-        "result"
-        | "interrupted" => Some(WsFrame::Done),
+        "result"      => Some(WsFrame::Done { cost_usd: v["cost_usd"].as_f64().unwrap_or(0.0) }),
+        "interrupted" => Some(WsFrame::Done { cost_usd: 0.0 }),
         "error"         => Some(WsFrame::Error    { message:  v["message"].as_str()?.to_string() }),
         "question"      => Some(WsFrame::Question { question: v["question"].as_str()?.to_string() }),
         _               => None,
