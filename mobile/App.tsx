@@ -261,7 +261,7 @@ const ChatPane = memo(function ChatPane({
   // Scroll to bottom when messages change
   useEffect(() => {
     if (isAtBottomRef.current && messages.length > 0) {
-      listRef.current?.scrollToEnd({ animated: false })
+      listRef.current?.scrollToEnd({ animated: true })
     }
   }, [messages])
 
@@ -411,6 +411,11 @@ const ChatPane = memo(function ChatPane({
         contentContainerStyle={[s.messageListContent, { paddingBottom: inputBarH + 8 }]}
         style={s.messageList}
         ListEmptyComponent={<Text style={s.emptyState}>say something</Text>}
+        onContentSizeChange={() => {
+          if (isAtBottomRef.current) {
+            listRef.current?.scrollToEnd({ animated: true })
+          }
+        }}
         onScroll={({ nativeEvent: { layoutMeasurement, contentOffset, contentSize } }) => {
           isAtBottomRef.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 40
         }}

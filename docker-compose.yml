@@ -2,7 +2,7 @@ services:
   claudulhu:
     build: .
     ports:
-      - "${SSH_PORT:-2222}:${SSH_PORT:-2222}"
+      - "${NOISE_PORT:-9000}:${NOISE_PORT:-9000}"
     environment:
       - GIT_URL=${GIT_URL}
       - GH_TOKEN=${GH_TOKEN:-}
@@ -10,7 +10,8 @@ services:
       - GIT_USER_NAME=${GIT_USER_NAME:-claudulhu}
       - GIT_USER_EMAIL=${GIT_USER_EMAIL:-claudulhu@localhost}
       - PUBLIC_HOST=${PUBLIC_HOST:-}
-      - SSH_PORT=${SSH_PORT:-2222}
+      - NOISE_PORT=${NOISE_PORT:-9000}
+      - CLAUDULHU_DEV=${CLAUDULHU_DEV:-0}
     volumes:
       - workspace:/workspace
       - claudulhu-data:/root/.claudulhu
