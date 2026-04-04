@@ -460,9 +460,14 @@ async fn chat_ws_handler(
                 }
 
                 ClientMsg::Clear => {
-                    let mut s = state.session.lock().unwrap();
-                    s.messages.clear();
-                    save_messages(&s.messages);
+                    {
+                        let mut s = state.session.lock().unwrap();
+                        s.messages.clear();
+                        save_messages(&s.messages);
+                    } // release lock before await
+                    let json = serde_json::to_string(&WsFrame::History { messages: vec![] })
+                        .unwrap_or_default();
+                    ws_tx.send(json).await.ok();
                 }
             }
         }
