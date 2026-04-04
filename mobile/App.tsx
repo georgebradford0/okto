@@ -7,6 +7,7 @@ import {
   FlatList,
   PermissionsAndroid,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -155,6 +156,19 @@ function PendingEllipsis() {
   )
 }
 
+// ── @ completion helpers ───────────────────────────────────────────────────────
+
+function parseAtQuery(text: string): { atIndex: number; dirPart: string; filePart: string } | null {
+  const atIndex = text.lastIndexOf('@')
+  if (atIndex === -1) return null
+  const query = text.slice(atIndex + 1)
+  if (query.includes(' ')) return null   // space ends the completion zone
+  const lastSlash = query.lastIndexOf('/')
+  return lastSlash === -1
+    ? { atIndex, dirPart: '', filePart: query }
+    : { atIndex, dirPart: query.slice(0, lastSlash + 1), filePart: query.slice(lastSlash + 1) }
+}
+
 // ── Tool call formatting ───────────────────────────────────────────────────────
 
 function formatToolCall(name: string, input: Record<string, unknown>): string {
@@ -280,6 +294,9 @@ const ChatPane = memo(function ChatPane({
   const [status,         setStatus]         = useState<ConnStatus>('connecting')
   const [input,          setInput]          = useState('')
   const [pendingQuestion, setPendingQuestion] = useState(false)
+  const [completions,    setCompletions]    = useState<string[]>([])
+
+  const httpBase = wsUrl.replace(/^ws:/, 'http:').replace(/\/chat$/, '')
 
   const wsRef           = useRef<WebSocket | null>(null)
   const sendMessageRef  = useRef<() => void>(() => {})
@@ -296,6 +313,31 @@ const ChatPane = memo(function ChatPane({
       .then(v => { if (v) pendingMsgRef.current = v })
       .catch(() => {})
   }, [connKey])
+
+  // Fetch @ completions whenever the input changes.
+  useEffect(() => {
+    const parsed = parseAtQuery(input)
+    if (!parsed) { setCompletions([]); return }
+    let cancelled = false
+    fetch(`${httpBase}/completions?dir_part=${encodeURIComponent(parsed.dirPart)}&file_part=${encodeURIComponent(parsed.filePart)}`)
+      .then(r => r.json())
+      .then((data: string[]) => { if (!cancelled) setCompletions(data) })
+      .catch(() => { if (!cancelled) setCompletions([]) })
+    return () => { cancelled = true }
+  }, [input, httpBase])
+
+  const applyCompletion = useCallback((completion: string) => {
+    const parsed = parseAtQuery(input)
+    if (!parsed) return
+    const newText = input.slice(0, parsed.atIndex + 1) + completion
+    if (completion.endsWith('/')) {
+      setInput(newText)
+      // useEffect will re-fetch the next directory level
+    } else {
+      setInput(newText + ' ')
+      setCompletions([])
+    }
+  }, [input])
 
   const updateStatus = useCallback((s: ConnStatus) => {
     setStatus(s)
@@ -533,6 +575,19 @@ const ChatPane = memo(function ChatPane({
         )}
 
         <View style={{ backgroundColor: C.surface }}>
+          {completions.length > 0 && (
+            <ScrollView
+              style={s.completionList}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              {completions.map(c => (
+                <TouchableOpacity key={c} style={s.completionItem} onPress={() => applyCompletion(c)}>
+                  <Text style={s.completionText}>{c}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          )}
           <View style={s.inputRow}>
             <TextInput
               style={s.input}
@@ -908,6 +963,9 @@ const s = StyleSheet.create({
   toolLine:          { fontSize: 13, color: C.textMuted, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', marginBottom: 4, marginLeft: 2 },
 
   // Input bar
+  completionList: { maxHeight: 180, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border },
+  completionItem: { paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
+  completionText: { fontSize: 14, color: C.textPrimary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   inputRow:     { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 12, paddingVertical: 10, paddingBottom: Platform.OS === 'android' ? 14 : 10, gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, backgroundColor: C.surface },
   input:        { flex: 1, backgroundColor: C.bg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, color: C.textPrimary, fontSize: 17, lineHeight: 24, minHeight: 48, maxHeight: 140 },
   stopBtnText:  { fontSize: 14, color: C.red, fontWeight: '600' },
