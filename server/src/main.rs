@@ -314,7 +314,19 @@ fn chat_event_to_frame(event: &ChatEvent) -> Option<WsFrame> {
 async fn deliver_live(live: Arc<LiveState>, tx: mpsc::Sender<String>, deliver_current: bool) {
     let initial_gen = live.buf.lock().unwrap().gen;
     let mut gen = initial_gen;
-    let mut idx: usize = if deliver_current { 0 } else { usize::MAX };
+    // If the loop was already done when the client connected, skip the token
+    // replay (history covers the text) but still deliver the Done frame so the
+    // client can show the cost.  deliver_current=true means the loop is still
+    // running; replay everything from the start.
+    let mut idx: usize = if deliver_current {
+        0
+    } else {
+        let buf = live.buf.lock().unwrap();
+        match buf.events.iter().rposition(|f| matches!(f, WsFrame::Done { .. })) {
+            Some(i) => i,
+            None    => usize::MAX,
+        }
+    };
 
     loop {
         loop {
