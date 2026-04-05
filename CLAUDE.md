@@ -1,5 +1,9 @@
 # claudulhu — project notes for Claude
 
+## Git workflow
+
+Do **not** create git worktrees unless explicitly asked to. Commit and push directly on the current branch.
+
 ## Docker image
 
 The correct image name is **`ghcr.io/georgebradford0/claudulhu-server`**.
