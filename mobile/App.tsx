@@ -33,12 +33,12 @@ interface NoiseConnectionInfo {
 type ConnStatus = 'connecting' | 'ready' | 'streaming' | 'error'
 
 type ServerFrame =
-  | { type: 'history';  messages: HistMsg[] }
-  | { type: 'token';    text: string }
-  | { type: 'tool';     name: string; input?: Record<string, unknown> }
-  | { type: 'question'; question: string }
-  | { type: 'done'; cost_usd: number }
-  | { type: 'error';    message: string }
+  | { type: 'history';  messages: HistMsg[]; live_gen: number }
+  | { type: 'token';    text: string;        live_gen: number }
+  | { type: 'tool';     name: string; input?: Record<string, unknown>; live_gen: number }
+  | { type: 'question'; question: string;    live_gen: number }
+  | { type: 'done';     cost_usd: number;    live_gen: number }
+  | { type: 'error';    message: string;     live_gen: number }
   | { type: 'ack' }
 
 interface HistMsg { role: 'user' | 'assistant'; text: string }
@@ -308,12 +308,11 @@ const ChatPane = memo(function ChatPane({
   // ack or when confirmed present in the next history frame.
   const pendingMsgRef   = useRef<string | null>(null)
 
-  // Load any pending (unacknowledged) message from the previous session.
-  useEffect(() => {
-    AsyncStorage.getItem(`pending_${connKey}`)
-      .then(v => { if (v) pendingMsgRef.current = v })
-      .catch(() => {})
-  }, [connKey])
+  // The live_gen value from the most-recent 'history' frame.  Any live frame
+  // (token/tool/question/done/error) whose live_gen differs is stale and must
+  // be discarded — it belongs to a prior connection's replay that raced with
+  // the history frame of the current connection.
+  const liveGenRef      = useRef<number>(-1)
 
   // Fetch @ completions whenever the input changes.
   useEffect(() => {
@@ -350,10 +349,19 @@ const ChatPane = memo(function ChatPane({
     let cancelled = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
-    // Show cached messages while connecting
-    AsyncStorage.getItem(`msgs_${connKey}`)
-      .then(json => { if (json && !cancelled) try { setMessages(JSON.parse(json)) } catch {} })
-      .catch(() => {})
+    // Load both cached messages and the unacknowledged-pending entry before
+    // connecting.  If we connected first there would be a race where the
+    // 'history' frame arrives before pendingMsgRef is restored, causing the
+    // message to be silently dropped instead of resent.
+    Promise.all([
+      AsyncStorage.getItem(`msgs_${connKey}`).catch(() => null),
+      AsyncStorage.getItem(`pending_${connKey}`).catch(() => null),
+    ]).then(([msgsJson, pendingText]) => {
+      if (cancelled) return
+      if (msgsJson) try { setMessages(JSON.parse(msgsJson)) } catch {}
+      if (pendingText) pendingMsgRef.current = pendingText
+      connect()
+    })
 
     const connect = () => {
       if (cancelled) return
@@ -372,35 +380,53 @@ const ChatPane = memo(function ChatPane({
 
         switch (frame.type) {
           case 'history': {
-            const msgs: Message[] = frame.messages.map((m, i) => ({
+            // Record the authoritative live_gen from this snapshot so we can
+            // discard any stale live frames that arrive after reconnect.
+            liveGenRef.current = frame.live_gen
+
+            const serverMsgs: Message[] = frame.messages.map((m, i) => ({
               id: `h${i}`, role: m.role, text: m.text,
             }))
-            setMessages(msgs)
-            setPendingQuestion(false)
-            isAtBottomRef.current = true
-            updateStatus('ready')
-            AsyncStorage.setItem(`msgs_${connKey}`, JSON.stringify(msgs)).catch(() => {})
 
-            // If there's an unacknowledged pending message, check whether it
-            // made it into the server's history.  If not, resend it now.
+            // If there's an unacknowledged pending message check whether the
+            // server already has it in history.
             const pending = pendingMsgRef.current
+            let didResend = false
             if (pending) {
               const lastUserMsg = [...frame.messages].reverse().find(m => m.role === 'user')
               if (lastUserMsg?.text === pending) {
                 // Server has it — clear the pending entry.
                 pendingMsgRef.current = null
                 AsyncStorage.removeItem(`pending_${connKey}`).catch(() => {})
+                // Server has the message; use authoritative history as-is.
+                setMessages(serverMsgs)
               } else {
-                // Server never received it — resend.
+                // Server never received it — show optimistic user bubble then
+                // resend.  The ack will clear pendingMsgRef.
                 pendingMsgRef.current = null
                 AsyncStorage.removeItem(`pending_${connKey}`).catch(() => {})
+                const optimisticBubble: Message = { id: uid(), role: 'user', text: pending }
+                setMessages([...serverMsgs, optimisticBubble])
                 ws.send(JSON.stringify({ type: 'message', text: pending }))
                 updateStatus('streaming')
+                didResend = true
               }
+            } else {
+              // No pending message — server is the ground truth.
+              setMessages(serverMsgs)
             }
+
+            setPendingQuestion(false)
+            isAtBottomRef.current = true
+            if (!didResend) {
+              updateStatus('ready')
+            }
+            AsyncStorage.setItem(`msgs_${connKey}`, JSON.stringify(serverMsgs)).catch(() => {})
             break
           }
           case 'token': {
+            // Discard tokens from a stale generation (old connection replay).
+            if (frame.live_gen !== liveGenRef.current) break
             updateStatus('streaming')
             setMessages(prev => {
               const last = prev[prev.length - 1]
@@ -412,19 +438,28 @@ const ChatPane = memo(function ChatPane({
             break
           }
           case 'done': {
+            // Discard done from a stale generation.
+            if (frame.live_gen !== liveGenRef.current) break
             const cost = frame.cost_usd
-            setMessages(prev => prev.map((m, i) => {
-              const isLast = i === prev.length - 1
-              const updates: Partial<Message> = {}
-              if (m.streaming)                            updates.streaming = false
-              if (cost > 0 && isLast && m.role === 'assistant') updates.cost = cost
-              return Object.keys(updates).length ? { ...m, ...updates } : m
-            }))
+            setMessages(prev => {
+              const updated = prev.map((m, i) => {
+                const isLast = i === prev.length - 1
+                const updates: Partial<Message> = {}
+                if (m.streaming)                            updates.streaming = false
+                if (cost > 0 && isLast && m.role === 'assistant') updates.cost = cost
+                return Object.keys(updates).length ? { ...m, ...updates } : m
+              })
+              // Persist the finalized message list so the cache is fresh on next open.
+              AsyncStorage.setItem(`msgs_${connKey}`, JSON.stringify(updated)).catch(() => {})
+              return updated
+            })
             updateStatus('ready')
             setPendingQuestion(false)
             break
           }
           case 'question': {
+            // Discard questions from a stale generation.
+            if (frame.live_gen !== liveGenRef.current) break
             setMessages(prev => {
               const finalized = prev.map(m => m.streaming ? { ...m, streaming: false } : m)
               return [...finalized, { id: uid(), role: 'assistant' as const, text: frame.question, isQuestion: true }]
@@ -434,6 +469,8 @@ const ChatPane = memo(function ChatPane({
             break
           }
           case 'tool': {
+            // Discard tool frames from a stale generation.
+            if (frame.live_gen !== liveGenRef.current) break
             setMessages(prev => {
               // Finalize any in-progress streaming message first.
               const finalized = prev.map(m => m.streaming ? { ...m, streaming: false } : m)
@@ -447,12 +484,14 @@ const ChatPane = memo(function ChatPane({
             break
           }
           case 'error': {
+            // Discard errors from a stale generation.
+            if (frame.live_gen !== liveGenRef.current) break
             setMessages(prev => {
-              const last = prev[prev.length - 1]
-              if (last?.streaming) {
-                return [...prev.slice(0, -1), { ...last, streaming: false }]
-              }
-              return [...prev, { id: uid(), role: 'assistant' as const, text: `✗ ${frame.message}` }]
+              // Finalize any in-progress streaming message and append the error.
+              const finalized = prev.map(m => m.streaming ? { ...m, streaming: false } : m)
+              const updated = [...finalized, { id: uid(), role: 'assistant' as const, text: `✗ ${frame.message}` }]
+              AsyncStorage.setItem(`msgs_${connKey}`, JSON.stringify(updated)).catch(() => {})
+              return updated
             })
             updateStatus('ready')
             break
@@ -538,6 +577,10 @@ const ChatPane = memo(function ChatPane({
   sendMessageRef.current = sendMessage
 
   const clearConversation = useCallback(() => {
+    // Invalidate the current live generation immediately so any in-flight
+    // streaming frames that arrive before the server's history response are
+    // discarded, not appended to the now-empty conversation.
+    liveGenRef.current = -1
     wsRef.current?.send(JSON.stringify({ type: 'clear' }))
     setMessages([])
     setPendingQuestion(false)

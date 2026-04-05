@@ -193,17 +193,19 @@ async fn run_noise_proxy(static_private: Vec<u8>, noise_port: u16, http_port: u1
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WsFrame {
     /// Full message history, sent once on connect.
-    History  { messages: Vec<HistMsg> },
+    /// `live_gen` tells the client which generation of live events to expect next,
+    /// so it can discard stale replays from a previous connection.
+    History  { messages: Vec<HistMsg>, live_gen: usize },
     /// Streaming text token from the current assistant response.
-    Token    { text: String },
+    Token    { text: String, live_gen: usize },
     /// Tool being invoked (display only).  `input` was added in 0.0.19.
-    Tool     { name: String, input: serde_json::Value },
+    Tool     { name: String, input: serde_json::Value, live_gen: usize },
     /// Claude is asking the user a question and needs an answer.
-    Question { question: String },
+    Question { question: String, live_gen: usize },
     /// Current response is complete.
-    Done { cost_usd: f64 },
+    Done { cost_usd: f64, live_gen: usize },
     /// Current response ended with an error.
-    Error    { message: String },
+    Error    { message: String, live_gen: usize },
     /// Acknowledgement that the user message was saved server-side.
     Ack,
 }
@@ -290,43 +292,30 @@ struct AppState {
 
 // ── ChatEvent → WsFrame ───────────────────────────────────────────────────────
 
-fn chat_event_to_frame(event: &ChatEvent) -> Option<WsFrame> {
+fn chat_event_to_frame(event: &ChatEvent, live_gen: usize) -> Option<WsFrame> {
     // Go through JSON so we're not coupled to internal enum layout.
     let v: serde_json::Value = serde_json::to_value(event).ok()?;
     match v["type"].as_str()? {
-        "text"          => Some(WsFrame::Token    { text:     v["text"].as_str()?.to_string() }),
-        "tool_use"      => Some(WsFrame::Tool     { name: v["tool"].as_str()?.to_string(), input: v["input"].clone() }),
-        "result"      => Some(WsFrame::Done { cost_usd: v["cost_usd"].as_f64().unwrap_or(0.0) }),
-        "interrupted" => Some(WsFrame::Done { cost_usd: 0.0 }),
-        "error"         => Some(WsFrame::Error    { message:  v["message"].as_str()?.to_string() }),
-        "question"      => Some(WsFrame::Question { question: v["question"].as_str()?.to_string() }),
-        _               => None,
+        "text"        => Some(WsFrame::Token    { text:     v["text"].as_str()?.to_string(), live_gen }),
+        "tool_use"    => Some(WsFrame::Tool     { name: v["tool"].as_str()?.to_string(), input: v["input"].clone(), live_gen }),
+        "result"      => Some(WsFrame::Done { cost_usd: v["cost_usd"].as_f64().unwrap_or(0.0), live_gen }),
+        "interrupted" => Some(WsFrame::Done { cost_usd: 0.0, live_gen }),
+        "error"       => Some(WsFrame::Error    { message:  v["message"].as_str()?.to_string(), live_gen }),
+        "question"    => Some(WsFrame::Question { question: v["question"].as_str()?.to_string(), live_gen }),
+        _             => None,
     }
 }
 
 // ── Live delivery task ────────────────────────────────────────────────────────
 //
 // Streams current live events to a WebSocket writer channel.
-// - deliver_current: replay from idx=0 of the current gen (loop was running at connect time).
-//   False: skip current gen's events (history is already complete) and wait for the next response.
-// - On gen change: always reset to idx=0 so every new response is fully delivered.
+// - start_gen / start_idx: atomically snapshotted by the connect handler so
+//   that history and the live-replay starting point are always consistent.
+// - On gen change: reset to idx=0 so every new response is fully delivered.
 
-async fn deliver_live(live: Arc<LiveState>, tx: mpsc::Sender<String>, deliver_current: bool) {
-    let initial_gen = live.buf.lock().unwrap().gen;
-    let mut gen = initial_gen;
-    // If the loop was already done when the client connected, skip the token
-    // replay (history covers the text) but still deliver the Done frame so the
-    // client can show the cost.  deliver_current=true means the loop is still
-    // running; replay everything from the start.
-    let mut idx: usize = if deliver_current {
-        0
-    } else {
-        let buf = live.buf.lock().unwrap();
-        match buf.events.iter().rposition(|f| matches!(f, WsFrame::Done { .. })) {
-            Some(i) => i,
-            None    => usize::MAX,
-        }
-    };
+async fn deliver_live(live: Arc<LiveState>, tx: mpsc::Sender<String>, start_gen: usize, start_idx: usize) {
+    let mut gen = start_gen;
+    let mut idx = start_idx;
 
     loop {
         loop {
@@ -375,19 +364,38 @@ async fn chat_ws_handler(
             }
         });
 
-        // Snapshot loop_running and history atomically so we know whether to
-        // replay the in-progress response events.
-        let (history_json, deliver_current) = {
-            let loop_running = state.loop_running.load(Ordering::SeqCst);
+        // Atomically snapshot (loop_running, live_gen, live_idx, history) under a
+        // single lock acquisition so that the history frame and the live-replay
+        // starting point are always consistent — preventing duplicate delivery of
+        // the last assistant turn when a client reconnects mid-stream.
+        let (history_json, start_gen, start_idx) = {
+            // 1. Take live buf to get gen + start_idx, then drop it.
+            let (live_gen, start_gen, start_idx) = {
+                let buf = state.live.buf.lock().unwrap();
+                let loop_running = state.loop_running.load(Ordering::SeqCst);
+                let (start_gen, start_idx) = if loop_running {
+                    // Loop is still running — replay live events from the beginning
+                    // of the current generation so the client sees every token.
+                    (buf.gen, 0usize)
+                } else {
+                    // Loop is idle — history already contains the completed text.
+                    // Start past the end of the current gen so we only deliver
+                    // future responses (next gen will reset idx to 0 automatically).
+                    (buf.gen, buf.events.len())
+                };
+                (buf.gen, start_gen, start_idx)
+            }; // live.buf lock released here — avoids lock-order inversion
+            // 2. Now take session lock to read history.
             let history = WsFrame::History {
                 messages: messages_to_history(&state.session.lock().unwrap().messages),
+                live_gen,
             };
-            (serde_json::to_string(&history).unwrap_or_default(), loop_running)
+            (serde_json::to_string(&history).unwrap_or_default(), start_gen, start_idx)
         };
         ws_tx.send(history_json).await.ok();
 
         // Deliver live events for the current (or future) response.
-        let deliver = tokio::spawn(deliver_live(state.live.clone(), ws_tx.clone(), deliver_current));
+        let deliver = tokio::spawn(deliver_live(state.live.clone(), ws_tx.clone(), start_gen, start_idx));
 
         // Receive messages from client.
         while let Some(Ok(msg)) = ws_stream.next().await {
@@ -407,8 +415,10 @@ async fn chat_ws_handler(
                     let api_key = match resolve_api_key() {
                         Some(k) => k,
                         None    => {
+                            let live_gen = state.live.buf.lock().unwrap().gen;
                             ws_tx.send(serde_json::to_string(&WsFrame::Error {
                                 message: "no API key configured".into(),
+                                live_gen,
                             }).unwrap_or_default()).await.ok();
                             continue;
                         }
@@ -435,11 +445,12 @@ async fn chat_ws_handler(
                     // Only start the loop if it isn't already running.
                     if !state.loop_running.swap(true, Ordering::SeqCst) {
                         // Reset live buffer for the new response.
-                        {
+                        let new_gen = {
                             let mut buf = state.live.buf.lock().unwrap();
                             buf.gen += 1;
                             buf.events.clear();
-                        }
+                            buf.gen
+                        };
                         state.live.notify.notify_waiters();
 
                         let (loop_tx, mut loop_rx) = mpsc::channel::<ChatEvent>(256);
@@ -447,19 +458,22 @@ async fn chat_ws_handler(
                         let live_c       = state.live.clone();
                         let loop_running = state.loop_running.clone();
 
-                        // Run the agentic loop; save messages and clear flag when done.
+                        // Run the agentic loop; clear the running flag then save messages.
+                        // Order matters: set loop_running=false FIRST so any client
+                        // that connects after the loop ends sees idle state and does not
+                        // replay live events (which would duplicate the saved history).
                         tokio::spawn(async move {
                             run_agentic_loop(
                                 session_c.clone(), "main".to_string(), api_key, model, loop_tx,
                             ).await;
+                            loop_running.store(false, Ordering::SeqCst);
                             save_messages(&session_c.lock().unwrap().messages);
-                            loop_running.store(false, Ordering::Relaxed);
                         });
 
                         // Forward ChatEvents from the loop to the live buffer.
                         tokio::spawn(async move {
                             while let Some(event) = loop_rx.recv().await {
-                                if let Some(frame) = chat_event_to_frame(&event) {
+                                if let Some(frame) = chat_event_to_frame(&event, new_gen) {
                                     live_c.buf.lock().unwrap().events.push(frame);
                                     live_c.notify.notify_waiters();
                                 }
@@ -481,12 +495,21 @@ async fn chat_ws_handler(
                 }
 
                 ClientMsg::Clear => {
+                    // Clear session messages first, then reset live buffer.
+                    // Take each lock separately (not nested) to avoid inversion.
                     {
                         let mut s = state.session.lock().unwrap();
                         s.messages.clear();
                         save_messages(&s.messages);
-                    } // release lock before await
-                    let json = serde_json::to_string(&WsFrame::History { messages: vec![] })
+                    }
+                    let live_gen = {
+                        let mut buf = state.live.buf.lock().unwrap();
+                        buf.gen += 1;
+                        buf.events.clear();
+                        buf.gen
+                    };
+                    state.live.notify.notify_waiters();
+                    let json = serde_json::to_string(&WsFrame::History { messages: vec![], live_gen })
                         .unwrap_or_default();
                     ws_tx.send(json).await.ok();
                 }
