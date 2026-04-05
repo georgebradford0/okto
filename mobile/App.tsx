@@ -614,6 +614,10 @@ const ChatPane = memo(function ChatPane({
             if (isAtBottomRef.current) {
               listRef.current?.scrollToEnd({ animated: true })
               setShowScrollBtn(false)
+            } else {
+              // Content grew while user is scrolled up — make the button visible
+              // so they know new content has arrived.
+              setShowScrollBtn(true)
             }
           }}
           onScroll={({ nativeEvent: { layoutMeasurement, contentOffset, contentSize } }) => {
@@ -621,7 +625,7 @@ const ChatPane = memo(function ChatPane({
             isAtBottomRef.current = atBottom
             setShowScrollBtn(!atBottom)
           }}
-          scrollEventThrottle={100}
+          scrollEventThrottle={16}
           keyboardShouldPersistTaps="handled"
           automaticallyAdjustKeyboardInsets={false}
           ListFooterComponent={isPending ? <PendingEllipsis /> : null}
