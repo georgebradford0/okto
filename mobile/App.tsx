@@ -1019,8 +1019,7 @@ function AppInner() {
             </TouchableOpacity>
             <View style={[s.connDot, { backgroundColor: statusColor(chatStatus) }]} />
             <View>
-              <Text style={s.headerTitle}>claudulhu</Text>
-              {repoName && <Text style={s.headerRepo}>{repoName}</Text>}
+              <Text style={s.headerTitle}>{repoName ?? ''}</Text>
             </View>
           </View>
           {chatStatus === 'streaming' ? (
@@ -1117,7 +1116,6 @@ const s = StyleSheet.create({
   clearBtn:     { paddingVertical: 4, paddingHorizontal: 2 },
   clearBtnText: { fontSize: 14, color: C.textSecondary, fontWeight: '500' },
   headerTitle:  { fontSize: 17, fontWeight: '700', color: C.textPrimary, letterSpacing: 1 },
-  headerRepo:   { fontSize: 11, color: C.textSecondary, marginTop: 1 },
   connDot:      { width: 8, height: 8, borderRadius: 4 },
 
   // Chat pane
