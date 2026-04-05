@@ -406,6 +406,8 @@ const ChatPane = memo(function ChatPane({
   }))
 
   const [messages,       setMessages]       = useState<Message[]>([])
+  const messagesRef = useRef<Message[]>([])
+  useEffect(() => { messagesRef.current = messages }, [messages])
   const [status,         setStatus]         = useState<ConnStatus>('connecting')
   const [input,          setInput]          = useState('')
   const [pendingQuestion, setPendingQuestion] = useState(false)
@@ -513,6 +515,37 @@ const ChatPane = memo(function ChatPane({
               id: `h${i}`, role: m.role, text: m.text,
             }))
 
+            // Re-insert session/tool bubbles from the local cache so they
+            // survive reconnection.  Strategy: walk both the old local list
+            // and serverMsgs in parallel, matching user/assistant messages by
+            // text.  Any session/tool bubbles sitting between two matched
+            // anchors are spliced back in at the same position.
+            const mergeSessionBubbles = (base: Message[]): Message[] => {
+              const local = messagesRef.current
+              if (!local.length) return base
+              const result: Message[] = []
+              let li = 0 // pointer into local
+              for (let bi = 0; bi < base.length; bi++) {
+                const bm = base[bi]
+                // Advance local pointer past session/tool bubbles, collecting them
+                const pending: Message[] = []
+                while (li < local.length && (local[li].role === 'session' || local[li].role === 'tool')) {
+                  pending.push(local[li++])
+                }
+                // Try to match the current server message against local
+                if (li < local.length && local[li].role === bm.role && local[li].text === bm.text) {
+                  // Match — splice in the buffered session/tool bubbles first
+                  result.push(...pending.map(m => ({ ...m, streaming: false })))
+                  result.push(bm)
+                  li++
+                } else {
+                  // No match (local is stale/different) — just emit the server msg
+                  result.push(bm)
+                }
+              }
+              return result
+            }
+
             // If there's an unacknowledged pending message check whether the
             // server already has it in history.
             const pending = pendingMsgRef.current
@@ -523,8 +556,10 @@ const ChatPane = memo(function ChatPane({
                 // Server has it — clear the pending entry.
                 pendingMsgRef.current = null
                 AsyncStorage.removeItem(`pending_${connKey}`).catch(() => {})
-                // Server has the message; use authoritative history as-is.
-                setMessages(serverMsgs)
+                // Server has the message; use authoritative history as-is,
+                // but re-insert any local session/tool bubbles.
+                const merged = mergeSessionBubbles(serverMsgs)
+                setMessages(merged)
               } else {
                 // Server never received it — show optimistic user bubble then
                 // resend.  The ack will clear pendingMsgRef.
@@ -535,14 +570,15 @@ const ChatPane = memo(function ChatPane({
                 currentSessionIdRef.current = resendSessionId
                 sessionSummaryRef.current = ''
                 const resendSessionBubble: Message = { id: resendSessionId, role: 'session', text: '', streaming: true }
-                setMessages([...serverMsgs, optimisticBubble, resendSessionBubble])
+                setMessages([...mergeSessionBubbles(serverMsgs), optimisticBubble, resendSessionBubble])
                 ws.send(JSON.stringify({ type: 'message', text: pending }))
                 updateStatus('streaming')
                 didResend = true
               }
             } else {
-              // No pending message — server is the ground truth.
-              setMessages(serverMsgs)
+              // No pending message — server is the ground truth, but
+              // re-insert local session/tool bubbles so they survive reconnect.
+              setMessages(mergeSessionBubbles(serverMsgs))
             }
 
             setPendingQuestion(false)
@@ -557,7 +593,9 @@ const ChatPane = memo(function ChatPane({
             if (!didResend) {
               updateStatus('ready')
             }
-            AsyncStorage.setItem(`msgs_${connKey}`, JSON.stringify(serverMsgs)).catch(() => {})
+            // Persist the merged list (including session bubbles) so the next
+            // reconnect also has them available.
+            AsyncStorage.setItem(`msgs_${connKey}`, JSON.stringify(mergeSessionBubbles(serverMsgs))).catch(() => {})
             break
           }
           case 'token': {
