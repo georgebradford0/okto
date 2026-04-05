@@ -417,9 +417,14 @@ const ChatPane = memo(function ChatPane({
             }
 
             setPendingQuestion(false)
-            isAtBottomRef.current = true
-            setShowScrollBtn(false)
-            setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 50)
+            // Only force-scroll on initial load (list was empty) or if user
+            // was already at the bottom.  Don't clobber isAtBottomRef when
+            // the user is scrolled up mid-stream — that's what stopped the
+            // scroll-to-bottom button from ever appearing.
+            if (isAtBottomRef.current || serverMsgs.length === 0) {
+              setShowScrollBtn(false)
+              setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 50)
+            }
             if (!didResend) {
               updateStatus('ready')
             }
