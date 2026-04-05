@@ -13,6 +13,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native'
 import { KeyboardProvider, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller'
@@ -197,6 +198,9 @@ const AgentSessionBubble = memo(function AgentSessionBubble({ message }: { messa
   const scrollRef    = useRef<ScrollView>(null)
   const pulseAnim    = useRef(new Animated.Value(0.5)).current
   const scanAnim     = useRef(new Animated.Value(0)).current
+  const slideAnim    = useRef(new Animated.Value(1)).current
+  const { height: screenHeight } = useWindowDimensions()
+  const SHEET_HEIGHT = Math.round(screenHeight * 0.85)
 
   // Pulsing dot + scanning bar while streaming
   useEffect(() => {
@@ -218,6 +222,21 @@ const AgentSessionBubble = memo(function AgentSessionBubble({ message }: { messa
     return () => { pulse.stop(); scan.stop() }
   }, [message.streaming])
 
+  const openSheet = useCallback(() => {
+    slideAnim.setValue(1)
+    setExpanded(true)
+    Animated.spring(slideAnim, { toValue: 0, useNativeDriver: true, tension: 70, friction: 12 }).start()
+  }, [slideAnim])
+
+  const closeSheet = useCallback(() => {
+    Animated.timing(slideAnim, { toValue: 1, duration: 240, useNativeDriver: true }).start(() => setExpanded(false))
+  }, [slideAnim])
+
+  const sheetTranslate = slideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, SHEET_HEIGHT],
+  })
+
   // Show last portion of log so the preview tail tracks live output
   const preview = message.text.length > 400
     ? '\u2026' + message.text.slice(-400)
@@ -225,7 +244,7 @@ const AgentSessionBubble = memo(function AgentSessionBubble({ message }: { messa
 
   return (
     <View style={s.sessionWrap}>
-      <TouchableOpacity onPress={() => setExpanded(true)} activeOpacity={0.85}>
+      <TouchableOpacity onPress={openSheet} activeOpacity={0.85}>
         <View style={s.sessionBox}>
           {/* Header bar */}
           <View style={s.sessionBoxHeader}>
@@ -253,9 +272,11 @@ const AgentSessionBubble = memo(function AgentSessionBubble({ message }: { messa
         </View>
       </TouchableOpacity>
 
-      {/* Expanded full-screen log */}
-      <Modal visible={expanded} animationType="slide" onRequestClose={() => setExpanded(false)}>
-        <SafeAreaView style={s.sessionModal} edges={['top', 'bottom']}>
+      {/* Expanded bottom-sheet log */}
+      <Modal visible={expanded} transparent animationType="none" onRequestClose={closeSheet}>
+        <TouchableOpacity style={s.sessionSheetBackdrop} activeOpacity={1} onPress={closeSheet} />
+        <Animated.View style={[s.sessionSheet, { height: SHEET_HEIGHT, transform: [{ translateY: sheetTranslate }] }]}>
+          <View style={s.sessionSheetHandle} />
           <View style={s.sessionModalHeader}>
             <View style={s.sessionBoxHeader}>
               <View style={[s.sessionDot, { backgroundColor: message.streaming ? C.accent : C.green }]} />
@@ -263,7 +284,7 @@ const AgentSessionBubble = memo(function AgentSessionBubble({ message }: { messa
                 {message.streaming ? 'working\u2026' : 'session log'}
               </Text>
             </View>
-            <TouchableOpacity onPress={() => setExpanded(false)} hitSlop={{ top: 8, bottom: 8, left: 16, right: 8 }}>
+            <TouchableOpacity onPress={closeSheet} hitSlop={{ top: 8, bottom: 8, left: 16, right: 8 }}>
               <Text style={s.sessionModalClose}>Done</Text>
             </TouchableOpacity>
           </View>
@@ -274,7 +295,7 @@ const AgentSessionBubble = memo(function AgentSessionBubble({ message }: { messa
           >
             <Text style={s.sessionModalText}>{message.text}</Text>
           </ScrollView>
-        </SafeAreaView>
+        </Animated.View>
       </Modal>
     </View>
   )
@@ -1224,8 +1245,10 @@ const s = StyleSheet.create({
   sessionScanLine:    { height: 1, backgroundColor: C.accent, opacity: 0.35, marginBottom: 6, width: 60 },
   sessionPreviewText: { fontSize: 11, color: C.textSecondary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', lineHeight: 16 },
 
-  // Agent session modal (expanded full-screen)
-  sessionModal:       { flex: 1, backgroundColor: C.bg },
+  // Agent session bottom-sheet (expanded)
+  sessionSheetBackdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.45)' },
+  sessionSheet:         { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: C.bg, borderTopLeftRadius: 16, borderTopRightRadius: 16, shadowColor: '#000', shadowOpacity: 0.22, shadowRadius: 24, shadowOffset: { width: 0, height: -6 }, elevation: 20 },
+  sessionSheetHandle:   { width: 36, height: 4, borderRadius: 2, backgroundColor: C.border, alignSelf: 'center', marginTop: 10, marginBottom: 2 },
   sessionModalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
   sessionModalTitle:  { fontSize: 15, fontWeight: '600', color: C.textPrimary },
   sessionModalClose:  { fontSize: 16, color: C.accent, fontWeight: '500' },
