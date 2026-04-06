@@ -427,6 +427,7 @@ const ChatPane = memo(function ChatPane({
   const [pendingQuestion, setPendingQuestion] = useState(false)
   const [completions,    setCompletions]    = useState<string[]>([])
   const [showScrollBtn,  setShowScrollBtn]  = useState(false)
+  const [inputAreaH,     setInputAreaH]     = useState(0)
 
   const httpBase = wsUrl.replace(/^ws:/, 'http:').replace(/\/chat$/, '')
 
@@ -873,23 +874,7 @@ const ChatPane = memo(function ChatPane({
           </View>
         )}
 
-        {showScrollBtn && (
-          <View style={s.scrollBtnWrap} pointerEvents="box-none">
-            <TouchableOpacity
-              style={s.scrollBtn}
-              onPress={() => {
-                isAtBottomRef.current = true
-                setShowScrollBtn(false)
-                listRef.current?.scrollToEnd({ animated: true })
-              }}
-              activeOpacity={0.75}
-            >
-              <Text style={s.scrollBtnIcon}>↓</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        <View style={{ backgroundColor: C.surface }}>
+        <View style={{ backgroundColor: C.surface }} onLayout={e => setInputAreaH(e.nativeEvent.layout.height)}>
           {completions.length > 0 && (
             <ScrollView
               style={s.completionList}
@@ -921,6 +906,22 @@ const ChatPane = memo(function ChatPane({
             />
           </View>
         </View>
+
+        {showScrollBtn && (
+          <View style={[s.scrollBtnWrap, { bottom: inputAreaH }]} pointerEvents="box-none">
+            <TouchableOpacity
+              style={s.scrollBtn}
+              onPress={() => {
+                isAtBottomRef.current = true
+                setShowScrollBtn(false)
+                listRef.current?.scrollToEnd({ animated: true })
+              }}
+              activeOpacity={0.75}
+            >
+              <Text style={s.scrollBtnIcon}>↓</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
       {/* Spacer whose height matches the keyboard height (or bottom safe area when
           keyboard is hidden). Growing this spacer shrinks the flex:1 content above,
@@ -1265,7 +1266,7 @@ const s = StyleSheet.create({
   reconnectText:     { color: C.yellow, fontSize: 12, fontWeight: '500', fontFamily: ARIMO },
 
   // Scroll-to-bottom button
-  scrollBtnWrap:     { position: 'absolute', bottom: 0, left: 0, right: 0, alignItems: 'center', pointerEvents: 'box-none' },
+  scrollBtnWrap:     { position: 'absolute', left: 0, right: 0, alignItems: 'center', pointerEvents: 'box-none' },
   scrollBtn:         { backgroundColor: C.bg, borderRadius: 20, width: 36, height: 36, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 4, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, marginBottom: 8 },
   scrollBtnIcon:     { fontSize: 18, color: C.textSecondary, lineHeight: 22, fontFamily: ARIMO },
 
