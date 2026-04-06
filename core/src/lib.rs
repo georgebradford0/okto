@@ -9,6 +9,9 @@ use std::{
     },
 };
 
+pub mod mcp;
+pub use mcp::{McpPool, init_mcp_pool};
+
 // ── Shared HTTP client ────────────────────────────────────────────────────────
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -107,6 +110,9 @@ pub struct Session {
     pub cwd:              String,
     pub aborted:          Arc<AtomicBool>,
     pub pending_question: Arc<tokio::sync::Mutex<Option<oneshot::Sender<String>>>>,
+    /// Connected MCP server clients.  Populated once at session creation and
+    /// shared across all turns in the agentic loop.
+    pub mcp_pool:         McpPool,
 }
 
 // ── API Types ─────────────────────────────────────────────────────────────────
@@ -313,6 +319,12 @@ pub fn slug(text: &str) -> String {
 
 // ── Tool Definitions ──────────────────────────────────────────────────────────
 
+pub fn tool_definitions_with_mcp(extra: &[AnthropicTool]) -> Vec<AnthropicTool> {
+    let mut tools = tool_definitions();
+    tools.extend_from_slice(extra);
+    tools
+}
+
 pub fn tool_definitions() -> Vec<AnthropicTool> {
     let mut tools = vec![
         AnthropicTool { name: "bash".into(),
@@ -391,6 +403,7 @@ pub async fn execute_tool(
     cwd:              &str,
     tx:               &mpsc::Sender<ChatEvent>,
     pending_question: Arc<tokio::sync::Mutex<Option<oneshot::Sender<String>>>>,
+    mcp_pool:         &McpPool,
 ) -> String {
     match name {
         "bash" => {
@@ -742,7 +755,14 @@ pub async fn execute_tool(
                 format!("error: unsupported git host in remote URL: {remote_url}")
             }
         }
-        _ => format!("unknown tool: {name}"),
+        _ => {
+            // Dispatch to MCP servers before giving up.
+            if let Some(result) = mcp::pool_call_tool(mcp_pool, name, input.clone()).await {
+                result
+            } else {
+                format!("unknown tool: {name}")
+            }
+        }
     }
 }
 
@@ -861,8 +881,10 @@ pub async fn stream_turn(
     api_key:   &str,
     aborted:   &AtomicBool,
     tx:        &mpsc::Sender<ChatEvent>,
+    mcp_pool:  &McpPool,
 ) -> Result<(Vec<ContentBlock>, String, StreamUsage), String> {
-    let mut tools: Vec<serde_json::Value> = tool_definitions()
+    let mcp_tools = mcp::pool_tool_definitions(mcp_pool).await;
+    let mut tools: Vec<serde_json::Value> = tool_definitions_with_mcp(&mcp_tools)
         .into_iter().map(|t| serde_json::to_value(t).unwrap()).collect();
     if let Some(last) = tools.last_mut() {
         last["cache_control"] = serde_json::json!({"type": "ephemeral"});
@@ -1060,9 +1082,9 @@ pub async fn run_agentic_loop(
             return;
         }
 
-        let (messages, system, cwd, aborted, pending_question) = {
+        let (messages, system, cwd, aborted, pending_question, mcp_pool) = {
             let s = session.lock().unwrap();
-            (s.messages.clone(), s.system_prompt.clone(), s.cwd.clone(), s.aborted.clone(), s.pending_question.clone())
+            (s.messages.clone(), s.system_prompt.clone(), s.cwd.clone(), s.aborted.clone(), s.pending_question.clone(), s.mcp_pool.clone())
         };
 
         if aborted.load(Ordering::Relaxed) {
@@ -1070,7 +1092,7 @@ pub async fn run_agentic_loop(
             return;
         }
 
-        match stream_turn(&messages, &system, &model, &api_key, &aborted, &tx).await {
+        match stream_turn(&messages, &system, &model, &api_key, &aborted, &tx, &mcp_pool).await {
             Err(e) if e == "__interrupted__" => {
                 tx.send(ChatEvent::Interrupted).await.ok();
                 return;
@@ -1103,7 +1125,7 @@ pub async fn run_agentic_loop(
                 for block in &blocks {
                     if let ContentBlock::ToolUse { id, name, input } = block {
                         let result = truncate_tool_output(
-                            execute_tool(name, input, &cwd, &tx, pending_question.clone()).await,
+                            execute_tool(name, input, &cwd, &tx, pending_question.clone(), &mcp_pool).await,
                             tool_output_limit(name),
                         );
                         tx.send(ChatEvent::ToolResult {

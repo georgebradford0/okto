@@ -16,9 +16,9 @@ use axum::{
     Json, Router,
 };
 use claudulhu_core::{
-    build_system_prompt, effective_repo, get_branches_for_repo, init_shell_env, read_config,
-    resolve_api_key, run_agentic_loop, write_config, ApiMessage, ChatEvent, Config, ContentBlock,
-    Session,
+    build_system_prompt, effective_repo, get_branches_for_repo, init_mcp_pool, init_shell_env,
+    read_config, resolve_api_key, run_agentic_loop, write_config, ApiMessage, ChatEvent, Config,
+    ContentBlock, Session,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -631,6 +631,8 @@ async fn main() {
     let messages = load_messages();
     println!("[claudulhu] loaded {} message(s) from history", messages.len());
 
+    let mcp_pool = init_mcp_pool().await;
+
     let state = Arc::new(AppState {
         session: Arc::new(Mutex::new(Session {
             messages,
@@ -638,6 +640,7 @@ async fn main() {
             cwd:           repo.clone(),
             aborted:          Arc::new(AtomicBool::new(false)),
             pending_question: Arc::new(tokio::sync::Mutex::new(None)),
+            mcp_pool,
         })),
         loop_running: Arc::new(AtomicBool::new(false)),
         live: Arc::new(LiveState {
