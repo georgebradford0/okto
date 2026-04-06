@@ -121,11 +121,11 @@ const statusColor = (st: ConnStatus): string => {
 
 // ── Text rendering ─────────────────────────────────────────────────────────────
 
-function renderBoldText(text: string, baseStyle: object) {
+function renderInlineSegment(text: string, baseStyle: object, key: number) {
   const parts = text.split(/\*\*(.+?)\*\*/gs)
-  if (parts.length === 1) return <Text style={baseStyle}>{text}</Text>
+  if (parts.length === 1) return <Text key={key} style={baseStyle}>{text}</Text>
   return (
-    <Text style={baseStyle}>
+    <Text key={key} style={baseStyle}>
       {parts.map((part, i) =>
         i % 2 === 1
           ? <Text key={i} style={{ fontWeight: '900' }}>{part}</Text>
@@ -133,6 +133,47 @@ function renderBoldText(text: string, baseStyle: object) {
       )}
     </Text>
   )
+}
+
+function renderText(text: string, baseStyle: object) {
+  // Split on triple-backtick blocks first, then handle inline code within prose segments.
+  const blocks = text.split(/(```[\s\S]*?```)/g)
+  const elements: React.ReactNode[] = []
+  blocks.forEach((block, bi) => {
+    if (block.startsWith('```') && block.endsWith('```')) {
+      const inner = block.slice(3, -3).replace(/^\n/, '')
+      elements.push(
+        <View key={bi} style={s.codeBlock}>
+          <Text style={s.codeBlockText}>{inner}</Text>
+        </View>
+      )
+    } else {
+      // Within a prose block, split on inline backticks.
+      const inlineParts = block.split(/`([^`]+)`/g)
+      if (inlineParts.length === 1) {
+        elements.push(renderInlineSegment(block, baseStyle, bi))
+      } else {
+        elements.push(
+          <Text key={bi} style={baseStyle}>
+            {inlineParts.map((part, i) =>
+              i % 2 === 1
+                ? <Text key={i} style={s.inlineCode}>{part}</Text>
+                : (() => {
+                    const boldParts = part.split(/\*\*(.+?)\*\*/gs)
+                    if (boldParts.length === 1) return part
+                    return boldParts.map((bp, j) =>
+                      j % 2 === 1
+                        ? <Text key={j} style={{ fontWeight: '900' }}>{bp}</Text>
+                        : bp
+                    )
+                  })()
+            )}
+          </Text>
+        )
+      }
+    }
+  })
+  return <>{elements}</>
 }
 
 // ── PendingEllipsis ───────────────────────────────────────────────────────────
@@ -326,7 +367,7 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: Messag
         {isUser ? 'you' : 'claude'}
       </Text>
       {message.isQuestion && <Text style={s.questionMark}>?</Text>}
-      {renderBoldText(message.text, s.textBlock)}
+      {renderText(message.text, s.textBlock)}
       {message.streaming && <Text style={s.cursor}>▋</Text>}
       {message.cost != null && (
         <Text style={s.costLabel}>{formatCost(message.cost)}</Text>
@@ -1315,6 +1356,9 @@ const s = StyleSheet.create({
   messageLabel:      { fontSize: 11, color: C.textMuted, marginBottom: 4, marginLeft: 2, fontWeight: '600', letterSpacing: 0.5, textTransform: 'uppercase', fontFamily: ARIMO },
   messageLabelRight: { marginLeft: 0, marginRight: 2 },
   textBlock:         { color: C.textPrimary, fontSize: 15, lineHeight: 23, fontFamily: ARIMO },
+  inlineCode:        { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 13, color: C.textPrimary, backgroundColor: C.surface, paddingHorizontal: 3, borderRadius: 3 },
+  codeBlock:         { backgroundColor: C.surface, borderRadius: 6, padding: 10, marginVertical: 4 },
+  codeBlockText:     { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 12, color: C.textPrimary, lineHeight: 18 },
   cursor:            { color: C.accent, fontSize: 14, fontFamily: ARIMO },
   questionMark:      { color: C.yellow, fontWeight: '700', fontSize: 15, marginBottom: 2, fontFamily: ARIMO },
   costLabel:         { fontSize: 11, color: C.textMuted, marginTop: 4, marginLeft: 2, fontFamily: ARIMO },
