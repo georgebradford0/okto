@@ -509,6 +509,9 @@ const ChatPane = memo(function ChatPane({
       if (cancelled) return
       console.log(`[ws] connecting to ${wsUrl}`)
       updateStatus('connecting')
+      // Clear stale session ID so the token/tool fallback path can create a
+      // fresh session bubble if the server is mid-stream on reconnect.
+      currentSessionIdRef.current = null
       const ws = new WebSocket(wsUrl)
       wsRef.current = ws
 
@@ -557,7 +560,10 @@ const ChatPane = memo(function ChatPane({
                   result.push({ ...bm, ...(lm.cost != null ? { cost: lm.cost } : {}) })
                   li++
                 } else {
-                  // No match (local is stale/different) — just emit the server msg
+                  // No match (local is stale/different) — still splice in any
+                  // buffered session/tool bubbles so they aren't silently lost,
+                  // then emit the server message.
+                  result.push(...pending.map(m => ({ ...m, streaming: false })))
                   result.push(bm)
                 }
               }
