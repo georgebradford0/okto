@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-04-06
+
+### Changed
+- **Session lifecycle enforced for all tool calls** — system prompt and tool descriptions now require `session_start` as the very first tool call and `session_end` as the very last, regardless of how many tools are used; previously "non-trivial work" wording left a loophole for single/quick calls
+
+### Fixed
+- **MCP child process detach** — replaced non-existent `child.forget()` with `std::mem::forget(child)` to correctly detach spawned MCP server processes from the tokio runtime
+
 ## [0.1.0] - 2026-04-06
 
 ### Added
