@@ -578,48 +578,95 @@ const ChatPane = memo(function ChatPane({
               id: `h${i}`, role: m.role, text: m.text,
             }))
 
-            // Re-insert session/tool bubbles from the local cache so they
-            // survive reconnection.  Strategy: walk both the old local list
-            // and serverMsgs in parallel, matching user/assistant messages by
-            // text.  Any session/tool bubbles sitting between two matched
-            // anchors are spliced back in at the same position.
+            // Re-insert client-only bubbles (session, tool, and assistant
+            // summaries produced by session_end) from the local cache so they
+            // survive reconnection.
+            //
+            // Background: the server's history only contains messages that have
+            // plain-text content blocks.  Agentic-session assistant turns
+            // (which consist entirely of tool-use blocks) produce NO entry in
+            // the server history.  The session bubble itself, any tool lines
+            // inside it, and the assistant summary emitted by session_end are
+            // therefore CLIENT-ONLY — they will never appear in base.
+            //
+            // Strategy: walk both local and base in parallel, matching
+            // user/assistant server messages by text.  Between each pair of
+            // matched server entries, splice back in whatever client-only
+            // bubbles sat there in local.  After base is exhausted, flush ALL
+            // remaining local entries (not just session/tool) so that trailing
+            // assistant summaries are never silently dropped.
             const mergeSessionBubbles = (base: Message[]): Message[] => {
               const local = messagesRef.current
               if (!local.length) return base
+
               const result: Message[] = []
               let li = 0 // pointer into local
+
               for (let bi = 0; bi < base.length; bi++) {
                 const bm = base[bi]
-                // Advance local pointer past session/tool bubbles, collecting them
+
+                // Collect any client-only bubbles that precede the next
+                // server-matched anchor in local.
+                //
+                // A message is considered client-only (will never appear in
+                // the server history frame) if:
+                //   • Its role is 'session' or 'tool' (always client-only), OR
+                //   • Its role is 'assistant' AND we have already seen a
+                //     'session' bubble in the current pending run — such an
+                //     assistant message is the session_end summary, which the
+                //     server never includes in history because the agentic
+                //     assistant turn has only tool-use blocks (no text).
+                //
+                // Regular (non-agentic) assistant replies DO appear in server
+                // history and must NOT be swallowed here.
                 const pending: Message[] = []
-                while (li < local.length && (local[li].role === 'session' || local[li].role === 'tool')) {
-                  pending.push(local[li++])
+                let sawSession = false
+                while (li < local.length) {
+                  const lm = local[li]
+                  if (lm.role === 'session' || lm.role === 'tool') {
+                    sawSession = true
+                    pending.push(lm)
+                    li++
+                  } else if (lm.role === 'assistant' && sawSession) {
+                    // session_end summary following a session bubble — client-only
+                    pending.push(lm)
+                    li++
+                  } else {
+                    break
+                  }
                 }
-                // Try to match the current server message against local
+
+                // Try to match bm against the next local server message.
                 if (li < local.length && local[li].role === bm.role && local[li].text === bm.text) {
-                  // Match — splice in the buffered session/tool bubbles first
+                  // Match — splice in the buffered client-only bubbles first,
+                  // then the server message (preserving client-only fields).
                   result.push(...pending.map(m => ({ ...m, streaming: false })))
-                  // Preserve client-only fields (e.g. cost) from the local copy
                   const lm = local[li]
                   result.push({ ...bm, ...(lm.cost != null ? { cost: lm.cost } : {}) })
                   li++
                 } else {
-                  // No match (local is stale/different) — still splice in any
-                  // buffered session/tool bubbles so they aren't silently lost,
-                  // then emit the server message.
+                  // No match (local is stale/different) — still emit any
+                  // buffered client-only bubbles so they aren't lost, then
+                  // emit the server message.
                   result.push(...pending.map(m => ({ ...m, streaming: false })))
                   result.push(bm)
+                  // Do NOT advance li: we haven't matched local[li] yet, so
+                  // leave the pointer in place for the next iteration.
                 }
               }
-              // Flush any trailing session/tool bubbles in local that come after
-              // the last matched server message (e.g. a currently-streaming
-              // session bubble).  Without this they were silently dropped on
-              // every reconnect.  Preserve the original streaming flag — a
-              // live session bubble must stay streaming: true so the animation
-              // continues; completed ones are already false in local.
-              while (li < local.length && (local[li].role === 'session' || local[li].role === 'tool')) {
+
+              // After base is exhausted, flush ALL remaining local entries.
+              // This covers:
+              //  • A streaming session bubble (and its tool lines) that is
+              //    still live — must keep streaming:true so the animation runs.
+              //  • A completed session bubble followed by the assistant summary
+              //    produced by session_end — the summary has role='assistant'
+              //    and is client-only (never in server history), so the old
+              //    "session/tool only" flush silently dropped it every reconnect.
+              while (li < local.length) {
                 result.push(local[li++])
               }
+
               return result
             }
 
