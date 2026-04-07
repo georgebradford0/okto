@@ -114,7 +114,7 @@ impl McpClient {
         let stdout = BufReader::new(child.stdout.take()?);
 
         // Detach the child so it is not reaped when we drop the handle.
-        child.forget();
+        std::mem::forget(child);
 
         let mut client = McpClient { name: cfg.name.clone(), tools: vec![], stdin, stdout, next_id: 1 };
 
