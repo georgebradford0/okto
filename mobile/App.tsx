@@ -661,9 +661,12 @@ const ChatPane = memo(function ChatPane({
                 } else {
                   // No match (local is stale/different) — still emit any
                   // buffered client-only bubbles so they aren't lost, then
-                  // emit the server message.
+                  // emit the server message with a fresh unique ID.
+                  // Using bm's h${i} id here would collide with a later
+                  // iteration that matches a local message whose id is also
+                  // h${i}, causing FlatList key conflicts and visible duplication.
                   result.push(...pending.map(m => ({ ...m, streaming: false })))
-                  result.push(bm)
+                  result.push({ ...bm, id: uid() })
                   // Do NOT advance li: we haven't matched local[li] yet, so
                   // leave the pointer in place for the next iteration.
                 }
@@ -740,16 +743,18 @@ const ChatPane = memo(function ChatPane({
             if (frame.live_gen !== liveGenRef.current) break
             updateStatus('streaming')
             pendingTextRef.current = ''
-            // Always create a fresh bubble for this replay/new stream.  The
-            // history-merge step already restored the previous (completed)
-            // session bubble from local cache, so we do NOT reuse it here.
-            // Reusing and resetting to text:'' caused a double-fill: the merged
-            // bubble's content was already in the list, then the token replay
-            // appended on top of it again.
+            // Create a fresh bubble for this session.  On reconnect, the
+            // history-merge step may have already re-inserted the previous
+            // (incomplete) session bubble from local cache.  Remove any such
+            // stale bubble (matched by sessionId) before appending the new one
+            // so we don't end up with two session bubbles for the same session.
             const sid = uid()
             console.log(`[session] new bubble id=${sid} sessionId=${frame.session_id}`)
             currentSessionIdRef.current = sid
-            setMessages(prev => [...prev, { id: sid, role: 'session' as const, text: '', streaming: true, label: frame.label, sessionId: frame.session_id }])
+            setMessages(prev => [
+              ...prev.filter(m => m.sessionId !== frame.session_id),
+              { id: sid, role: 'session' as const, text: '', streaming: true, label: frame.label, sessionId: frame.session_id },
+            ])
             break
           }
           case 'session_end': {
