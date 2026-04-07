@@ -36,13 +36,15 @@ interface NoiseConnectionInfo {
 type ConnStatus = 'connecting' | 'ready' | 'streaming' | 'error'
 
 type ServerFrame =
-  | { type: 'history';  messages: HistMsg[]; live_gen: number }
-  | { type: 'token';    text: string;        live_gen: number }
-  | { type: 'tool';     name: string; input?: Record<string, unknown>; live_gen: number }
-  | { type: 'question'; question: string;    live_gen: number }
-  | { type: 'done';     cost_usd: number;    live_gen: number }
-  | { type: 'error';    message: string;     live_gen: number }
-  | { type: 'ack';  live_gen: number }
+  | { type: 'history';       messages: HistMsg[]; live_gen: number }
+  | { type: 'token';         text: string;        live_gen: number }
+  | { type: 'tool';          name: string; input?: Record<string, unknown>; live_gen: number }
+  | { type: 'question';      question: string;    live_gen: number }
+  | { type: 'done';          cost_usd: number;    live_gen: number }
+  | { type: 'error';         message: string;     live_gen: number }
+  | { type: 'ack';           live_gen: number }
+  | { type: 'session_start'; label: string;       live_gen: number }
+  | { type: 'session_end';   summary: string;     live_gen: number }
 
 interface HistMsg { role: 'user' | 'assistant'; text: string }
 
@@ -53,6 +55,7 @@ interface Message {
   streaming?:  boolean
   isQuestion?: boolean
   cost?:       number
+  label?:      string
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -299,7 +302,7 @@ const AgentSessionBubble = memo(function AgentSessionBubble({ message }: { messa
               backgroundColor: message.streaming ? C.accent : C.green,
             }]} />
             <Text style={s.sessionBoxLabel}>
-              {message.streaming ? 'working\u2026' : 'session log'}
+              {message.streaming ? (message.label ?? 'working\u2026') : 'session log'}
             </Text>
             <Text style={s.sessionExpandHint}>&#x2197;</Text>
           </View>
@@ -327,7 +330,7 @@ const AgentSessionBubble = memo(function AgentSessionBubble({ message }: { messa
             <View style={s.sessionBoxHeader}>
               <View style={[s.sessionDot, { backgroundColor: message.streaming ? C.accent : C.green }]} />
               <Text style={s.sessionModalTitle}>
-                {message.streaming ? 'working\u2026' : 'session log'}
+                {message.streaming ? (message.label ?? 'working\u2026') : 'session log'}
               </Text>
             </View>
             <TouchableOpacity onPress={closeSheet} hitSlop={{ top: 8, bottom: 8, left: 16, right: 8 }}>
@@ -488,13 +491,12 @@ const ChatPane = memo(function ChatPane({
   // the history frame of the current connection.
   const liveGenRef      = useRef<number>(-1)
 
-  // Accumulates token text since the last tool call.  Reset on each tool frame
-  // so that when 'done' arrives we have just the final assistant text to use as
-  // the chat summary.
-  const sessionSummaryRef  = useRef<string>('')
+  // Accumulates token text for responses that never call session_start (simple
+  // answers). Used as the assistant message text on 'done'.
+  const pendingTextRef  = useRef<string>('')
 
-  // ID of the session bubble currently being streamed into.  Set when the user
-  // sends a message (so the box appears immediately) and cleared on done/error.
+  // ID of the session bubble currently being streamed into.  Set on
+  // 'session_start', cleared on 'session_end' / 'done' / 'error'.
   const currentSessionIdRef = useRef<string | null>(null)
 
   // Fetch @ completions whenever the input changes.
@@ -640,11 +642,9 @@ const ChatPane = memo(function ChatPane({
                 pendingMsgRef.current = null
                 AsyncStorage.removeItem(`pending_${connKey}`).catch(() => {})
                 const optimisticBubble: Message = { id: uid(), role: 'user', text: pending }
-                const resendSessionId = uid()
-                currentSessionIdRef.current = resendSessionId
-                sessionSummaryRef.current = ''
-                const resendSessionBubble: Message = { id: resendSessionId, role: 'session', text: '', streaming: true }
-                setMessages([...mergeSessionBubbles(serverMsgs), optimisticBubble, resendSessionBubble])
+                pendingTextRef.current = ''
+                currentSessionIdRef.current = null
+                setMessages([...mergeSessionBubbles(serverMsgs), optimisticBubble])
                 ws.send(JSON.stringify({ type: 'message', text: pending }))
                 updateStatus('streaming')
                 didResend = true
@@ -654,17 +654,6 @@ const ChatPane = memo(function ChatPane({
               // re-insert local session/tool bubbles so they survive reconnect.
               const merged = mergeSessionBubbles(serverMsgs)
               setMessages(merged)
-              // If a streaming session bubble was preserved in the tail, restore
-              // its ID so that incoming token/tool frames can find it by ID
-              // rather than falling back to the slower "last element" heuristic.
-              if (frame.live_gen > 0) {
-                const liveSession = merged.slice().reverse().find(
-                  m => m.role === 'session' && m.streaming,
-                )
-                if (liveSession) {
-                  currentSessionIdRef.current = liveSession.id
-                }
-              }
             }
 
             setPendingQuestion(false)
@@ -684,52 +673,70 @@ const ChatPane = memo(function ChatPane({
             AsyncStorage.setItem(`msgs_${connKey}`, JSON.stringify(messagesRef.current)).catch(() => {})
             break
           }
+          case 'session_start': {
+            if (frame.live_gen !== liveGenRef.current) break
+            updateStatus('streaming')
+            pendingTextRef.current = ''
+            const sid = uid()
+            currentSessionIdRef.current = sid
+            setMessages(prev => [...prev, { id: sid, role: 'session' as const, text: '', streaming: true, label: frame.label }])
+            break
+          }
+          case 'session_end': {
+            if (frame.live_gen !== liveGenRef.current) break
+            const finishedSessionId = currentSessionIdRef.current
+            currentSessionIdRef.current = null
+            pendingTextRef.current = ''
+            setMessages(prev => {
+              const finalized = prev.map(m =>
+                (finishedSessionId ? m.id === finishedSessionId : m.streaming && m.role === 'session')
+                  ? { ...m, streaming: false }
+                  : m
+              )
+              return [...finalized, { id: uid(), role: 'assistant' as const, text: frame.summary }]
+            })
+            break
+          }
           case 'token': {
             // Discard tokens from a stale generation (old connection replay).
             if (frame.live_gen !== liveGenRef.current) break
             updateStatus('streaming')
-            sessionSummaryRef.current += frame.text
-            setMessages(prev => {
-              const sid = currentSessionIdRef.current
-              if (sid) {
-                // Update the known session bubble by ID.
-                return prev.map(m => m.id === sid ? { ...m, text: m.text + frame.text, streaming: true } : m)
-              }
-              // Reconnect fallback: find last streaming session or create one.
-              const last = prev[prev.length - 1]
-              if (last?.streaming && last.role === 'session') {
-                return [...prev.slice(0, -1), { ...last, text: last.text + frame.text }]
-              }
-              const newId = uid()
-              currentSessionIdRef.current = newId
-              return [...prev, { id: newId, role: 'session' as const, text: frame.text, streaming: true }]
-            })
+            const sid = currentSessionIdRef.current
+            if (sid) {
+              // Inside a session — stream tokens into the session bubble.
+              setMessages(prev => prev.map(m => m.id === sid ? { ...m, text: m.text + frame.text, streaming: true } : m))
+            } else {
+              // Simple answer (no session_start) — accumulate for 'done'.
+              pendingTextRef.current += frame.text
+            }
             break
           }
           case 'done': {
             // Discard done from a stale generation.
             if (frame.live_gen !== liveGenRef.current) break
             const cost = frame.cost_usd
-            const summary = sessionSummaryRef.current || 'Task complete.'
-            sessionSummaryRef.current = ''
-            const finishedSessionId = currentSessionIdRef.current
+            const pendingText = pendingTextRef.current
+            pendingTextRef.current = ''
             currentSessionIdRef.current = null
             setMessages(prev => {
-              // Finalize the session bubble by ID (or any streaming session as fallback).
-              const finalized = prev.map(m =>
-                (finishedSessionId ? m.id === finishedSessionId : m.streaming && m.role === 'session')
-                  ? { ...m, streaming: false }
-                  : m
-              )
-              // Append a plain assistant message with the final text as a summary.
-              // Always attach cost (even $0.00 for interrupted runs).
-              const summaryMsg: Message = {
-                id: uid(), role: 'assistant' as const, text: summary,
-                cost,
+              // If session_end already ran, just attach cost to the last assistant message.
+              // If this is a simple answer (no session), append the accumulated text now.
+              const last = prev[prev.length - 1]
+              const finalized = prev.map(m => m.streaming ? { ...m, streaming: false } : m)
+              if (pendingText) {
+                // Simple answer path — no session bubble was ever opened.
+                const summaryMsg: Message = { id: uid(), role: 'assistant' as const, text: pendingText, cost }
+                const updated = [...finalized, summaryMsg]
+                AsyncStorage.setItem(`msgs_${connKey}`, JSON.stringify(updated)).catch(() => {})
+                return updated
+              } else {
+                // Session path — session_end already appended the summary; attach cost to it.
+                const updated = finalized.map((m, i) =>
+                  i === finalized.length - 1 && m.role === 'assistant' ? { ...m, cost } : m
+                )
+                AsyncStorage.setItem(`msgs_${connKey}`, JSON.stringify(updated)).catch(() => {})
+                return updated
               }
-              const updated = [...finalized, summaryMsg]
-              AsyncStorage.setItem(`msgs_${connKey}`, JSON.stringify(updated)).catch(() => {})
-              return updated
             })
             updateStatus('ready')
             setPendingQuestion(false)
@@ -738,7 +745,7 @@ const ChatPane = memo(function ChatPane({
           case 'question': {
             // Discard questions from a stale generation.
             if (frame.live_gen !== liveGenRef.current) break
-            sessionSummaryRef.current = ''
+            pendingTextRef.current = ''
             currentSessionIdRef.current = null
             setMessages(prev => {
               const finalized = prev.map(m => m.streaming ? { ...m, streaming: false } : m)
@@ -751,27 +758,11 @@ const ChatPane = memo(function ChatPane({
           case 'tool': {
             // Discard tool frames from a stale generation.
             if (frame.live_gen !== liveGenRef.current) break
-            // Do NOT reset sessionSummaryRef here.  The server stores all text
-            // tokens for the turn in a single assistant message (across all
-            // tool-call boundaries), so we must accumulate the full token text
-            // to match that string on reconnect.  Resetting on each tool frame
-            // caused a text mismatch in mergeSessionBubbles, which silently
-            // dropped session bubbles and tool lines after returning from background.
             const toolLine = '\n\u25b8 ' + formatToolCall(frame.name, frame.input) + '\n'
-            setMessages(prev => {
-              const sid = currentSessionIdRef.current
-              if (sid) {
-                return prev.map(m => m.id === sid ? { ...m, text: m.text + toolLine, streaming: true } : m)
-              }
-              // Reconnect fallback.
-              const last = prev[prev.length - 1]
-              if (last?.streaming && last.role === 'session') {
-                return [...prev.slice(0, -1), { ...last, text: last.text + toolLine }]
-              }
-              const newId = uid()
-              currentSessionIdRef.current = newId
-              return [...prev, { id: newId, role: 'session' as const, text: toolLine, streaming: true }]
-            })
+            const sid = currentSessionIdRef.current
+            if (sid) {
+              setMessages(prev => prev.map(m => m.id === sid ? { ...m, text: m.text + toolLine, streaming: true } : m))
+            }
             break
           }
           case 'ack': {
@@ -786,10 +777,9 @@ const ChatPane = memo(function ChatPane({
           case 'error': {
             // Discard errors from a stale generation.
             if (frame.live_gen !== liveGenRef.current) break
-            sessionSummaryRef.current = ''
+            pendingTextRef.current = ''
             currentSessionIdRef.current = null
             setMessages(prev => {
-              // Finalize session bubble and append the error as a summary message.
               const finalized = prev.map(m => m.streaming ? { ...m, streaming: false } : m)
               const updated = [...finalized, { id: uid(), role: 'assistant' as const, text: `\u2717 ${frame.message}` }]
               AsyncStorage.setItem(`msgs_${connKey}`, JSON.stringify(updated)).catch(() => {})
@@ -859,15 +849,12 @@ const ChatPane = memo(function ChatPane({
       return
     }
 
-    // Create the session bubble immediately so it appears in the chat right
-    // away rather than waiting for the first token/tool frame to arrive.
-    const sessionId = uid()
-    currentSessionIdRef.current = sessionId
-    sessionSummaryRef.current = ''
+    // Reset session state for this new turn.
+    currentSessionIdRef.current = null
+    pendingTextRef.current = ''
     setMessages(prev => [
       ...prev,
       { id: uid(), role: 'user' as const, text },
-      { id: sessionId, role: 'session' as const, text: '', streaming: true },
     ])
     isAtBottomRef.current = true
 
@@ -899,7 +886,7 @@ const ChatPane = memo(function ChatPane({
     // discarded, not appended to the now-empty conversation.
     liveGenRef.current = -1
     currentSessionIdRef.current = null
-    sessionSummaryRef.current = ''
+    pendingTextRef.current = ''
     wsRef.current?.send(JSON.stringify({ type: 'clear' }))
     setMessages([])
     setPendingQuestion(false)

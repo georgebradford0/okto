@@ -203,6 +203,10 @@ enum WsFrame {
     Done { cost_usd: f64, live_gen: usize },
     /// Current response ended with an error.
     Error    { message: String, live_gen: usize },
+    /// Model is beginning a multi-step agentic session.
+    SessionStart { label: String, live_gen: usize },
+    /// Model is ending an agentic session; summary is the final prose response.
+    SessionEnd   { summary: String, live_gen: usize },
     /// Acknowledgement that the user message was saved server-side.
     /// `live_gen` is the generation the client should expect for the upcoming
     /// live frames so it doesn't discard them as stale.
@@ -295,13 +299,15 @@ fn chat_event_to_frame(event: &ChatEvent, live_gen: usize) -> Option<WsFrame> {
     // Go through JSON so we're not coupled to internal enum layout.
     let v: serde_json::Value = serde_json::to_value(event).ok()?;
     match v["type"].as_str()? {
-        "text"        => Some(WsFrame::Token    { text:     v["text"].as_str()?.to_string(), live_gen }),
-        "tool_use"    => Some(WsFrame::Tool     { name: v["tool"].as_str()?.to_string(), input: v["input"].clone(), live_gen }),
-        "result"      => Some(WsFrame::Done { cost_usd: v["cost_usd"].as_f64().unwrap_or(0.0), live_gen }),
-        "interrupted" => Some(WsFrame::Done { cost_usd: 0.0, live_gen }),
-        "error"       => Some(WsFrame::Error    { message:  v["message"].as_str()?.to_string(), live_gen }),
-        "question"    => Some(WsFrame::Question { question: v["question"].as_str()?.to_string(), live_gen }),
-        _             => None,
+        "text"          => Some(WsFrame::Token        { text:     v["text"].as_str()?.to_string(), live_gen }),
+        "tool_use"      => Some(WsFrame::Tool         { name: v["tool"].as_str()?.to_string(), input: v["input"].clone(), live_gen }),
+        "result"        => Some(WsFrame::Done         { cost_usd: v["cost_usd"].as_f64().unwrap_or(0.0), live_gen }),
+        "interrupted"   => Some(WsFrame::Done         { cost_usd: 0.0, live_gen }),
+        "error"         => Some(WsFrame::Error        { message:  v["message"].as_str()?.to_string(), live_gen }),
+        "question"      => Some(WsFrame::Question     { question: v["question"].as_str()?.to_string(), live_gen }),
+        "session_start" => Some(WsFrame::SessionStart { label:   v["label"].as_str()?.to_string(), live_gen }),
+        "session_end"   => Some(WsFrame::SessionEnd   { summary: v["summary"].as_str()?.to_string(), live_gen }),
+        _               => None,
     }
 }
 

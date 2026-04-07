@@ -156,6 +156,10 @@ pub enum ChatEvent {
     WorkerCreated      { branch: String, worktree_path: String, task: String },
     WorkerError        { message: String },
     WorkerSessionReady { branch: String, worktree_path: String, worker_session_id: String, task: String },
+    /// Model is beginning a multi-step agentic session.
+    SessionStart       { label: String },
+    /// Model is ending an agentic session; summary is the final prose response.
+    SessionEnd         { summary: String },
 }
 
 // ── Branch ────────────────────────────────────────────────────────────────────
@@ -387,6 +391,12 @@ pub fn tool_definitions() -> Vec<AnthropicTool> {
                 "base":  { "type": "string", "description": "Target branch to merge into (defaults to main)" }
             }, "required": ["title"] }) },
     ];
+    tools.push(AnthropicTool { name: "session_start".into(),
+        description: "Signal the start of a multi-step agentic session that will use tools. Call this before making any tool calls when the user's request requires non-trivial work. Provide a short label describing what you are about to do. Do NOT call this for simple questions or responses that require no tools.".into(),
+        input_schema: serde_json::json!({ "type": "object", "properties": { "label": { "type": "string", "description": "Short description of the work being done, e.g. \"refactoring the auth module\"" } }, "required": ["label"] }) });
+    tools.push(AnthropicTool { name: "session_end".into(),
+        description: "Signal the end of an agentic session. Call this as the final step after all tool use is complete. Provide a concise summary of what was done and the outcome — this is shown to the user as the response.".into(),
+        input_schema: serde_json::json!({ "type": "object", "properties": { "summary": { "type": "string", "description": "Concise summary of what was done and the outcome." } }, "required": ["summary"] }) });
     if std::env::var("BRAVE_API_KEY").ok().filter(|s| !s.is_empty()).is_some() {
         tools.push(AnthropicTool { name: "web_search".into(),
             description: "Search the web via Brave Search.".into(),
@@ -1124,6 +1134,26 @@ pub async fn run_agentic_loop(
                 let mut tool_results: Vec<ContentBlock> = Vec::new();
                 for block in &blocks {
                     if let ContentBlock::ToolUse { id, name, input } = block {
+                        // session_start / session_end are client-side signals — emit events,
+                        // return a synthetic ok result, but do not execute anything.
+                        if name == "session_start" {
+                            let label = input["label"].as_str().unwrap_or("working").to_string();
+                            tx.send(ChatEvent::SessionStart { label }).await.ok();
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id.clone(),
+                                content: vec![serde_json::json!({"type":"text","text":"ok"})],
+                            });
+                            continue;
+                        }
+                        if name == "session_end" {
+                            let summary = input["summary"].as_str().unwrap_or("").to_string();
+                            tx.send(ChatEvent::SessionEnd { summary }).await.ok();
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id.clone(),
+                                content: vec![serde_json::json!({"type":"text","text":"ok"})],
+                            });
+                            continue;
+                        }
                         let result = truncate_tool_output(
                             execute_tool(name, input, &cwd, &tx, pending_question.clone(), &mcp_pool).await,
                             tool_output_limit(name),
@@ -1151,7 +1181,11 @@ pub async fn run_agentic_loop(
 // ── System Prompt ─────────────────────────────────────────────────────────────
 
 pub fn build_system_prompt(repo_path: &str, branch: Option<&str>, worktree_path: Option<&str>) -> String {
-    let tool_guidance = "\n\nTool use guidelines (IMPORTANT — follow to minimise token cost):\
+    let tool_guidance = "\n\nSession guidelines (CRITICAL):\
+        \n- If you need to use any tools to fulfil the request, you MUST begin by calling session_start with a short label describing what you are about to do.\
+        \n- At the very end, after all tool use is complete, call session_end with a concise summary of what was done and the outcome.\
+        \n- For simple questions or conversational replies that require no tool use, answer directly — do NOT call session_start or session_end.\
+        \n\nTool use guidelines (IMPORTANT — follow to minimise token cost):\
         \n- To modify an existing file use edit_file (str_replace). Never read the whole file just to rewrite it.\
         \n- Use read_file with offset+limit to read only the section you need.\
         \n- Use grep to locate the exact lines before reading or editing.\
