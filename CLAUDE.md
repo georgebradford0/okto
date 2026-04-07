@@ -71,6 +71,5 @@ Server listens on port 9000 (`NOISE_PORT`). The Curve25519 keypair is persisted 
 
 | Workflow | What it does |
 |----------|-------------|
-| `server.yml` | Builds multi-platform Docker image and pushes to GHCR |
 | `android.yml` | Builds AAB via fastlane, uploads to Google Play (closed/production track) |
 | `ios.yml` | Builds on macOS runner, optionally uploads to TestFlight |
