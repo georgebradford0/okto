@@ -1,6 +1,6 @@
 [package]
 name        = "claudulhu-server"
-version     = "0.0.22"
+version     = "0.1.0"
 edition     = "2021"
 description = "claudulhu standalone HTTP/WebSocket server"
 

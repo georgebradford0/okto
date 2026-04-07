@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-04-06
+
 ### Added
 - **Connection status dot in chat header** — 8×8 colored circle to the left of the "claudulhu" title indicates server connection state (green = ready, yellow = connecting/streaming, red = error)
 
