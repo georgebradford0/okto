@@ -55,6 +55,8 @@ type ServerFrame =
   | { type: 'worker_created';       branch: string; worktree_path: string; task: string }
   | { type: 'worker_error';         message: string }
   | { type: 'worker_session_ready'; branch: string; worktree_path: string; worker_session_id: string; task: string }
+  | { type: 'session_start';        label: string }
+  | { type: 'session_end';          summary: string }
 
 type Block =
   | { kind: 'text';           text: string }
@@ -71,9 +73,12 @@ type Block =
 
 interface ChatMessage {
   id: string
-  role: 'user' | 'assistant' | 'info'
+  role: 'user' | 'assistant' | 'info' | 'session'
   blocks: Block[]
   streaming: boolean
+  // session bubble fields
+  sessionText?: string
+  sessionLabel?: string
 }
 
 interface Branch {
@@ -101,50 +106,59 @@ const uid = () => `m${++_id}`
 const BRANCHES_URL = 'http://localhost:8000/branches'
 const MAIN_WS_URL  = 'ws://localhost:8000/chat'
 
-// ── ToolUseBlock ──────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-function toolSummary(tool: string, input: Record<string, unknown>): string {
-  const arg =
-    (input.command as string | undefined) ??
-    (input.pattern as string | undefined) ??
-    (input.query as string | undefined) ??
-    (input.file_path as string | undefined) ??
-    (input.path as string | undefined) ??
-    (input.skill as string | undefined) ??
-    (input.prompt as string | undefined) ??
-    Object.values(input)[0]
-  if (arg === undefined) return `${tool}()`
-  const str = typeof arg === 'string' ? arg : JSON.stringify(arg)
-  const truncated = str.length > 60 ? str.slice(0, 60) + '…' : str
-  return `${tool}("${truncated}")`
+function formatToolCall(name: string, input: Record<string, unknown>): string {
+  const capName = name.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('')
+  const entries = Object.entries(input)
+  if (entries.length === 0) return `${capName}()`
+  if (entries.length === 1) {
+    const val = String(entries[0][1])
+    return `${capName}(${val.length > 120 ? val.slice(0, 120) + '…' : val})`
+  }
+  const args = entries.map(([k, v]) => {
+    const val = String(v)
+    return `${k}=${val.length > 60 ? val.slice(0, 60) + '…' : val}`
+  }).join(', ')
+  return `${capName}(${args})`
 }
 
-function ToolUseBlock({ block }: { block: Extract<Block, { kind: 'tool_use' }> }) {
+// ── AgentSessionBubble ────────────────────────────────────────────────────────
+
+function AgentSessionBubble({ message }: { message: ChatMessage }) {
   const [open, setOpen] = useState(false)
-  const summary = toolSummary(block.tool, block.input)
-  const resultText = block.result === undefined
-    ? null
-    : typeof block.result === 'string'
-      ? block.result
-      : JSON.stringify(block.result, null, 2)
-  const hasResult = resultText !== null
+  const logRef = useRef<HTMLPreElement>(null)
+
+  // Auto-scroll the log while streaming
+  useEffect(() => {
+    if (open && message.streaming) {
+      const el = logRef.current
+      if (el) el.scrollTop = el.scrollHeight
+    }
+  }, [message.sessionText, open, message.streaming])
+
+  const text = message.sessionText ?? ''
+  const preview = text.length > 400 ? '…' + text.slice(-400) : text
+
   return (
-    <div className="tool-line">
-      <button
-        className="tool-line-btn"
-        onClick={() => hasResult && setOpen(o => !o)}
-        style={{ cursor: hasResult ? 'pointer' : 'default' }}
-      >
-        <span className="tool-line-indicator">{open ? '▾' : '▸'}</span>
-        <span className="tool-line-summary">{summary}</span>
+    <div className={`session-bubble${message.streaming ? ' session-bubble--streaming' : ''}`}>
+      <button className="session-bubble-header" onClick={() => setOpen(o => !o)}>
+        <span className={`session-dot${message.streaming ? ' session-dot--live' : ' session-dot--done'}`} />
+        <span className="session-bubble-label">
+          {message.streaming ? (message.sessionLabel ?? 'working…') : 'session log'}
+        </span>
+        <span className="session-bubble-expand">{open ? '↙' : '↗'}</span>
       </button>
-      {open && hasResult && (
-        <pre className="tool-line-output">{resultText}</pre>
+      {message.streaming && <div className="session-scan-line" />}
+      {!open && (
+        <pre className="session-preview">{preview}</pre>
+      )}
+      {open && (
+        <pre className="session-log" ref={logRef}>{text}</pre>
       )}
     </div>
   )
 }
-
 
 // ── BlockRenderer ─────────────────────────────────────────────────────────────
 
@@ -226,6 +240,9 @@ function BlockRenderer({ block }: { block: Block }) {
 // ── MessageBubble ─────────────────────────────────────────────────────────────
 
 function MessageBubble({ message }: { message: ChatMessage }) {
+  if (message.role === 'session') {
+    return <AgentSessionBubble message={message} />
+  }
   return (
     <div className={`message message--${message.role}`}>
       <div className="message-body">
@@ -284,6 +301,7 @@ function ChatPane({
 
   const wsRef               = useRef<WebSocket | null>(null)
   const inResponseRef       = useRef(false)
+  const currentSessionIdRef = useRef<string | null>(null)   // active session bubble id
   const messagesEndRef      = useRef<HTMLDivElement>(null)
   const scrollContainerRef  = useRef<HTMLDivElement>(null)
   const inputRef            = useRef<HTMLTextAreaElement>(null)
@@ -374,10 +392,11 @@ function ChatPane({
 
   const completeResponse = useCallback(() => {
     inResponseRef.current = false
+    currentSessionIdRef.current = null
     setIsPending(false)
     setIsStreaming(false)
     setPendingQuestion(false)
-    setMessages(prev => prev.map((m, i) => i < prev.length - 1 ? m : { ...m, streaming: false }))
+    setMessages(prev => prev.map(m => m.streaming ? { ...m, streaming: false } : m))
   }, [])
 
   const handleFrame = useCallback((frame: ServerFrame) => {
@@ -386,49 +405,115 @@ function ChatPane({
         logInfo(`session ready (resumed=${frame.resumed})`)
         updateStatus(frame.resumed ? 'resumed' : 'ready')
         break
-      case 'text':
-        ensureAssistantMsg()
-        appendBlock({ kind: 'text', text: frame.text })
+      case 'session_start': {
+        logInfo(`session_start: ${frame.label}`)
+        setIsPending(false)
+        setIsStreaming(true)
+        inResponseRef.current = true
+        const sid = uid()
+        currentSessionIdRef.current = sid
+        setMessages(prev => [...prev, {
+          id: sid, role: 'session', blocks: [], streaming: true,
+          sessionText: '', sessionLabel: frame.label,
+        }])
         break
-      case 'tool_use':
-        logInfo(`tool_use: ${frame.tool}`)
-        ensureAssistantMsg()
-        appendBlock({ kind: 'tool_use', tool: frame.tool, input: frame.input })
-        break
-      case 'tool_result':
-        patchLastToolResult(frame.content)
-        // After tool results, we're waiting for the next API turn
+      }
+      case 'session_end': {
+        logInfo(`session_end: ${frame.summary}`)
+        const finishedSid = currentSessionIdRef.current
+        currentSessionIdRef.current = null
+        // Mark session bubble as done, then append the summary as an assistant message
+        setMessages(prev => {
+          const finalized = prev.map(m =>
+            (finishedSid ? m.id === finishedSid : m.streaming && m.role === 'session')
+              ? { ...m, streaming: false }
+              : m
+          )
+          return [...finalized, {
+            id: uid(), role: 'assistant' as const, blocks: [{ kind: 'text' as const, text: frame.summary }],
+            streaming: false,
+          }]
+        })
         inResponseRef.current = false
         setIsStreaming(false)
-        setIsPending(true)
-        setMessages(prev => prev.map((m, i) => i < prev.length - 1 ? m : { ...m, streaming: false }))
+        break
+      }
+      case 'text': {
+        const sid = currentSessionIdRef.current
+        if (sid) {
+          // Token inside a session — append to the session bubble log
+          setMessages(prev => prev.map(m =>
+            m.id === sid ? { ...m, sessionText: (m.sessionText ?? '') + frame.text } : m
+          ))
+        } else {
+          ensureAssistantMsg()
+          appendBlock({ kind: 'text', text: frame.text })
+        }
+        break
+      }
+      case 'tool_use': {
+        logInfo(`tool_use: ${frame.tool}`)
+        const sid = currentSessionIdRef.current
+        if (sid) {
+          // Append tool call line to the session bubble log
+          const line = '\n▸ ' + formatToolCall(frame.tool, frame.input) + '\n'
+          setMessages(prev => prev.map(m =>
+            m.id === sid ? { ...m, sessionText: (m.sessionText ?? '') + line } : m
+          ))
+        } else {
+          ensureAssistantMsg()
+          appendBlock({ kind: 'tool_use', tool: frame.tool, input: frame.input })
+        }
+        break
+      }
+      case 'tool_result':
+        if (!currentSessionIdRef.current) {
+          patchLastToolResult(frame.content)
+          // After tool results, we're waiting for the next API turn
+          inResponseRef.current = false
+          setIsStreaming(false)
+          setIsPending(true)
+          setMessages(prev => prev.map((m, i) => i < prev.length - 1 ? m : { ...m, streaming: false }))
+        }
         onRefreshBranchesRef.current()
         break
       case 'result':
         logInfo(`session result: turns=${frame.turns} cost=$${frame.cost_usd?.toFixed(4)}`)
-        appendBlock({ kind: 'result', cost_usd: frame.cost_usd, turns: frame.turns })
+        if (!currentSessionIdRef.current) {
+          appendBlock({ kind: 'result', cost_usd: frame.cost_usd, turns: frame.turns })
+        }
         completeResponse()
         onRefreshBranchesRef.current()
         break
       case 'error':
         logError(`session error: ${frame.message}`)
-        ensureAssistantMsg()
-        appendBlock({ kind: 'error', message: frame.message })
-        completeResponse()
+        if (currentSessionIdRef.current) {
+          completeResponse()
+          setMessages(prev => [...prev, {
+            id: uid(), role: 'assistant', blocks: [{ kind: 'error', message: frame.message }],
+            streaming: false,
+          }])
+        } else {
+          ensureAssistantMsg()
+          appendBlock({ kind: 'error', message: frame.message })
+          completeResponse()
+        }
         break
       case 'interrupted':
         logInfo('session interrupted')
-        appendBlock({ kind: 'interrupted' })
+        if (!currentSessionIdRef.current) appendBlock({ kind: 'interrupted' })
         completeResponse()
         break
       case 'question':
-        ensureAssistantMsg()
-        appendBlock({ kind: 'question', question: frame.question })
+        if (!currentSessionIdRef.current) {
+          ensureAssistantMsg()
+          appendBlock({ kind: 'question', question: frame.question })
+        }
         // Stop streaming cursor — waiting for user to type an answer
         inResponseRef.current = false
         setIsStreaming(false)
         setIsPending(false)
-        setMessages(prev => prev.map((m, i) => i < prev.length - 1 ? m : { ...m, streaming: false }))
+        setMessages(prev => prev.map(m => m.streaming ? { ...m, streaming: false } : m))
         setPendingQuestion(true)
         break
       case 'system':

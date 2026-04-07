@@ -487,6 +487,112 @@
   background: none;
 }
 
+/* ── Session bubble ───────────────────────────────────────────────────────── */
+
+.session-bubble {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  margin: 2px 0 18px 0;
+  overflow: hidden;
+  align-self: flex-start;
+  max-width: 82%;
+  animation: fadeUp 0.15s ease-out;
+}
+
+.session-bubble--streaming {
+  border-color: var(--border-mid);
+}
+
+.session-bubble-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text-dim);
+}
+
+.session-bubble-header:hover {
+  background: var(--bg-panel);
+}
+
+.session-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.session-dot--live {
+  background: var(--blue);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.session-dot--done {
+  background: var(--green);
+  box-shadow: 0 0 0 2px var(--green-dim);
+}
+
+.session-bubble-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
+  flex: 1;
+  letter-spacing: 0.02em;
+}
+
+.session-bubble-expand {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.session-scan-line {
+  height: 2px;
+  background: linear-gradient(90deg, transparent 0%, var(--blue) 50%, transparent 100%);
+  background-size: 60% 100%;
+  animation: scan 1.4s linear infinite;
+}
+
+@keyframes scan {
+  0%   { background-position: -60% 0; }
+  100% { background-position: 160% 0; }
+}
+
+.session-preview {
+  margin: 0;
+  padding: 4px 12px 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 58px;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, transparent 0%, black 40%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 40%);
+  pointer-events: none;
+}
+
+.session-log {
+  margin: 0;
+  padding: 6px 12px 12px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
 /* ── Result / status blocks ───────────────────────────────────────────────── */
 
 .result-footer {
