@@ -392,10 +392,10 @@ pub fn tool_definitions() -> Vec<AnthropicTool> {
             }, "required": ["title"] }) },
     ];
     tools.push(AnthropicTool { name: "session_start".into(),
-        description: "Signal the start of a multi-step agentic session that will use tools. Call this before making any tool calls when the user's request requires non-trivial work. Provide a short label describing what you are about to do. Do NOT call this for simple questions or responses that require no tools.".into(),
+        description: "MUST be called before any other tool. Required whenever any tool use is needed — even a single tool call. Provide a short label describing what you are about to do. Do NOT call this for simple questions or responses that require no tools.".into(),
         input_schema: serde_json::json!({ "type": "object", "properties": { "label": { "type": "string", "description": "Short description of the work being done, e.g. \"refactoring the auth module\"" } }, "required": ["label"] }) });
     tools.push(AnthropicTool { name: "session_end".into(),
-        description: "Signal the end of an agentic session. Call this as the final step after all tool use is complete. Provide a concise summary of what was done and the outcome — this is shown to the user as the response.".into(),
+        description: "MUST be called after all other tools, as the final tool call. Required whenever session_start was called. Provide a concise summary of what was done and the outcome — this is shown to the user as the response.".into(),
         input_schema: serde_json::json!({ "type": "object", "properties": { "summary": { "type": "string", "description": "Concise summary of what was done and the outcome." } }, "required": ["summary"] }) });
     if std::env::var("BRAVE_API_KEY").ok().filter(|s| !s.is_empty()).is_some() {
         tools.push(AnthropicTool { name: "web_search".into(),
@@ -1182,8 +1182,9 @@ pub async fn run_agentic_loop(
 
 pub fn build_system_prompt(repo_path: &str, branch: Option<&str>, worktree_path: Option<&str>) -> String {
     let tool_guidance = "\n\nSession guidelines (CRITICAL):\
-        \n- If you need to use any tools to fulfil the request, you MUST begin by calling session_start with a short label describing what you are about to do.\
-        \n- At the very end, after all tool use is complete, call session_end with a concise summary of what was done and the outcome.\
+        \n- ANY use of tools — even a single tool call — MUST be wrapped: call session_start first, then the tool(s), then session_end last.\
+        \n- session_start must be the very first tool call; no other tool may be called before it.\
+        \n- session_end must be the very last tool call; no other tool may be called after it.\
         \n- For simple questions or conversational replies that require no tool use, answer directly — do NOT call session_start or session_end.\
         \n\nTool use guidelines (IMPORTANT — follow to minimise token cost):\
         \n- To modify an existing file use edit_file (str_replace). Never read the whole file just to rewrite it.\
