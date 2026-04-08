@@ -35,16 +35,28 @@ interface NoiseConnectionInfo {
 
 type ConnStatus = 'connecting' | 'ready' | 'streaming' | 'error'
 
+interface ContainerInfo {
+  id:      string
+  name:    string
+  git_url: string
+  status:  string
+  host:    string
+  port:    number
+  pubkey:  string
+}
+
 type ServerFrame =
-  | { type: 'history';       messages: HistMsg[]; live_gen: number }
-  | { type: 'token';         text: string;        live_gen: number }
-  | { type: 'tool';          name: string; input?: Record<string, unknown>; live_gen: number }
-  | { type: 'question';      question: string;    live_gen: number }
-  | { type: 'done';          cost_usd: number;    live_gen: number }
-  | { type: 'error';         message: string;     live_gen: number }
-  | { type: 'ack';           live_gen: number }
-  | { type: 'session_start'; label: string; session_id: string; live_gen: number }
-  | { type: 'session_end';   summary: string;     live_gen: number }
+  | { type: 'history';          messages: HistMsg[]; live_gen: number }
+  | { type: 'token';            text: string;        live_gen: number }
+  | { type: 'tool';             name: string; input?: Record<string, unknown>; live_gen: number }
+  | { type: 'question';         question: string;    live_gen: number }
+  | { type: 'done';             cost_usd: number;    live_gen: number }
+  | { type: 'error';            message: string;     live_gen: number }
+  | { type: 'ack';              live_gen: number }
+  | { type: 'session_start';    label: string; session_id: string; live_gen: number }
+  | { type: 'session_end';      summary: string;     live_gen: number }
+  | { type: 'container_list';   containers: ContainerInfo[] }
+  | { type: 'container_status'; id: string; name: string; status: string }
 
 interface HistMsg { role: 'user' | 'assistant'; text: string }
 
@@ -441,13 +453,14 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
 // ── ChatPane ──────────────────────────────────────────────────────────────────
 
 const ChatPane = memo(function ChatPane({
-  wsUrl, connKey, onStatusChange, clearRef, interruptRef,
+  wsUrl, connKey, onStatusChange, clearRef, interruptRef, onContainerFrame,
 }: {
-  wsUrl:          string
-  connKey:        string
-  onStatusChange: (s: ConnStatus) => void
-  clearRef:       React.MutableRefObject<() => void>
-  interruptRef:   React.MutableRefObject<() => void>
+  wsUrl:              string
+  connKey:            string
+  onStatusChange:     (s: ConnStatus) => void
+  clearRef:           React.MutableRefObject<() => void>
+  interruptRef:       React.MutableRefObject<() => void>
+  onContainerFrame?:  (frame: ServerFrame) => void
 }) {
   const insets                     = useSafeAreaInsets()
   const { height: keyboardHeight } = useReanimatedKeyboardAnimation()
@@ -580,6 +593,12 @@ const ChatPane = memo(function ChatPane({
         try { frame = JSON.parse(data as string) } catch { return }
 
         if (frame.type !== 'token') console.log(`[ws] frame: ${JSON.stringify(frame).slice(0, 200)}`)
+
+        // Route master-specific frames to AppInner without touching chat state.
+        if (frame.type === 'container_list' || frame.type === 'container_status') {
+          onContainerFrame?.(frame)
+          return
+        }
 
         switch (frame.type) {
           case 'history': {
@@ -1089,6 +1108,135 @@ const ChatPane = memo(function ChatPane({
   )
 })
 
+// ── ContainersBar ─────────────────────────────────────────────────────────────
+
+function ContainersBar({ containers, onSelect }: {
+  containers: ContainerInfo[]
+  onSelect:   (c: ContainerInfo) => void
+}) {
+  if (containers.length === 0) return null
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={s.containersBar}
+      contentContainerStyle={s.containersBarContent}
+      keyboardShouldPersistTaps="handled"
+    >
+      {containers.map(c => (
+        <TouchableOpacity
+          key={c.id}
+          style={s.containerChip}
+          onPress={() => onSelect(c)}
+          activeOpacity={0.7}
+        >
+          <View style={[s.containerDot, { backgroundColor: c.status === 'running' ? C.green : C.textMuted }]} />
+          <Text style={s.containerChipText} numberOfLines={1}>{c.name}</Text>
+        </TouchableOpacity>
+      ))}
+    </ScrollView>
+  )
+}
+
+// ── ChildChatModal ─────────────────────────────────────────────────────────────
+
+function ChildChatModal({ child, masterConn, onClose }: {
+  child:      ContainerInfo
+  masterConn: NoiseConnectionInfo
+  onClose:    () => void
+}) {
+  const [childTunnelPort, setChildTunnelPort] = useState<number | null>(null)
+  const [tunnelError,     setTunnelError]     = useState<string | null>(null)
+  const [chatStatus,      setChatStatus]      = useState<ConnStatus>('connecting')
+  const clearRef     = useRef<() => void>(() => {})
+  const interruptRef = useRef<() => void>(() => {})
+
+  useEffect(() => {
+    let cancelled = false
+    // Steal the tunnel from master and connect to the child.
+    NoiseConnection.disconnect()
+    console.log(`[child-noise] connecting to ${child.host}:${child.port}`)
+    NoiseConnection.connect(child.host, child.port, child.pubkey)
+      .then(port => {
+        if (cancelled) return
+        console.log(`[child-noise] tunnel established → local port ${port}`)
+        setChildTunnelPort(port)
+      })
+      .catch(e => {
+        if (cancelled) return
+        console.error(`[child-noise] connect failed: ${e?.message ?? e}`)
+        setTunnelError(e?.message ?? String(e))
+      })
+    return () => {
+      cancelled = true
+      // Disconnect child tunnel; AppInner will reconnect master via noiseKey bump.
+      NoiseConnection.disconnect()
+    }
+  }, [])
+
+  const childConn = { v: 2 as const, host: child.host, port: child.port, pk: child.pubkey }
+  const connKey   = `child:${child.id}`
+
+  return (
+    <Modal visible animationType="slide" presentationStyle="fullScreen">
+      <SafeAreaView style={s.safe} edges={['top']}>
+        <View style={s.paneArea}>
+          <View style={s.header}>
+            <View style={s.headerLeft}>
+              <TouchableOpacity
+                style={s.backBtn}
+                onPress={onClose}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={s.backBtnText}>‹</Text>
+              </TouchableOpacity>
+              <View style={[s.connDot, { backgroundColor: statusColor(chatStatus) }]} />
+              <View>
+                <Text style={s.headerTitle}>{child.name}</Text>
+              </View>
+            </View>
+            {chatStatus === 'streaming' ? (
+              <TouchableOpacity
+                style={s.clearBtn}
+                onPress={() => interruptRef.current()}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={s.stopBtnText}>■ stop</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={s.clearBtn}
+                onPress={() => clearRef.current()}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                disabled={chatStatus !== 'ready'}
+              >
+                <Text style={[s.clearBtnText, chatStatus !== 'ready' && { opacity: 0.3 }]}>clear</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {childTunnelPort ? (
+            <ChatPane
+              wsUrl={`ws://127.0.0.1:${childTunnelPort}/chat`}
+              connKey={connKey}
+              onStatusChange={setChatStatus}
+              clearRef={clearRef}
+              interruptRef={interruptRef}
+            />
+          ) : (
+            <View style={s.setupCenter}>
+              {tunnelError
+                ? <Text style={[s.setupError, { color: C.red }]}>{tunnelError}</Text>
+                : <ActivityIndicator color={C.accent} size="small" />
+              }
+            </View>
+          )}
+        </View>
+      </SafeAreaView>
+    </Modal>
+  )
+}
+
 // ── ConnRow ────────────────────────────────────────────────────────────────────
 
 function ConnRow({ conn, onSelect, onDelete }: {
@@ -1119,6 +1267,11 @@ function AppInner() {
   const [savedConns,  setSavedConns]  = useState<NoiseConnectionInfo[]>([])
   const [repoName,    setRepoName]    = useState<string | null>(null)
   const [chatStatus,  setChatStatus]  = useState<ConnStatus>('connecting')
+  const [containers,  setContainers]  = useState<ContainerInfo[]>([])
+  const [activeChild, setActiveChild] = useState<ContainerInfo | null>(null)
+  // Incrementing this forces the master Noise tunnel effect to re-run and
+  // re-establish the master connection after a child modal closes.
+  const [noiseKey,    setNoiseKey]    = useState(0)
   const clearChatRef     = useRef<() => void>(() => {})
   const interruptChatRef = useRef<() => void>(() => {})
 
@@ -1142,7 +1295,8 @@ function AppInner() {
     return () => { cancelled = true }
   }, [])
 
-  // Establish Noise tunnel when conn changes.
+  // Establish Noise tunnel when conn changes or after a child modal closes
+  // (noiseKey is incremented on child close to force reconnection to master).
   useEffect(() => {
     setTunnelPort(null)
     setTunnelError(null)
@@ -1167,7 +1321,7 @@ function AppInner() {
       clearTimeout(timer)
       if (connected) NoiseConnection.disconnect()
     }
-  }, [conn])
+  }, [conn, noiseKey])
 
   // Re-establish Noise tunnel when app returns to foreground (iOS kills the
   // native TCP proxy during suspension; without this the WS reconnect silently fails).
@@ -1240,6 +1394,16 @@ function AppInner() {
     })
     if (conn?.host === c.host && conn?.port === c.port) setConn(null)
   }, [conn])
+
+  const handleContainerFrame = useCallback((frame: ServerFrame) => {
+    if (frame.type === 'container_list') {
+      setContainers(frame.containers)
+    } else if (frame.type === 'container_status') {
+      setContainers(prev => prev.map(c =>
+        c.id === frame.id ? { ...c, status: frame.status } : c
+      ))
+    }
+  }, [])
 
   // ── QR scanner overlay ──────────────────────────────────────────────────────
   if (scanning) {
@@ -1339,14 +1503,30 @@ function AppInner() {
           )}
         </View>
 
+        <ContainersBar containers={containers} onSelect={setActiveChild} />
+
         <ChatPane
           wsUrl={`ws://127.0.0.1:${tunnelPort}/chat`}
           connKey={connKeyFor(conn)}
           onStatusChange={setChatStatus}
           clearRef={clearChatRef}
           interruptRef={interruptChatRef}
+          onContainerFrame={handleContainerFrame}
         />
       </View>
+
+      {activeChild && (
+        <ChildChatModal
+          child={activeChild}
+          masterConn={conn}
+          onClose={() => {
+            setActiveChild(null)
+            // Bump noiseKey to force the master tunnel effect to re-run and
+            // reconnect after the child modal's cleanup disconnects.
+            setNoiseKey(k => k + 1)
+          }}
+        />
+      )}
     </SafeAreaView>
   )
 }
@@ -1449,6 +1629,13 @@ const s = StyleSheet.create({
   inputRow:     { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 12, paddingVertical: 10, paddingBottom: Platform.OS === 'android' ? 14 : 10, gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, backgroundColor: C.surface },
   input:        { flex: 1, backgroundColor: C.bg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, color: C.textPrimary, fontSize: 15, lineHeight: 22, minHeight: 48, maxHeight: 140, fontFamily: ARIMO },
   stopBtnText:  { fontSize: 14, color: C.red, fontWeight: '600', fontFamily: ARIMO },
+
+  // Containers bar
+  containersBar:        { backgroundColor: C.surface, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border, maxHeight: 44 },
+  containersBarContent: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
+  containerChip:        { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: C.bg, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderRadius: 16, paddingHorizontal: 10, paddingVertical: 5 },
+  containerDot:         { width: 6, height: 6, borderRadius: 3 },
+  containerChipText:    { fontSize: 13, color: C.textPrimary, fontWeight: '500', fontFamily: ARIMO, maxWidth: 120 },
 
   // Agent session bubble (collapsed inline)
   sessionWrap:        { paddingHorizontal: 14, marginBottom: 14 },

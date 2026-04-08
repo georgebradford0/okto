@@ -2,6 +2,7 @@
 members = [
     "core",
     "server",
+    "master",
     "desktop/src-tauri",
 ]
 resolver = "2"
