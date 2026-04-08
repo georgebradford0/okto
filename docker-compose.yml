@@ -10,6 +10,7 @@ services:
       - "${MASTER_PORT:-9000}:${MASTER_PORT:-9000}"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GH_TOKEN=${GH_TOKEN:-}
       - PUBLIC_HOST=${PUBLIC_HOST:-}
       - NOISE_PORT=${MASTER_PORT:-9000}
       - CHILD_PORT_RANGE=${CHILD_PORT_RANGE:-9100-9199}

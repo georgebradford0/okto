@@ -664,7 +664,8 @@ When creating child containers use:\n\
   --label claudulhu.git_url=<url>\n\
   NOISE_PORT set to a free port in CHILD_PORT_RANGE (default 9100-9199)\n\
   Named volumes for /data and /workspace\n\
-  Required env vars: ANTHROPIC_API_KEY, GIT_URL, PUBLIC_HOST\n\n\
+  Required env vars: ANTHROPIC_API_KEY, GIT_URL, PUBLIC_HOST\n\
+  If GH_TOKEN is set in the environment (echo $GH_TOKEN), pass it to the child container too.\n\n\
 Use bash freely: docker ps, docker start/stop/rm, docker logs, docker inspect, \
 and any other system commands.\n\n\
 Do not narrate or comment while working. Perform all tool calls silently. \
