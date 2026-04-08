@@ -149,7 +149,7 @@ pub enum ChatEvent {
     ToolResult         { tool_use_id: String, content: serde_json::Value },
     Result             { cost_usd: f64, turns: usize, session_id: String, result: Option<String> },
     Error              { message: String },
-    Interrupted,
+    Interrupted        { cost_usd: f64 },
     Question           { question: String },
     System             { text: String },
     Spawning           { task: String },
@@ -1098,13 +1098,15 @@ pub async fn run_agentic_loop(
         };
 
         if aborted.load(Ordering::Relaxed) {
-            tx.send(ChatEvent::Interrupted).await.ok();
+            let partial_cost = cost_usd(&model, total_input, total_output, total_cache_creation_input, total_cache_read_input);
+            tx.send(ChatEvent::Interrupted { cost_usd: partial_cost }).await.ok();
             return;
         }
 
         match stream_turn(&messages, &system, &model, &api_key, &aborted, &tx, &mcp_pool).await {
             Err(e) if e == "__interrupted__" => {
-                tx.send(ChatEvent::Interrupted).await.ok();
+                let partial_cost = cost_usd(&model, total_input, total_output, total_cache_creation_input, total_cache_read_input);
+                tx.send(ChatEvent::Interrupted { cost_usd: partial_cost }).await.ok();
                 return;
             }
             Err(e) => {

@@ -1,5 +1,7 @@
 # claudulhu — project notes for Claude
 
+`@` is used as a path prefix to reference files in the repository (e.g. `@src/main.rs`).
+
 ## Git workflow
 
 Do **not** create git worktrees unless explicitly asked to. Commit and push directly on the current branch.

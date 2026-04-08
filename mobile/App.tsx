@@ -491,6 +491,12 @@ const ChatPane = memo(function ChatPane({
   // overwrite in-memory messages with the stale persisted snapshot.
   const storageLoadedRef = useRef(false)
 
+  // Incremented every time connect() is called.  Each ws.onmessage closure
+  // captures the epoch at creation time and discards frames if the epoch no
+  // longer matches — this prevents frames from a previous (stale) socket
+  // leaking into the new connection even when live_gen happens to be the same.
+  const connEpochRef    = useRef<number>(0)
+
   // The live_gen value from the most-recent 'history' frame.  Any live frame
   // (token/tool/question/done/error) whose live_gen differs is stale and must
   // be discarded — it belongs to a prior connection's replay that raced with
@@ -551,18 +557,25 @@ const ChatPane = memo(function ChatPane({
     // would cause the session log to disappear.
     const connect = () => {
       if (cancelled) return
+      // Close any existing socket synchronously so its in-flight frames cannot
+      // race with the new connection's frames (they would share the same
+      // live_gen and bypass the stale-frame guard).
+      wsRef.current?.close()
       console.log(`[ws] connecting to ${wsUrl} (storageLoaded=${storageLoadedRef.current})`)
       updateStatus('connecting')
       // Clear stale session ID so the token/tool fallback path can create a
       // fresh session bubble if the server is mid-stream on reconnect.
       currentSessionIdRef.current = null
+      // Advance the epoch so any onmessage closures from old sockets discard
+      // their frames immediately.
+      const myEpoch = ++connEpochRef.current
       const ws = new WebSocket(wsUrl)
       wsRef.current = ws
 
       ws.onopen = () => console.log('[ws] opened')
 
       ws.onmessage = ({ data }: { data: string }) => {
-        if (cancelled) return
+        if (cancelled || connEpochRef.current !== myEpoch) return
         let frame: ServerFrame
         try { frame = JSON.parse(data as string) } catch { return }
 
@@ -578,48 +591,102 @@ const ChatPane = memo(function ChatPane({
               id: `h${i}`, role: m.role, text: m.text,
             }))
 
-            // Re-insert session/tool bubbles from the local cache so they
-            // survive reconnection.  Strategy: walk both the old local list
-            // and serverMsgs in parallel, matching user/assistant messages by
-            // text.  Any session/tool bubbles sitting between two matched
-            // anchors are spliced back in at the same position.
+            // Re-insert client-only bubbles (session, tool, and assistant
+            // summaries produced by session_end) from the local cache so they
+            // survive reconnection.
+            //
+            // Background: the server's history only contains messages that have
+            // plain-text content blocks.  Agentic-session assistant turns
+            // (which consist entirely of tool-use blocks) produce NO entry in
+            // the server history.  The session bubble itself, any tool lines
+            // inside it, and the assistant summary emitted by session_end are
+            // therefore CLIENT-ONLY — they will never appear in base.
+            //
+            // Strategy: walk both local and base in parallel, matching
+            // user/assistant server messages by text.  Between each pair of
+            // matched server entries, splice back in whatever client-only
+            // bubbles sat there in local.  After base is exhausted, flush ALL
+            // remaining local entries (not just session/tool) so that trailing
+            // assistant summaries are never silently dropped.
             const mergeSessionBubbles = (base: Message[]): Message[] => {
               const local = messagesRef.current
               if (!local.length) return base
+
               const result: Message[] = []
               let li = 0 // pointer into local
+
               for (let bi = 0; bi < base.length; bi++) {
                 const bm = base[bi]
-                // Advance local pointer past session/tool bubbles, collecting them
+
+                // Collect any client-only bubbles that precede the next
+                // server-matched anchor in local.
+                //
+                // A message is considered client-only (will never appear in
+                // the server history frame) if:
+                //   • Its role is 'session' or 'tool' (always client-only), OR
+                //   • Its role is 'assistant' AND we have already seen a
+                //     'session' bubble in the current pending run — such an
+                //     assistant message is the session_end summary, which the
+                //     server never includes in history because the agentic
+                //     assistant turn has only tool-use blocks (no text).
+                //
+                // Regular (non-agentic) assistant replies DO appear in server
+                // history and must NOT be swallowed here.
                 const pending: Message[] = []
-                while (li < local.length && (local[li].role === 'session' || local[li].role === 'tool')) {
-                  pending.push(local[li++])
-                }
-                // Try to match the current server message against local
-                if (li < local.length && local[li].role === bm.role && local[li].text === bm.text) {
-                  // Match — splice in the buffered session/tool bubbles first
-                  result.push(...pending.map(m => ({ ...m, streaming: false })))
-                  // Preserve client-only fields (e.g. cost) from the local copy
+                let sawSession = false
+                while (li < local.length) {
                   const lm = local[li]
-                  result.push({ ...bm, ...(lm.cost != null ? { cost: lm.cost } : {}) })
+                  if (lm.role === 'session' || lm.role === 'tool') {
+                    sawSession = true
+                    pending.push(lm)
+                    li++
+                  } else if (lm.role === 'assistant' && sawSession) {
+                    // session_end summary following a session bubble — client-only
+                    pending.push(lm)
+                    li++
+                  } else {
+                    break
+                  }
+                }
+
+                // Try to match bm against the next local server message.
+                if (li < local.length && local[li].role === bm.role && local[li].text === bm.text) {
+                  // Match — splice in the buffered client-only bubbles first,
+                  // then the server message (preserving client-only fields and
+                  // the local id so FlatList keys are stable across reconnects).
+                  result.push(...pending.map(m => ({ ...m, streaming: false })))
+                  const lm = local[li]
+                  result.push({ ...bm, id: lm.id, ...(lm.cost != null ? { cost: lm.cost } : {}) })
                   li++
                 } else {
-                  // No match (local is stale/different) — still splice in any
-                  // buffered session/tool bubbles so they aren't silently lost,
-                  // then emit the server message.
+                  // No match (local is stale/different) — still emit any
+                  // buffered client-only bubbles so they aren't lost, then
+                  // emit the server message with a fresh unique ID.
+                  // Using bm's h${i} id here would collide with a later
+                  // iteration that matches a local message whose id is also
+                  // h${i}, causing FlatList key conflicts and visible duplication.
                   result.push(...pending.map(m => ({ ...m, streaming: false })))
-                  result.push(bm)
+                  result.push({ ...bm, id: uid() })
+                  // Do NOT advance li: we haven't matched local[li] yet, so
+                  // leave the pointer in place for the next iteration.
                 }
               }
-              // Flush any trailing session/tool bubbles in local that come after
-              // the last matched server message (e.g. a currently-streaming
-              // session bubble).  Without this they were silently dropped on
-              // every reconnect.  Preserve the original streaming flag — a
-              // live session bubble must stay streaming: true so the animation
-              // continues; completed ones are already false in local.
-              while (li < local.length && (local[li].role === 'session' || local[li].role === 'tool')) {
-                result.push(local[li++])
+
+              // After base is exhausted, flush ALL remaining local entries.
+              // This covers:
+              //  • A session bubble (and its tool lines) that was still live at
+              //    disconnect time.  We mark it streaming:false here because
+              //    session_start will create a fresh bubble for the server replay;
+              //    keeping the old one streaming would leave two live bubbles.
+              //  • A completed session bubble followed by the assistant summary
+              //    produced by session_end — the summary has role='assistant'
+              //    and is client-only (never in server history), so the old
+              //    "session/tool only" flush silently dropped it every reconnect.
+              while (li < local.length) {
+                const lm = local[li++]
+                result.push(lm.streaming ? { ...lm, streaming: false } : lm)
               }
+
               return result
             }
 
@@ -675,22 +742,18 @@ const ChatPane = memo(function ChatPane({
             if (frame.live_gen !== liveGenRef.current) break
             updateStatus('streaming')
             pendingTextRef.current = ''
-            // Look for an existing session bubble with this server-assigned UUID
-            // (restored from local cache on reconnect).  If found, reuse it and
-            // reset its text so the server replay re-fills it from scratch.
-            const existing = messagesRef.current.find(m => m.sessionId === frame.session_id)
-            if (existing) {
-              console.log(`[session] reusing bubble id=${existing.id} sessionId=${frame.session_id}`)
-              currentSessionIdRef.current = existing.id
-              setMessages(prev => prev.map(m =>
-                m.id === existing.id ? { ...m, text: '', streaming: true, label: frame.label } : m
-              ))
-            } else {
-              const sid = uid()
-              console.log(`[session] new bubble id=${sid} sessionId=${frame.session_id}`)
-              currentSessionIdRef.current = sid
-              setMessages(prev => [...prev, { id: sid, role: 'session' as const, text: '', streaming: true, label: frame.label, sessionId: frame.session_id }])
-            }
+            // Create a fresh bubble for this session.  On reconnect, the
+            // history-merge step may have already re-inserted the previous
+            // (incomplete) session bubble from local cache.  Remove any such
+            // stale bubble (matched by sessionId) before appending the new one
+            // so we don't end up with two session bubbles for the same session.
+            const sid = uid()
+            console.log(`[session] new bubble id=${sid} sessionId=${frame.session_id}`)
+            currentSessionIdRef.current = sid
+            setMessages(prev => [
+              ...prev.filter(m => m.sessionId !== frame.session_id),
+              { id: sid, role: 'session' as const, text: '', streaming: true, label: frame.label, sessionId: frame.session_id },
+            ])
             break
           }
           case 'session_end': {

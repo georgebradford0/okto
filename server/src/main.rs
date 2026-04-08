@@ -302,7 +302,7 @@ fn chat_event_to_frame(event: &ChatEvent, live_gen: usize) -> Option<WsFrame> {
         "text"          => Some(WsFrame::Token        { text:     v["text"].as_str()?.to_string(), live_gen }),
         "tool_use"      => Some(WsFrame::Tool         { name: v["tool"].as_str()?.to_string(), input: v["input"].clone(), live_gen }),
         "result"        => Some(WsFrame::Done         { cost_usd: v["cost_usd"].as_f64().unwrap_or(0.0), live_gen }),
-        "interrupted"   => Some(WsFrame::Done         { cost_usd: 0.0, live_gen }),
+        "interrupted"   => Some(WsFrame::Done         { cost_usd: v["cost_usd"].as_f64().unwrap_or(0.0), live_gen }),
         "error"         => Some(WsFrame::Error        { message:  v["message"].as_str()?.to_string(), live_gen }),
         "question"      => Some(WsFrame::Question     { question: v["question"].as_str()?.to_string(), live_gen }),
         "session_start" => Some(WsFrame::SessionStart { label: v["label"].as_str()?.to_string(), session_id: v["session_id"].as_str()?.to_string(), live_gen }),
