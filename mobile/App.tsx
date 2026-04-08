@@ -1138,12 +1138,11 @@ function ContainersBar({ containers, onSelect }: {
   )
 }
 
-// ── ChildChatModal ─────────────────────────────────────────────────────────────
+// ── ChildChatScreen ───────────────────────────────────────────────────────────
 
-function ChildChatModal({ child, masterConn, onClose }: {
-  child:      ContainerInfo
-  masterConn: NoiseConnectionInfo
-  onClose:    () => void
+function ChildChatScreen({ child, onClose }: {
+  child:   ContainerInfo
+  onClose: () => void
 }) {
   const [childTunnelPort, setChildTunnelPort] = useState<number | null>(null)
   const [tunnelError,     setTunnelError]     = useState<string | null>(null)
@@ -1153,7 +1152,6 @@ function ChildChatModal({ child, masterConn, onClose }: {
 
   useEffect(() => {
     let cancelled = false
-    // Steal the tunnel from master and connect to the child.
     NoiseConnection.disconnect()
     console.log(`[child-noise] connecting to ${child.host}:${child.port}`)
     NoiseConnection.connect(child.host, child.port, child.pubkey)
@@ -1169,71 +1167,73 @@ function ChildChatModal({ child, masterConn, onClose }: {
       })
     return () => {
       cancelled = true
-      // Disconnect child tunnel; AppInner will reconnect master via noiseKey bump.
       NoiseConnection.disconnect()
     }
   }, [])
 
-  const childConn = { v: 2 as const, host: child.host, port: child.port, pk: child.pubkey }
-  const connKey   = `child:${child.id}`
+  const handleBack = useCallback(() => {
+    // Clear the child's session before navigating away, then close.
+    clearRef.current()
+    onClose()
+  }, [onClose])
+
+  const connKey = `child:${child.id}`
 
   return (
-    <Modal visible animationType="slide" presentationStyle="fullScreen">
-      <SafeAreaView style={s.safe} edges={['top']}>
-        <View style={s.paneArea}>
-          <View style={s.header}>
-            <View style={s.headerLeft}>
-              <TouchableOpacity
-                style={s.backBtn}
-                onPress={onClose}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Text style={s.backBtnText}>‹</Text>
-              </TouchableOpacity>
-              <View style={[s.connDot, { backgroundColor: statusColor(chatStatus) }]} />
-              <View>
-                <Text style={s.headerTitle}>{child.name}</Text>
-              </View>
+    <SafeAreaView style={s.safe} edges={['top']}>
+      <View style={s.paneArea}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
+            <TouchableOpacity
+              style={s.backBtn}
+              onPress={handleBack}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={s.backBtnText}>‹</Text>
+            </TouchableOpacity>
+            <View style={[s.connDot, { backgroundColor: statusColor(chatStatus) }]} />
+            <View>
+              <Text style={s.headerTitle}>{child.name}</Text>
             </View>
-            {chatStatus === 'streaming' ? (
-              <TouchableOpacity
-                style={s.clearBtn}
-                onPress={() => interruptRef.current()}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Text style={s.stopBtnText}>■ stop</Text>
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity
-                style={s.clearBtn}
-                onPress={() => clearRef.current()}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                disabled={chatStatus !== 'ready'}
-              >
-                <Text style={[s.clearBtnText, chatStatus !== 'ready' && { opacity: 0.3 }]}>clear</Text>
-              </TouchableOpacity>
-            )}
           </View>
-
-          {childTunnelPort ? (
-            <ChatPane
-              wsUrl={`ws://127.0.0.1:${childTunnelPort}/chat`}
-              connKey={connKey}
-              onStatusChange={setChatStatus}
-              clearRef={clearRef}
-              interruptRef={interruptRef}
-            />
+          {chatStatus === 'streaming' ? (
+            <TouchableOpacity
+              style={s.clearBtn}
+              onPress={() => interruptRef.current()}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={s.stopBtnText}>■ stop</Text>
+            </TouchableOpacity>
           ) : (
-            <View style={s.setupCenter}>
-              {tunnelError
-                ? <Text style={[s.setupError, { color: C.red }]}>{tunnelError}</Text>
-                : <ActivityIndicator color={C.accent} size="small" />
-              }
-            </View>
+            <TouchableOpacity
+              style={s.clearBtn}
+              onPress={() => clearRef.current()}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              disabled={chatStatus !== 'ready'}
+            >
+              <Text style={[s.clearBtnText, chatStatus !== 'ready' && { opacity: 0.3 }]}>clear</Text>
+            </TouchableOpacity>
           )}
         </View>
-      </SafeAreaView>
-    </Modal>
+
+        {childTunnelPort ? (
+          <ChatPane
+            wsUrl={`ws://127.0.0.1:${childTunnelPort}/chat`}
+            connKey={connKey}
+            onStatusChange={setChatStatus}
+            clearRef={clearRef}
+            interruptRef={interruptRef}
+          />
+        ) : (
+          <View style={s.setupCenter}>
+            {tunnelError
+              ? <Text style={[s.setupError, { color: C.red }]}>{tunnelError}</Text>
+              : <ActivityIndicator color={C.accent} size="small" />
+            }
+          </View>
+        )}
+      </View>
+    </SafeAreaView>
   )
 }
 
@@ -1464,11 +1464,23 @@ function AppInner() {
     )
   }
 
-  // ── Chat UI ─────────────────────────────────────────────────────────────────
+  // ── Child chat screen ───────────────────────────────────────────────────────
+  if (activeChild) {
+    return (
+      <ChildChatScreen
+        child={activeChild}
+        onClose={() => {
+          setActiveChild(null)
+          setNoiseKey(k => k + 1)
+        }}
+      />
+    )
+  }
+
+  // ── Master chat UI ───────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
       <View style={s.paneArea}>
-        {/* Header */}
         <View style={s.header}>
           <View style={s.headerLeft}>
             <TouchableOpacity
@@ -1514,19 +1526,6 @@ function AppInner() {
           onContainerFrame={handleContainerFrame}
         />
       </View>
-
-      {activeChild && (
-        <ChildChatModal
-          child={activeChild}
-          masterConn={conn}
-          onClose={() => {
-            setActiveChild(null)
-            // Bump noiseKey to force the master tunnel effect to re-run and
-            // reconnect after the child modal's cleanup disconnects.
-            setNoiseKey(k => k + 1)
-          }}
-        />
-      )}
     </SafeAreaView>
   )
 }
