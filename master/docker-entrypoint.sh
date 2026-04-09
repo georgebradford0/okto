@@ -8,12 +8,17 @@ if [ -z "$ANTHROPIC_API_KEY" ]; then
 fi
 
 if [ -z "$PUBLIC_HOST" ]; then
-    PUBLIC_HOST=$(curl -sf --max-time 5 https://api.ipify.org || wget -qO- --timeout=5 https://api.ipify.org 2>/dev/null)
-    if [ -z "$PUBLIC_HOST" ]; then
-        echo "ERROR: Could not auto-detect public IP. Set PUBLIC_HOST explicitly." >&2
-        exit 1
+    if [ "${CLAUDULHU_DEV:-0}" = "1" ]; then
+        PUBLIC_HOST="127.0.0.1"
+        echo "[claudulhu-master] DEV mode: using PUBLIC_HOST=127.0.0.1"
+    else
+        PUBLIC_HOST=$(curl -sf --max-time 5 https://api.ipify.org || wget -qO- --timeout=5 https://api.ipify.org 2>/dev/null)
+        if [ -z "$PUBLIC_HOST" ]; then
+            echo "ERROR: Could not auto-detect public IP. Set PUBLIC_HOST explicitly." >&2
+            exit 1
+        fi
+        echo "[claudulhu-master] Detected public IP: ${PUBLIC_HOST}"
     fi
-    echo "[claudulhu-master] Detected public IP: ${PUBLIC_HOST}"
 fi
 
 NOISE_PORT="${NOISE_PORT:-9000}"

@@ -29,11 +29,15 @@ RUN cargo build --release -p claudulhu-master
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y \
-    docker.io \
+RUN apt-get update && apt-get install -y ca-certificates curl gnupg && \
+    install -m 0755 -d /etc/apt/keyrings && \
+    curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
+    chmod a+r /etc/apt/keyrings/docker.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" \
+      > /etc/apt/sources.list.d/docker.list && \
+    apt-get update && apt-get install -y \
+    docker-ce-cli \
     qrencode \
-    ca-certificates \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/claudulhu-master /usr/local/bin/claudulhu-master

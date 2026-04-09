@@ -553,8 +553,10 @@ async fn poll_containers(state: Arc<AppState>) {
     // Brief startup delay so Docker is ready.
     tokio::time::sleep(Duration::from_secs(5)).await;
     loop {
+        println!("[containers] polling…");
         match fetch_managed_containers(&state.public_host).await {
             Ok(mut new_containers) => {
+                println!("[containers] found {} container(s)", new_containers.len());
                 let mut registry = load_pubkey_registry();
                 let mut dirty    = false;
 
@@ -562,10 +564,13 @@ async fn poll_containers(state: Arc<AppState>) {
                     if let Some(pk) = registry.get(&c.id) {
                         c.pubkey = pk.clone();
                     } else if c.status == "running" {
+                        println!("[containers] fetching pubkey for {}", c.name);
                         if let Some(pk) = fetch_pubkey_via_exec(&c.name).await {
                             c.pubkey = pk.clone();
                             registry.insert(c.id.clone(), pk);
                             dirty = true;
+                        } else {
+                            eprintln!("[containers] pubkey fetch failed for {}", c.name);
                         }
                     }
                 }
@@ -580,19 +585,25 @@ async fn poll_containers(state: Arc<AppState>) {
                     *state.containers.lock().unwrap() = new_containers;
                     state.container_notify.notify_waiters();
                     println!("[containers] state changed — notified clients");
+                } else {
+                    println!("[containers] no change");
                 }
             }
             Err(e) => eprintln!("[containers] poll error: {e}"),
         }
-        tokio::time::sleep(Duration::from_secs(30)).await;
+        tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }
 
 async fn fetch_managed_containers(public_host: &str) -> anyhow::Result<Vec<ContainerInfo>> {
     // Get short IDs of all managed containers (running or stopped).
-    let ids_out = tokio::process::Command::new("docker")
-        .args(["ps", "-a", "--filter", "label=claudulhu.managed=1", "-q"])
-        .output().await?;
+    let ids_out = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new("docker")
+            .args(["ps", "-a", "--filter", "label=claudulhu.managed=1", "-q"])
+            .output(),
+    ).await.map_err(|_| anyhow::anyhow!("docker ps timed out"))?
+    .map_err(|e| anyhow::anyhow!("docker ps failed: {e}"))?;
 
     let ids: Vec<&str> = std::str::from_utf8(&ids_out.stdout)?
         .lines()
@@ -605,7 +616,9 @@ async fn fetch_managed_containers(public_host: &str) -> anyhow::Result<Vec<Conta
     let mut cmd = tokio::process::Command::new("docker");
     cmd.arg("inspect");
     for id in &ids { cmd.arg(id); }
-    let inspect_out = cmd.output().await?;
+    let inspect_out = tokio::time::timeout(Duration::from_secs(10), cmd.output())
+        .await.map_err(|_| anyhow::anyhow!("docker inspect timed out"))?
+        .map_err(|e| anyhow::anyhow!("docker inspect failed: {e}"))?;
 
     let inspect: Vec<serde_json::Value> = serde_json::from_slice(&inspect_out.stdout)?;
     let mut results = Vec::new();
@@ -644,9 +657,10 @@ async fn fetch_managed_containers(public_host: &str) -> anyhow::Result<Vec<Conta
 /// Run `docker exec <name> claudulhu-server --print-pubkey` to get a child's
 /// Noise public key without any HTTP round-trip.
 async fn fetch_pubkey_via_exec(container_name: &str) -> Option<String> {
-    let out = tokio::process::Command::new("docker")
+    let fut = tokio::process::Command::new("docker")
         .args(["exec", container_name, "claudulhu-server", "--print-pubkey"])
-        .output().await.ok()?;
+        .output();
+    let out = tokio::time::timeout(Duration::from_secs(5), fut).await.ok()?.ok()?;
     if !out.status.success() { return None; }
     let pk = String::from_utf8(out.stdout).ok()?.trim().to_string();
     if pk.is_empty() { None } else { Some(pk) }
