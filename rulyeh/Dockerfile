@@ -8,21 +8,21 @@ ENV OPENSSL_NO_VENDOR=1
 WORKDIR /build
 
 # Workspace manifest that includes only the crates we need.
-RUN printf '[workspace]\nmembers = ["core", "master"]\nresolver = "2"\n' > Cargo.toml
+RUN printf '[workspace]\nmembers = ["core", "rulyeh"]\nresolver = "2"\n' > Cargo.toml
 
 COPY Cargo.lock ./
 COPY core/Cargo.toml   core/
-COPY master/Cargo.toml master/
+COPY rulyeh/Cargo.toml rulyeh/
 
 # Stub sources for dep-caching layer.
-RUN mkdir -p core/src master/src && \
+RUN mkdir -p core/src rulyeh/src && \
     echo '' > core/src/lib.rs && \
-    echo 'fn main() {}' > master/src/main.rs
+    echo 'fn main() {}' > rulyeh/src/main.rs
 
 RUN cargo fetch
 
 COPY core/src   core/src
-COPY master/src master/src
+COPY rulyeh/src rulyeh/src
 
 RUN cargo build --release -p claudulhu-rulyeh
 
@@ -42,7 +42,7 @@ RUN apt-get update && apt-get install -y ca-certificates curl gnupg && \
 
 COPY --from=builder /build/target/release/claudulhu-rulyeh /usr/local/bin/claudulhu-rulyeh
 
-COPY master/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY rulyeh/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV HOME=/root
