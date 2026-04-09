@@ -603,7 +603,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "claudulhu-maitred"
+name = "claudulhu-rulyeh"
 version = "0.1.0"
 dependencies = [
  "anyhow",

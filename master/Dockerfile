@@ -24,7 +24,7 @@ RUN cargo fetch
 COPY core/src   core/src
 COPY master/src master/src
 
-RUN cargo build --release -p claudulhu-maitred
+RUN cargo build --release -p claudulhu-rulyeh
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y ca-certificates curl gnupg && \
     qrencode \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /build/target/release/claudulhu-maitred /usr/local/bin/claudulhu-maitred
+COPY --from=builder /build/target/release/claudulhu-rulyeh /usr/local/bin/claudulhu-rulyeh
 
 COPY master/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

@@ -17,7 +17,7 @@ services:
       - CLAUDULHU_DEV=${CLAUDULHU_DEV:-0}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - claudulhu-maitred-data:/data
+      - claudulhu-rulyeh-data:/data
     networks:
       - claudulhu-net
 
@@ -58,4 +58,4 @@ networks:
 volumes:
   workspace:
   claudulhu-data:
-  claudulhu-maitred-data:
+  claudulhu-rulyeh-data:

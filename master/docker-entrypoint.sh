@@ -10,14 +10,14 @@ fi
 if [ -z "$PUBLIC_HOST" ]; then
     if [ "${CLAUDULHU_DEV:-0}" = "1" ]; then
         PUBLIC_HOST="127.0.0.1"
-        echo "[claudulhu-maitred] DEV mode: using PUBLIC_HOST=127.0.0.1"
+        echo "[claudulhu-rulyeh] DEV mode: using PUBLIC_HOST=127.0.0.1"
     else
         PUBLIC_HOST=$(curl -sf --max-time 5 https://api.ipify.org || wget -qO- --timeout=5 https://api.ipify.org 2>/dev/null)
         if [ -z "$PUBLIC_HOST" ]; then
             echo "ERROR: Could not auto-detect public IP. Set PUBLIC_HOST explicitly." >&2
             exit 1
         fi
-        echo "[claudulhu-maitred] Detected public IP: ${PUBLIC_HOST}"
+        echo "[claudulhu-rulyeh] Detected public IP: ${PUBLIC_HOST}"
     fi
 fi
 
@@ -28,22 +28,22 @@ mkdir -p "$CLAUDULHU_DATA_DIR"
 # ── Docker network ────────────────────────────────────────────────────────────
 # Create the shared bridge network for master ↔ child container communication.
 docker network create claudulhu-net 2>/dev/null || true
-echo "[claudulhu-maitred] Docker network claudulhu-net ready"
+echo "[claudulhu-rulyeh] Docker network claudulhu-net ready"
 
 # ── Noise key ─────────────────────────────────────────────────────────────────
-NOISE_PUBKEY=$(claudulhu-maitred --print-pubkey)
-echo "[claudulhu-maitred] Noise public key: ${NOISE_PUBKEY}"
+NOISE_PUBKEY=$(claudulhu-rulyeh --print-pubkey)
+echo "[claudulhu-rulyeh] Noise public key: ${NOISE_PUBKEY}"
 
 # ── QR code ───────────────────────────────────────────────────────────────────
 # Format v2: "2:<host>:<port>:<pubkey_base32>"
 QR_DATA="2:${PUBLIC_HOST}:${NOISE_PORT}:${NOISE_PUBKEY}"
-SENTINEL="[claudulhu-maitred] HTTP/WebSocket on"
+SENTINEL="[claudulhu-rulyeh] HTTP/WebSocket on"
 
 PIPE=$(mktemp -t claudulhu-pipe-XXXXXX)
 rm -f "$PIPE"
 mkfifo "$PIPE"
 
-claudulhu-maitred 2>&1 | tee "$PIPE" &
+claudulhu-rulyeh 2>&1 | tee "$PIPE" &
 SERVER_PID=$!
 
 QR_PRINTED=0
@@ -51,7 +51,7 @@ while IFS= read -r line; do
     if [ "$QR_PRINTED" -eq 0 ] && \
        printf '%s' "$line" | grep -qF "$SENTINEL"; then
         echo ""
-        echo "[claudulhu-maitred] Scan this QR code with the app to connect:"
+        echo "[claudulhu-rulyeh] Scan this QR code with the app to connect:"
         echo ""
         printf '%s' "${QR_DATA}" | qrencode -l L -m 4 -t UTF8 -o -
         echo ""
