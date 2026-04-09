@@ -1,8 +1,8 @@
-# claudulhu-master: Architecture
+# claudulhu-maitred: Architecture
 
 ## Overview
 
-`claudulhu-master` is a Docker container that acts as the single entry point for the mobile app. It runs a full AI agentic loop (same as `claudulhu-server`) with Docker socket access, so it can manage child repo containers via bash. The mobile app scans one QR code (master's), chats with master for control tasks, and taps into individual child containers for code work.
+`claudulhu-maitred` is a Docker container that acts as the single entry point for the mobile app. It runs a full AI agentic loop (same as `claudulhu-server`) with Docker socket access, so it can manage child repo containers via bash. The mobile app scans one QR code (master's), chats with master for control tasks, and taps into individual child containers for code work.
 
 ## Components
 
@@ -59,11 +59,11 @@ All containers run on the `claudulhu-net` Docker bridge network (created by mast
 ```sh
 docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v claudulhu-master-data:/data \
+  -v claudulhu-maitred-data:/data \
   -p 9000:9000 \
   -e ANTHROPIC_API_KEY=... \
   -e PUBLIC_HOST=<your-server-ip> \
-  ghcr.io/georgebradford0/claudulhu-master:latest
+  ghcr.io/georgebradford0/claudulhu-maitred:latest
 ```
 
 Master creates the `claudulhu-net` network on startup. Child containers are created by asking master in chat (e.g. "start a server for github.com/owner/repo").
@@ -71,7 +71,7 @@ Master creates the `claudulhu-net` network on startup. Child containers are crea
 ## Docker image
 
 ```
-ghcr.io/georgebradford0/claudulhu-master:latest
+ghcr.io/georgebradford0/claudulhu-maitred:latest
 ```
 
 Build (from repo root):
@@ -80,8 +80,8 @@ docker buildx build \
   --builder multiplatform \
   --platform linux/amd64,linux/arm64 \
   --push \
-  -t ghcr.io/georgebradford0/claudulhu-master:X.Y.Z \
-  -t ghcr.io/georgebradford0/claudulhu-master:latest \
+  -t ghcr.io/georgebradford0/claudulhu-maitred:X.Y.Z \
+  -t ghcr.io/georgebradford0/claudulhu-maitred:latest \
   -f master/Dockerfile \
   .
 ```

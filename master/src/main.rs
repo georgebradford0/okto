@@ -712,7 +712,7 @@ async fn main() {
     }
 
     let (static_private, static_public) = if is_dev {
-        println!("[claudulhu-master] !! DEV MODE: using fixed dev keypair");
+        println!("[claudulhu-maitred] !! DEV MODE: using fixed dev keypair");
         (DEV_STATIC_PRIVATE.to_vec(), DEV_STATIC_PUBLIC.to_vec())
     } else {
         load_or_generate_keypair(&key_file)
@@ -723,7 +723,7 @@ async fn main() {
     let http_port:  u16 = 8000;
     let public_host = std::env::var("PUBLIC_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
 
-    println!("[claudulhu-master] Noise public key: {pubkey_b32}");
+    println!("[claudulhu-maitred] Noise public key: {pubkey_b32}");
 
     tokio::spawn(run_noise_proxy(static_private, noise_port, http_port));
 
@@ -731,7 +731,7 @@ async fn main() {
     let dir = data_dir();
     fs::create_dir_all(&dir).ok();
     let messages = load_messages();
-    println!("[claudulhu-master] loaded {} message(s) from history", messages.len());
+    println!("[claudulhu-maitred] loaded {} message(s) from history", messages.len());
 
     let mcp_pool = init_mcp_pool().await;
 
@@ -775,7 +775,7 @@ async fn main() {
 
     let addr = format!("127.0.0.1:{http_port}");
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("failed to bind HTTP port");
-    println!("[claudulhu-master] HTTP/WebSocket on {addr} (Noise proxy on 0.0.0.0:{noise_port})");
+    println!("[claudulhu-maitred] HTTP/WebSocket on {addr} (Noise proxy on 0.0.0.0:{noise_port})");
 
     axum::serve(listener, app).await.unwrap();
 }

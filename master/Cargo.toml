@@ -1,11 +1,11 @@
 [package]
-name        = "claudulhu-master"
+name        = "claudulhu-maitred"
 version     = "0.1.0"
 edition     = "2021"
 description = "claudulhu master control node"
 
 [[bin]]
-name = "claudulhu-master"
+name = "claudulhu-maitred"
 path = "src/main.rs"
 
 [dependencies]
