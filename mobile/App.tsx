@@ -1218,7 +1218,7 @@ function AppInner() {
   const [chatStatus,  setChatStatus]  = useState<ConnStatus>('connecting')
   const [containers,        setContainers]        = useState<ContainerInfo[]>([])
   const [activeChild,       setActiveChild]       = useState<ContainerInfo | null>(null)
-  const [showContainerMenu, setShowContainerMenu] = useState(false)
+  const [showSettingsMenu,  setShowSettingsMenu]  = useState(false)
   // Incrementing this forces the master Noise tunnel effect to re-run and
   // re-establish the master connection after a child screen closes.
   const [noiseKey,    setNoiseKey]    = useState(0)
@@ -1304,6 +1304,13 @@ function AppInner() {
     setScanning(true)
   }, [])
 
+  const handleLogout = useCallback(async () => {
+    setShowSettingsMenu(false)
+    await AsyncStorage.clear().catch(() => {})
+    NoiseConnection.disconnect()
+    setConn(null)
+  }, [])
+
   const handleContainerFrame = useCallback((frame: ServerFrame) => {
     if (frame.type === 'container_list') {
       setContainers(frame.containers)
@@ -1377,50 +1384,27 @@ function AppInner() {
             <Text style={s.headerTitle}>rulyeh</Text>
           </View>
           <View style={s.headerRight}>
-            {(
-              <TouchableOpacity
-                style={s.containersMenuBtn}
-                onPress={() => setShowContainerMenu(v => !v)}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <View style={[s.containerDot, {
-                  backgroundColor: containers.some(c => c.status === 'running') ? C.green : C.textMuted,
-                }]} />
-                <Text style={s.containersMenuBtnText}>
-                  repos
-                </Text>
-                <Text style={s.containersMenuChevron}>{showContainerMenu ? '▴' : '▾'}</Text>
-              </TouchableOpacity>
-            )}
-            {chatStatus === 'streaming' ? (
-              <TouchableOpacity
-                style={s.clearBtn}
-                onPress={() => interruptChatRef.current()}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Text style={s.stopBtnText}>■ stop</Text>
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity
-                style={s.clearBtn}
-                onPress={() => clearChatRef.current()}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                disabled={chatStatus !== 'ready'}
-              >
-                <Text style={[s.clearBtnText, chatStatus !== 'ready' && { opacity: 0.3 }]}>clear</Text>
-              </TouchableOpacity>
-            )}
+            <TouchableOpacity
+              style={s.settingsMenuBtn}
+              onPress={() => setShowSettingsMenu(v => !v)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={s.settingsMenuBtnText}>···</Text>
+            </TouchableOpacity>
           </View>
         </View>
 
-        {showContainerMenu && (
-          <View style={s.containerMenuWrap} pointerEvents="box-none">
+        {showSettingsMenu && (
+          <View style={s.containerMenuWrap}>
             <TouchableOpacity
               style={StyleSheet.absoluteFillObject}
               activeOpacity={1}
-              onPress={() => setShowContainerMenu(false)}
+              onPress={() => setShowSettingsMenu(false)}
             />
             <View style={s.containerMenu}>
+              <View style={s.settingsMenuSection}>
+                <Text style={s.settingsMenuSectionTitle}>repos</Text>
+              </View>
               {containers.length === 0 && (
                 <View style={s.containerMenuItem}>
                   <Text style={s.containerMenuItemStatus}>No containers</Text>
@@ -1430,7 +1414,7 @@ function AppInner() {
                 <TouchableOpacity
                   key={c.id}
                   style={s.containerMenuItem}
-                  onPress={() => { setShowContainerMenu(false); setActiveChild(c) }}
+                  onPress={() => { setShowSettingsMenu(false); setActiveChild(c) }}
                   activeOpacity={0.7}
                 >
                   <View style={[s.containerDot, {
@@ -1443,6 +1427,27 @@ function AppInner() {
                   <Text style={s.containerMenuItemStatus}>{c.status}</Text>
                 </TouchableOpacity>
               ))}
+              <View style={s.settingsMenuDivider} />
+              {chatStatus === 'streaming' ? (
+                <TouchableOpacity
+                  style={s.settingsMenuAction}
+                  onPress={() => { interruptChatRef.current(); setShowSettingsMenu(false) }}
+                >
+                  <Text style={s.stopBtnText}>■ stop</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  style={s.settingsMenuAction}
+                  onPress={() => { clearChatRef.current(); setShowSettingsMenu(false) }}
+                  disabled={chatStatus !== 'ready'}
+                >
+                  <Text style={[s.settingsMenuActionText, chatStatus !== 'ready' && { opacity: 0.3 }]}>clear chat</Text>
+                </TouchableOpacity>
+              )}
+              <View style={s.settingsMenuDivider} />
+              <TouchableOpacity style={s.settingsMenuAction} onPress={handleLogout}>
+                <Text style={s.settingsMenuLogoutText}>logout</Text>
+              </TouchableOpacity>
             </View>
           </View>
         )}
@@ -1551,14 +1556,19 @@ const s = StyleSheet.create({
   input:        { flex: 1, backgroundColor: C.bg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, color: C.textPrimary, fontSize: 15, lineHeight: 22, minHeight: 48, maxHeight: 140, fontFamily: ARIMO },
   stopBtnText:  { fontSize: 14, color: C.red, fontWeight: '600', fontFamily: ARIMO },
 
-  // Containers header button + dropdown
+  // Settings header button + dropdown
   headerRight:              { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  containersMenuBtn:        { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 4, paddingHorizontal: 6 },
-  containersMenuBtnText:    { fontSize: 13, color: C.textSecondary, fontWeight: '600', fontFamily: ARIMO },
-  containersMenuChevron:    { fontSize: 10, color: C.textMuted, fontFamily: ARIMO },
+  settingsMenuBtn:          { paddingVertical: 4, paddingHorizontal: 6 },
+  settingsMenuBtnText:      { fontSize: 18, color: C.textSecondary, letterSpacing: 1, fontFamily: ARIMO },
   containerDot:             { width: 6, height: 6, borderRadius: 3 },
-  containerMenuWrap:        { position: 'absolute', top: 44, right: 0, left: 0, zIndex: 100 },
+  containerMenuWrap:        { position: 'absolute', top: 44, right: 0, left: 0, bottom: 0, zIndex: 100 },
   containerMenu:            { position: 'absolute', right: 12, top: 4, minWidth: 240, backgroundColor: C.bg, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 8, overflow: 'hidden' },
+  settingsMenuSection:      { paddingHorizontal: 14, paddingVertical: 8 },
+  settingsMenuSectionTitle: { fontSize: 11, fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: 0.6, fontFamily: ARIMO },
+  settingsMenuDivider:      { height: StyleSheet.hairlineWidth, backgroundColor: C.border },
+  settingsMenuAction:       { paddingHorizontal: 14, paddingVertical: 13 },
+  settingsMenuActionText:   { fontSize: 14, color: C.textSecondary, fontFamily: ARIMO },
+  settingsMenuLogoutText:   { fontSize: 14, color: C.red, fontFamily: ARIMO },
   containerMenuItem:        { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
   containerMenuItemName:    { fontSize: 14, fontWeight: '600', color: C.textPrimary, fontFamily: ARIMO },
   containerMenuItemUrl:     { fontSize: 11, color: C.textMuted, fontFamily: ARIMO, marginTop: 1 },
