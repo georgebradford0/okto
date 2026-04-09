@@ -1378,7 +1378,7 @@ function AppInner() {
             <Text style={s.headerTitle}>dispatch</Text>
           </View>
           <View style={s.headerRight}>
-            {containers.length > 0 && (
+            {(
               <TouchableOpacity
                 style={s.containersMenuBtn}
                 onPress={() => setShowContainerMenu(v => !v)}
@@ -1388,7 +1388,7 @@ function AppInner() {
                   backgroundColor: containers.some(c => c.status === 'running') ? C.green : C.textMuted,
                 }]} />
                 <Text style={s.containersMenuBtnText}>
-                  {containers.filter(c => c.status === 'running').length}/{containers.length}
+                  repos
                 </Text>
                 <Text style={s.containersMenuChevron}>{showContainerMenu ? '▴' : '▾'}</Text>
               </TouchableOpacity>
@@ -1422,6 +1422,11 @@ function AppInner() {
               onPress={() => setShowContainerMenu(false)}
             />
             <View style={s.containerMenu}>
+              {containers.length === 0 && (
+                <View style={s.containerMenuItem}>
+                  <Text style={s.containerMenuItemStatus}>No containers</Text>
+                </View>
+              )}
               {containers.map(c => (
                 <TouchableOpacity
                   key={c.id}
