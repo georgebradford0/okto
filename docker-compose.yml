@@ -5,7 +5,7 @@ services:
   master:
     build:
       context: .
-      dockerfile: master/Dockerfile
+      dockerfile: rulyeh/Dockerfile
     ports:
       - "${MASTER_PORT:-9000}:${MASTER_PORT:-9000}"
     environment:

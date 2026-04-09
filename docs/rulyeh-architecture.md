@@ -82,6 +82,6 @@ docker buildx build \
   --push \
   -t ghcr.io/georgebradford0/claudulhu-rulyeh:X.Y.Z \
   -t ghcr.io/georgebradford0/claudulhu-rulyeh:latest \
-  -f master/Dockerfile \
+  -f rulyeh/Dockerfile \
   .
 ```
