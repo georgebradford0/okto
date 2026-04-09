@@ -45,6 +45,8 @@ COPY --from=builder /build/target/release/claudulhu-rulyeh /usr/local/bin/claudu
 COPY rulyeh/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+LABEL org.opencontainers.image.source=https://github.com/georgebradford0/claudulhu
+
 ENV HOME=/root
 ENV CLAUDULHU_SKIP_SHELL_ENV=1
 ENV CLAUDULHU_DATA_DIR=/data

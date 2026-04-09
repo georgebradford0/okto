@@ -20,6 +20,7 @@ if [ -z "$PUBLIC_HOST" ]; then
         echo "[claudulhu-rulyeh] Detected public IP: ${PUBLIC_HOST}"
     fi
 fi
+export PUBLIC_HOST
 
 NOISE_PORT="${NOISE_PORT:-9000}"
 CLAUDULHU_DATA_DIR="${CLAUDULHU_DATA_DIR:-/data}"

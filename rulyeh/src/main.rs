@@ -553,10 +553,8 @@ async fn poll_containers(state: Arc<AppState>) {
     // Brief startup delay so Docker is ready.
     tokio::time::sleep(Duration::from_secs(5)).await;
     loop {
-        println!("[containers] polling…");
         match fetch_managed_containers(&state.public_host).await {
             Ok(mut new_containers) => {
-                println!("[containers] found {} container(s)", new_containers.len());
                 let mut registry = load_pubkey_registry();
                 let mut dirty    = false;
 
@@ -585,8 +583,6 @@ async fn poll_containers(state: Arc<AppState>) {
                     *state.containers.lock().unwrap() = new_containers;
                     state.container_notify.notify_waiters();
                     println!("[containers] state changed — notified clients");
-                } else {
-                    println!("[containers] no change");
                 }
             }
             Err(e) => eprintln!("[containers] poll error: {e}"),

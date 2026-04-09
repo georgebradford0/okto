@@ -1,36 +1,77 @@
 # claudulhu
 
-An agentic coding assistant that runs a Rust server, exposing a WebSocket API for mobile and other clients to interact with a git repository via Claude.
+An agentic coding assistant. Rulyeh (the master node) manages a fleet of per-repo coding assistant containers and exposes the client-facing interface. Clients connect via an encrypted Noise tunnel.
+
+## Architecture
+
+| Component | Image | Role |
+|---|---|---|
+| **Rulyeh** | `ghcr.io/georgebradford0/claudulhu-rulyeh` | Master node — manages child containers, exposes the Noise WebSocket interface |
+| **claudulhu-server** | `ghcr.io/georgebradford0/claudulhu-server` | Child container — one per repo, handles the agentic coding loop |
 
 ## Docker
 
-The server is available as a multi-platform Docker image (`linux/amd64`, `linux/arm64`).
+### Rulyeh (master node)
 
-Pull the latest image:
+Rulyeh is the entry point. It needs access to the Docker socket to spin up and manage child containers.
+
+Pull the image:
 
 ```sh
-docker pull ghcr.io/georgebradford0/claudulhu-server:latest
+docker pull ghcr.io/georgebradford0/claudulhu-rulyeh:latest
 ```
+
+Run it:
+
+```sh
+docker run -d \
+  --name claudulhu-rulyeh \
+  -p 9000:9000 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v rulyeh-data:/data \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -e GH_TOKEN=ghp_... \
+  ghcr.io/georgebradford0/claudulhu-rulyeh:latest
+```
+
+On startup the container prints a QR code. Scan it with the mobile app to connect — the app establishes an encrypted Noise Protocol tunnel (port 9000) and routes all traffic through it.
+
+Once connected, ask Rulyeh to create a child container for a repository:
+
+> Create a container for https://github.com/user/repo
+
+Rulyeh will start a `claudulhu-server` container on the `claudulhu-net` bridge network. The child exposes its own Noise port and QR code for direct connection.
+
+The named volume (`rulyeh-data`) persists the Noise keypair and session history across restarts. Without it, the keypair regenerates on every restart and the app must re-scan.
+
+### Environment variables (Rulyeh)
+
+| Variable | Required | Description |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Yes | Anthropic API key |
+| `GH_TOKEN` | Yes* | GitHub token — passed to every child container |
+| `PUBLIC_HOST` | No | Public IP or hostname of the server. Auto-detected via `api.ipify.org` if not set. |
+| `NOISE_PORT` | No | Port for the Noise Protocol endpoint (default: `9000`) |
+
+*`GH_TOKEN` is technically optional but Rulyeh will refuse to create child containers without it.
+
+### Child containers (claudulhu-server)
+
+Child containers are created and managed by Rulyeh. They can also be run standalone:
 
 ```sh
 docker run -d \
   --name claudulhu \
-  -p 9000:9000 \
-  -v claudulhu-noise-key:/etc/claudulhu \
+  -p 9001:9001 \
   -v claudulhu-data:/data \
   -e GIT_URL=https://github.com/user/repo \
   -e GH_TOKEN=ghp_... \
   -e ANTHROPIC_API_KEY=sk-ant-... \
+  -e NOISE_PORT=9001 \
   ghcr.io/georgebradford0/claudulhu-server:latest
 ```
 
-On startup the container prints a QR code. Scan it with the mobile app to connect — the app establishes an encrypted Noise Protocol tunnel (port 9000) and routes all traffic through it. No TLS certificate required.
-
-The named volume (`claudulhu-noise-key`) persists the server's Curve25519 keypair across container restarts, so the QR code remains valid. Without it, the key regenerates on every restart and the app must re-scan.
-
-The named volume (`claudulhu-data`) persists conversation history, config, and worktrees at `/data` inside the container. Without it, history survives container restarts (`docker stop`/`start`) but is lost when the container is removed or replaced with a new image.
-
-### Environment variables
+### Environment variables (claudulhu-server)
 
 | Variable | Required | Description |
 |---|---|---|
@@ -57,15 +98,14 @@ Two URL schemes are supported:
 
 ### Multiple repos
 
-Each container is independent. Set `NOISE_PORT` to the host port you want to expose — the server binds on that port inside the container and encodes it in the QR code:
+Each child container is independent. When creating containers through Rulyeh, it allocates ports from the range 9100–9199 automatically. For standalone use, set `NOISE_PORT` to the host port you want to expose:
 
 ```sh
 docker run -d \
   --name claudulhu-repo-a \
-  -p 9000:9000 \
-  -v claudulhu-key-a:/etc/claudulhu \
+  -p 9100:9100 \
   -v claudulhu-data-a:/data \
-  -e NOISE_PORT=9000 \
+  -e NOISE_PORT=9100 \
   -e PUBLIC_HOST=1.2.3.4 \
   -e GIT_URL=https://github.com/user/repo-a \
   -e ANTHROPIC_API_KEY=sk-ant-... \
@@ -73,25 +113,24 @@ docker run -d \
 
 docker run -d \
   --name claudulhu-repo-b \
-  -p 9001:9001 \
-  -v claudulhu-key-b:/etc/claudulhu \
+  -p 9101:9101 \
   -v claudulhu-data-b:/data \
-  -e NOISE_PORT=9001 \
+  -e NOISE_PORT=9101 \
   -e PUBLIC_HOST=1.2.3.4 \
   -e GIT_URL=https://github.com/user/repo-b \
   -e ANTHROPIC_API_KEY=sk-ant-... \
   ghcr.io/georgebradford0/claudulhu-server:latest
 ```
 
-Ports 9000–9099 are available on the default AWS deployment. Each container needs its own named volumes so keypairs (and therefore QR codes) and conversation history persist independently across restarts.
+Each container needs its own named volume so keypairs and conversation history persist independently.
 
 ### AWS quick deploy
 
-Create a new Ubuntu EC2 instance with the container running on startup:
+Create a new Ubuntu EC2 instance with Rulyeh running on startup:
 
 ```sh
 SG=$(aws ec2 create-security-group --group-name claudulhu-sg --description "claudulhu" --query 'GroupId' --output text) && \
-aws ec2 authorize-security-group-ingress --group-id $SG --protocol tcp --port 9000 --cidr 0.0.0.0/0 && \
+aws ec2 authorize-security-group-ingress --group-id $SG --protocol tcp --port 9000-9199 --cidr 0.0.0.0/0 && \
 aws ec2 run-instances \
   --image-id resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
   --instance-type t3.micro \
@@ -101,13 +140,13 @@ aws ec2 run-instances \
 apt-get update -y
 apt-get install -y docker.io
 systemctl enable --now docker
-docker run -d --name claudulhu --restart unless-stopped \
-  -p 9000:9000 \
-  -v claudulhu-noise-key:/etc/claudulhu \
-  -v claudulhu-data:/data \
-  -e GIT_URL=https://github.com/user/repo \
+docker run -d --name claudulhu-rulyeh --restart unless-stopped \
+  -p 9000-9199:9000-9199 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v rulyeh-data:/data \
   -e ANTHROPIC_API_KEY=sk-ant-... \
-  ghcr.io/georgebradford0/claudulhu-server:latest' \
+  -e GH_TOKEN=ghp_... \
+  ghcr.io/georgebradford0/claudulhu-rulyeh:latest' \
   --count 1 \
   --region us-east-1
 ```
@@ -118,7 +157,7 @@ Once the instance is running, get its public IP and check the logs for the QR co
 INSTANCE_ID=<instance-id>
 aws ec2 describe-instances --instance-ids $INSTANCE_ID \
   --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
-ssh -i ~/.ssh/<your-key-pair>.pem ubuntu@<public-ip> "docker logs claudulhu"
+ssh -i ~/.ssh/<your-key-pair>.pem ubuntu@<public-ip> "docker logs claudulhu-rulyeh"
 ```
 
 ### PR/MR creation

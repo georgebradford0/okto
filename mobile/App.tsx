@@ -434,7 +434,6 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
       <View style={s.scannerOverlay}>
         <View style={s.scannerTopBar}>
           <Text style={s.scannerTitle}>Scan QR code</Text>
-          <Text style={s.scannerSubtitle}>Point at the QR code printed in the container terminal</Text>
         </View>
         <View style={s.scannerReticle}>
           <View style={[s.scannerCorner, s.cornerTL]} />
@@ -1375,7 +1374,7 @@ function AppInner() {
         <View style={s.header}>
           <View style={s.headerLeft}>
             <View style={[s.connDot, { backgroundColor: statusColor(chatStatus) }]} />
-            <Text style={s.headerTitle}>dispatch</Text>
+            <Text style={s.headerTitle}>rulyeh</Text>
           </View>
           <View style={s.headerRight}>
             {(
