@@ -604,6 +604,11 @@ const ChatPane = memo(function ChatPane({
             // Record the authoritative live_gen from this snapshot so we can
             // discard any stale live frames that arrive after reconnect.
             liveGenRef.current = frame.live_gen
+            // Clear stale streaming state from the previous connection so that
+            // tokens from the new stream don't append to a partial pendingTextRef
+            // accumulated before the disconnect, which caused message duplication.
+            pendingTextRef.current = ''
+            currentSessionIdRef.current = null
 
             const serverMsgs: Message[] = frame.messages.map((m, i) => ({
               id: `h${i}`, role: m.role, text: m.text,
@@ -785,7 +790,12 @@ const ChatPane = memo(function ChatPane({
                   ? { ...m, streaming: false }
                   : m
               )
-              return [...finalized, { id: uid(), role: 'assistant' as const, text: frame.summary }]
+              // Only append the summary bubble if there is actually summary text.
+              // Sessions that only call tools with no final text response should
+              // not create an empty assistant bubble.
+              return frame.summary
+                ? [...finalized, { id: uid(), role: 'assistant' as const, text: frame.summary }]
+                : finalized
             })
             break
           }
@@ -793,14 +803,11 @@ const ChatPane = memo(function ChatPane({
             // Discard tokens from a stale generation (old connection replay).
             if (frame.live_gen !== liveGenRef.current) break
             updateStatus('streaming')
-            const sid = currentSessionIdRef.current
-            if (sid) {
-              // Inside a session — stream tokens into the session bubble.
-              setMessages(prev => prev.map(m => m.id === sid ? { ...m, text: m.text + frame.text, streaming: true } : m))
-            } else {
-              // Simple answer (no session_start) — accumulate for 'done'.
-              pendingTextRef.current += frame.text
-            }
+            // Always accumulate in pendingTextRef. The session bubble shows only
+            // tool call lines (added via 'tool' events). The final response text
+            // is appended as a clean assistant bubble by session_end. Streaming
+            // tokens into the session bubble caused the response to appear twice.
+            pendingTextRef.current += frame.text
             break
           }
           case 'done': {
