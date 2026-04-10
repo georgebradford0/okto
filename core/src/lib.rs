@@ -1254,6 +1254,7 @@ pub fn build_system_prompt(repo_path: &str, branch: Option<&str>, worktree_path:
         \n- Use read_file with offset+limit to read only the section you need.\
         \n- Use grep to locate the exact lines before reading or editing.\
         \n- Use write_file only for creating new files.\
+        \n- NEVER use a leading '**' glob in any path argument (e.g. **/dir/file). Always anchor paths from a known root.\
         \n- Be concise and precise.\
         \n\nResponse style: answers should be concise but informative — get to the point without unnecessary padding, but include all details that are genuinely useful.\
         \n\nVerbosity rules (CRITICAL):\
