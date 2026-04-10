@@ -6,27 +6,38 @@
 
 Do **not** create git worktrees unless explicitly asked to. Commit and push directly on the current branch.
 
-## Docker image
+## Docker images
 
-The correct image name is **`ghcr.io/georgebradford0/claudulhu-server`**.
+| Component | Image |
+|-----------|-------|
+| `rulyeh/` (parent) | `ghcr.io/georgebradford0/claudulhu-rulyeh` |
+| `server/` (child)  | `ghcr.io/georgebradford0/claudulhu-server` |
 
-Pull:
-```sh
-docker pull ghcr.io/georgebradford0/claudulhu-server:latest
-```
+Build and push from the **repo root** (replace `X.Y.Z` with the new version). Always use `buildx` with `--platform` so both `linux/amd64` and `linux/arm64` are included in the manifest:
 
-Build and push (replace `X.Y.Z` with the new version). Always use `buildx` with `--platform` so both `linux/amd64` and `linux/arm64` are included in the manifest:
+**rulyeh:**
 ```sh
 docker buildx build \
   --builder multiplatform \
   --platform linux/amd64,linux/arm64 \
   --push \
+  -f rulyeh/Dockerfile \
+  -t ghcr.io/georgebradford0/claudulhu-rulyeh:X.Y.Z \
+  -t ghcr.io/georgebradford0/claudulhu-rulyeh:latest \
+  .
+```
+
+**server:**
+```sh
+docker buildx build \
+  --builder multiplatform \
+  --platform linux/amd64,linux/arm64 \
+  --push \
+  -f server/Dockerfile \
   -t ghcr.io/georgebradford0/claudulhu-server:X.Y.Z \
   -t ghcr.io/georgebradford0/claudulhu-server:latest \
   .
 ```
-
-**Never** use `claudulhu:latest` or any name that omits `-server`.
 
 ## GitHub CLI
 
@@ -43,9 +54,9 @@ Claudulhu is an agentic coding assistant: a server runs an AI loop against a git
 | Directory | Language | Role |
 |-----------|----------|------|
 | `core/` | Rust | Shared library: agentic loop, Claude API streaming, git/worktree ops, config |
-| `server/` | Rust + Axum | Exposed service: Noise handshake → WebSocket → runs agentic loop |
+| `server/` | Rust + Axum | Child container: Noise handshake → WebSocket → runs agentic loop against a single git repo |
+| `rulyeh/` | Rust + Axum | Parent container: orchestrates child containers via Docker socket; mobile connects here first |
 | `mobile/` | React Native (TS) | iOS/Android client: QR scan → native Noise tunnel → WebSocket UI |
-| `desktop/` | Tauri + React (TS) | macOS/Linux/Windows client: same UI, connects to local or remote server |
 
 ### Transport
 
@@ -58,7 +69,28 @@ All client↔server communication is encrypted with **Noise_XX_25519_ChaChaPoly_
 
 Server listens on port 9000 (`NOISE_PORT`). The Curve25519 keypair is persisted in `/data`.
 
-### Server environment variables
+### rulyeh (parent container)
+
+`rulyeh` is the parent orchestration node. The mobile client connects to it first via the QR-scanned Noise tunnel. It:
+
+- Polls Docker (every 10 s) for child containers labelled `claudulhu.managed=1`
+- Caches each child's Noise public key in `/data/pubkey_registry.json`
+- Pushes `container_list` frames to all connected clients when container state changes
+- Accepts `start_container` commands from the client to restart stopped containers, then triggers an immediate re-poll
+- Runs its own agentic loop (via `core`) so the user can ask it to create/manage child containers
+
+Image: `ghcr.io/georgebradford0/claudulhu-rulyeh`
+
+#### rulyeh environment variables
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `ANTHROPIC_API_KEY` | yes | Claude API access for parent loop |
+| `GH_TOKEN` | yes | Passed to child containers on creation |
+| `PUBLIC_HOST` | no | Advertised host in QR (auto-detected if unset) |
+| `NOISE_PORT` | no | Listening port (default: 9000) |
+
+### server (child container) environment variables
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
