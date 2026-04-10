@@ -3,6 +3,5 @@ members = [
     "core",
     "server",
     "rulyeh",
-    "desktop/src-tauri",
 ]
 resolver = "2"

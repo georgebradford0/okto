@@ -452,7 +452,7 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
 // ── ChatPane ──────────────────────────────────────────────────────────────────
 
 const ChatPane = memo(function ChatPane({
-  wsUrl, connKey, onStatusChange, clearRef, interruptRef, onContainerFrame,
+  wsUrl, connKey, onStatusChange, clearRef, interruptRef, onContainerFrame, sendRef,
 }: {
   wsUrl:              string
   connKey:            string
@@ -460,6 +460,7 @@ const ChatPane = memo(function ChatPane({
   clearRef:           React.MutableRefObject<() => void>
   interruptRef:       React.MutableRefObject<() => void>
   onContainerFrame?:  (frame: ServerFrame) => void
+  sendRef?:           React.MutableRefObject<(msg: object) => void>
 }) {
   const insets                     = useSafeAreaInsets()
   const { height: keyboardHeight } = useReanimatedKeyboardAnimation()
@@ -1017,6 +1018,12 @@ const ChatPane = memo(function ChatPane({
     wsRef.current?.send(JSON.stringify({ type: 'interrupt' }))
   }
 
+  if (sendRef) {
+    sendRef.current = (msg: object) => {
+      wsRef.current?.send(JSON.stringify(msg))
+    }
+  }
+
   const isPending = status === 'streaming' && messages.length > 0 && !messages[messages.length - 1]?.streaming
 
   return (
@@ -1221,9 +1228,12 @@ function AppInner() {
   const [tunnelError, setTunnelError] = useState<string | null>(null)
   const [scanning,    setScanning]    = useState(false)
   const [chatStatus,  setChatStatus]  = useState<ConnStatus>('connecting')
-  const [containers,        setContainers]        = useState<ContainerInfo[]>([])
-  const [activeChild,       setActiveChild]       = useState<ContainerInfo | null>(null)
-  const [showSettingsMenu,  setShowSettingsMenu]  = useState(false)
+  const [containers,           setContainers]           = useState<ContainerInfo[]>([])
+  const [activeChild,          setActiveChild]          = useState<ContainerInfo | null>(null)
+  const [showSettingsMenu,     setShowSettingsMenu]     = useState(false)
+  const [startingContainerId,  setStartingContainerId]  = useState<string | null>(null)
+  const startingContainerIdRef = useRef<string | null>(null)
+  const masterSendRef          = useRef<(msg: object) => void>(() => {})
   // Incrementing this forces the master Noise tunnel effect to re-run and
   // re-establish the master connection after a child screen closes.
   const [noiseKey,    setNoiseKey]    = useState(0)
@@ -1319,6 +1329,15 @@ function AppInner() {
   const handleContainerFrame = useCallback((frame: ServerFrame) => {
     if (frame.type === 'container_list') {
       setContainers(frame.containers)
+      const waitingId = startingContainerIdRef.current
+      if (waitingId) {
+        const started = frame.containers.find(c => c.id === waitingId && c.status === 'running' && c.pubkey)
+        if (started) {
+          startingContainerIdRef.current = null
+          setStartingContainerId(null)
+          setActiveChild(started)
+        }
+      }
     } else if (frame.type === 'container_status') {
       setContainers(prev => prev.map(c =>
         c.id === frame.id ? { ...c, status: frame.status } : c
@@ -1419,7 +1438,16 @@ function AppInner() {
                 <TouchableOpacity
                   key={c.id}
                   style={s.containerMenuItem}
-                  onPress={() => { setShowSettingsMenu(false); setActiveChild(c) }}
+                  onPress={() => {
+                    setShowSettingsMenu(false)
+                    if (c.status === 'running') {
+                      setActiveChild(c)
+                    } else {
+                      startingContainerIdRef.current = c.id
+                      setStartingContainerId(c.id)
+                      masterSendRef.current({ type: 'start_container', id: c.id })
+                    }
+                  }}
                   activeOpacity={0.7}
                 >
                   <View style={[s.containerDot, {
@@ -1464,7 +1492,24 @@ function AppInner() {
           clearRef={clearChatRef}
           interruptRef={interruptChatRef}
           onContainerFrame={handleContainerFrame}
+          sendRef={masterSendRef}
         />
+
+        {startingContainerId !== null && (
+          <View style={s.startingOverlay}>
+            <ActivityIndicator color={C.accent} size="large" />
+            <Text style={s.startingText}>Starting container...</Text>
+            <TouchableOpacity
+              style={s.startingCancelBtn}
+              onPress={() => {
+                startingContainerIdRef.current = null
+                setStartingContainerId(null)
+              }}
+            >
+              <Text style={s.startingCancelText}>cancel</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
     </SafeAreaView>
   )
@@ -1497,6 +1542,10 @@ const s = StyleSheet.create({
 
   // QR scanner
   creatureImg:       { width: 120, height: 120, borderRadius: 26, marginBottom: 12 },
+  startingOverlay:   { ...StyleSheet.absoluteFillObject, backgroundColor: C.bg, alignItems: 'center', justifyContent: 'center', gap: 16 },
+  startingText:      { fontSize: 15, color: C.textSecondary, fontFamily: ARIMO },
+  startingCancelBtn: { marginTop: 8, paddingVertical: 10, paddingHorizontal: 28, borderRadius: 10, borderWidth: 1, borderColor: C.border },
+  startingCancelText:{ fontSize: 15, color: C.textPrimary, fontFamily: ARIMO },
   scannerFull:       { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', zIndex: 100 },
   scannerOverlay:    { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'space-between', paddingVertical: 60 },
   scannerTopBar:     { alignItems: 'center', gap: 8, paddingHorizontal: 32 },

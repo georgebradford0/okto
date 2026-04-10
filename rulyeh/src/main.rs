@@ -101,10 +101,11 @@ struct HistMsg {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMsg {
-    Message   { text: String },
+    Message        { text: String },
     Interrupt,
-    Answer    { answer: String },
+    Answer         { answer: String },
     Clear,
+    StartContainer { id: String },
 }
 
 // ── Session persistence ───────────────────────────────────────────────────────
@@ -158,6 +159,7 @@ struct AppState {
     pubkey_b32:       String,
     containers:       Arc<Mutex<Vec<ContainerInfo>>>,
     container_notify: Arc<Notify>,
+    poll_trigger:     Arc<Notify>,
     public_host:      String,
 }
 
@@ -361,6 +363,35 @@ async fn chat_ws_handler(
                     if let Some(sender) = slot.take() { sender.send(answer).ok(); }
                 }
 
+                ClientMsg::StartContainer { id } => {
+                    let name = {
+                        let containers = state.containers.lock().unwrap();
+                        containers.iter().find(|c| c.id == id).map(|c| c.name.clone())
+                    };
+                    if let Some(name) = name {
+                        let trigger = state.poll_trigger.clone();
+                        tokio::spawn(async move {
+                            println!("[containers] starting container {name}");
+                            let result = tokio::process::Command::new("docker")
+                                .args(["start", &name])
+                                .output()
+                                .await;
+                            match result {
+                                Ok(out) if out.status.success() => {
+                                    println!("[containers] started {name}, triggering re-poll");
+                                    tokio::time::sleep(Duration::from_secs(3)).await;
+                                    trigger.notify_one();
+                                }
+                                Ok(out) => eprintln!("[containers] docker start failed: {}",
+                                    String::from_utf8_lossy(&out.stderr)),
+                                Err(e)  => eprintln!("[containers] docker start error: {e}"),
+                            }
+                        });
+                    } else {
+                        eprintln!("[containers] start_container: id {id} not found");
+                    }
+                }
+
                 ClientMsg::Clear => {
                     {
                         let mut s = state.session.lock().unwrap();
@@ -435,7 +466,10 @@ async fn poll_containers(state: Arc<AppState>) {
             }
             Err(e) => eprintln!("[containers] poll error: {e}"),
         }
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(10)) => {}
+            _ = state.poll_trigger.notified() => {}
+        }
     }
 }
 
@@ -582,6 +616,7 @@ async fn main() {
 
     let containers       = Arc::new(Mutex::new(Vec::<ContainerInfo>::new()));
     let container_notify = Arc::new(Notify::new());
+    let poll_trigger     = Arc::new(Notify::new());
 
     let state = Arc::new(AppState {
         session: Arc::new(Mutex::new(Session {
@@ -600,6 +635,7 @@ async fn main() {
         pubkey_b32,
         containers:       containers.clone(),
         container_notify: container_notify.clone(),
+        poll_trigger:     poll_trigger.clone(),
         public_host:      public_host.clone(),
     });
 
