@@ -41,7 +41,7 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=builder /build/target/release/claudulhu-server /usr/local/bin/claudulhu-server
 
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY server/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV HOME=/root

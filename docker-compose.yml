@@ -25,7 +25,9 @@ services:
   # Use this to run a single repo server without master, or as a template for
   # understanding the env vars master uses when spawning child containers.
   claudulhu:
-    build: .
+    build:
+      context: .
+      dockerfile: server/Dockerfile
     ports:
       - "${NOISE_PORT:-9100}:${NOISE_PORT:-9100}"
     environment:
