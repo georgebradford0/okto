@@ -61,6 +61,11 @@ public class NoiseConnectionModule extends NativeNoiseConnectionSpec {
 
     private final AtomicBoolean running = new AtomicBoolean(false);
 
+    // Tracks all sockets held by active proxy threads so disconnect() can close
+    // them immediately, preventing fd recycling races on the JVM layer.
+    private final java.util.Set<Socket> proxySockets =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+
     public NoiseConnectionModule(ReactApplicationContext ctx) { super(ctx); }
 
     @Override @NonNull public String getName() { return NAME; }
@@ -107,6 +112,10 @@ public class NoiseConnectionModule extends NativeNoiseConnectionSpec {
         if (ss != null) {
             try { ss.close(); } catch (IOException ignored) {}
         }
+        // Close all active proxy sockets so their threads exit immediately and
+        // the OS cannot recycle those ports/fds for new connections.
+        for (Socket s : proxySockets) { closeQuietly(s); }
+        proxySockets.clear();
     }
 
     // ─── Accept loop ──────────────────────────────────────────────────────────
@@ -126,9 +135,11 @@ public class NoiseConnectionModule extends NativeNoiseConnectionSpec {
     // ─── Per-connection proxy ─────────────────────────────────────────────────
 
     private void proxy(Socket local) {
+        proxySockets.add(local);
         Socket remote = null;
         try {
             remote = new Socket(remoteHost, remotePort);
+            proxySockets.add(remote);
             remote.setTcpNoDelay(true);
 
             InputStream  ris = remote.getInputStream();
@@ -187,6 +198,8 @@ public class NoiseConnectionModule extends NativeNoiseConnectionSpec {
         } catch (Exception e) {
             Log.e(TAG, "proxy error", e);
         } finally {
+            proxySockets.remove(local);
+            proxySockets.remove(remote);
             closeQuietly(local);
             closeQuietly(remote);
         }

@@ -291,6 +291,11 @@ final class NoiseConnection: NSObject {
     private let stateLock  = NSLock()
     private var active     = false
 
+    // Tracks all fds held by active proxyConnection threads so disconnect()
+    // can close them immediately, preventing fd recycling races.
+    private var proxyFds = Set<Int32>()
+    private let proxyFdsLock = NSLock()
+
     @objc static func requiresMainQueueSetup() -> Bool { false }
 
     @objc func connect(
@@ -341,6 +346,14 @@ final class NoiseConnection: NSObject {
         let fd = listenFd; listenFd = -1
         stateLock.unlock()
         if fd >= 0 { Darwin.close(fd) }
+
+        // Close all active proxy fds so their threads exit immediately and
+        // the OS cannot recycle those fd numbers for new connections.
+        proxyFdsLock.lock()
+        let fds = proxyFds
+        proxyFds.removeAll()
+        proxyFdsLock.unlock()
+        fds.forEach { Darwin.close($0) }
     }
 
     private func acceptLoop(fd: Int32) {
@@ -363,6 +376,11 @@ final class NoiseConnection: NSObject {
             print("[noise-proxy] connectSocket to \(host):\(port) FAILED (errno=\(errno))")
             Darwin.close(localFd)
             return
+        }
+
+        proxyFdsLock.lock(); proxyFds.insert(localFd); proxyFds.insert(remoteFd); proxyFdsLock.unlock()
+        defer {
+            proxyFdsLock.lock(); proxyFds.remove(localFd); proxyFds.remove(remoteFd); proxyFdsLock.unlock()
         }
         print("[noise-proxy] TCP connected to \(host):\(port); starting handshake…")
 
