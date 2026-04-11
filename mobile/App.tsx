@@ -1433,6 +1433,24 @@ function AppInner() {
             <Text style={s.headerTitle}>rulyeh</Text>
           </View>
           <View style={s.headerRight}>
+            {chatStatus === 'streaming' ? (
+              <TouchableOpacity
+                style={s.clearBtn}
+                onPress={() => interruptChatRef.current()}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={s.stopBtnText}>■ stop</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={s.clearBtn}
+                onPress={() => clearChatRef.current()}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                disabled={chatStatus !== 'ready'}
+              >
+                <Text style={[s.clearBtnText, chatStatus !== 'ready' && { opacity: 0.3 }]}>clear</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
               style={s.settingsMenuBtn}
               onPress={() => setShowSettingsMenu(v => !v)}
@@ -1486,23 +1504,6 @@ function AppInner() {
                   <Text style={s.containerMenuItemStatus}>{c.status}</Text>
                 </TouchableOpacity>
               ))}
-              <View style={s.settingsMenuDivider} />
-              {chatStatus === 'streaming' ? (
-                <TouchableOpacity
-                  style={s.settingsMenuAction}
-                  onPress={() => { interruptChatRef.current(); setShowSettingsMenu(false) }}
-                >
-                  <Text style={s.stopBtnText}>■ stop</Text>
-                </TouchableOpacity>
-              ) : (
-                <TouchableOpacity
-                  style={s.settingsMenuAction}
-                  onPress={() => { clearChatRef.current(); setShowSettingsMenu(false) }}
-                  disabled={chatStatus !== 'ready'}
-                >
-                  <Text style={[s.settingsMenuActionText, chatStatus !== 'ready' && { opacity: 0.3 }]}>clear chat</Text>
-                </TouchableOpacity>
-              )}
               <View style={s.settingsMenuDivider} />
               <TouchableOpacity style={s.settingsMenuAction} onPress={handleLogout}>
                 <Text style={s.settingsMenuLogoutText}>logout</Text>
