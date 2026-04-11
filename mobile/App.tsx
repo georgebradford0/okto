@@ -1632,7 +1632,7 @@ const s = StyleSheet.create({
   messageWrap:      { paddingHorizontal: 14, marginBottom: 14 },
   messageWrapRight: { alignItems: 'flex-end' },
   userBubble:       { backgroundColor: C.surface, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 10, maxWidth: '80%' },
-  textBlock:        { color: C.textPrimary, fontSize: 17, lineHeight: 26, fontWeight: '400', fontFamily: ARIMO },
+  textBlock:        { color: C.textPrimary, fontSize: 18, lineHeight: 27, fontWeight: '400', fontFamily: ARIMO },
   inlineCode:        { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 13, color: C.textPrimary, backgroundColor: C.surface, paddingHorizontal: 3, borderRadius: 3 },
   codeBlock:         { backgroundColor: C.surface, borderRadius: 6, padding: 10, marginVertical: 4 },
   codeBlockText:     { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 12, color: C.textPrimary, lineHeight: 18 },
