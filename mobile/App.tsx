@@ -1504,7 +1504,7 @@ function AppInner() {
               ))}
               <View style={s.settingsMenuDivider} />
               <TouchableOpacity style={s.settingsMenuAction} onPress={handleLogout}>
-                <Text style={s.settingsMenuLogoutText}>logout</Text>
+                <Text style={s.settingsMenuLogoutText}>exit</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1645,7 +1645,7 @@ const s = StyleSheet.create({
   completionItem: { paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
   completionText: { fontSize: 14, color: C.textPrimary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   inputFloat:   { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 12, paddingBottom: 12 },
-  input:        { backgroundColor: C.bg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 24, paddingHorizontal: 24, paddingVertical: 24, color: C.textPrimary, fontSize: 18, lineHeight: 26, minHeight: 48, maxHeight: 140, fontFamily: ARIMO, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
+  input:        { backgroundColor: C.bg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 24, paddingHorizontal: 20, paddingVertical: 16, color: C.textPrimary, fontSize: 18, lineHeight: 26, minHeight: 48, maxHeight: 140, fontFamily: ARIMO, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
   stopBtnText:  { fontSize: 14, color: C.red, fontWeight: '600', fontFamily: ARIMO },
 
   // Settings header button + dropdown
@@ -1660,11 +1660,11 @@ const s = StyleSheet.create({
   settingsMenuDivider:      { height: StyleSheet.hairlineWidth, backgroundColor: C.border },
   settingsMenuAction:       { paddingHorizontal: 14, paddingVertical: 13 },
   settingsMenuActionText:   { fontSize: 14, color: C.textSecondary, fontFamily: ARIMO },
-  settingsMenuLogoutText:   { fontSize: 14, color: C.red, fontFamily: ARIMO },
+  settingsMenuLogoutText:   { fontSize: 20, color: C.red, fontFamily: ARIMO },
   containerMenuItem:        { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
-  containerMenuItemName:    { fontSize: 14, fontWeight: '600', color: C.textPrimary, fontFamily: ARIMO },
-  containerMenuItemUrl:     { fontSize: 11, color: C.textMuted, fontFamily: ARIMO, marginTop: 1 },
-  containerMenuItemStatus:  { fontSize: 11, color: C.textMuted, fontFamily: ARIMO },
+  containerMenuItemName:    { fontSize: 20, fontWeight: '600', color: C.textPrimary, fontFamily: ARIMO },
+  containerMenuItemUrl:     { fontSize: 16, color: C.textMuted, fontFamily: ARIMO, marginTop: 1 },
+  containerMenuItemStatus:  { fontSize: 16, color: C.textMuted, fontFamily: ARIMO },
 
   // Agent session bubble (collapsed inline)
   sessionWrap:        { paddingHorizontal: 14, marginBottom: 14 },
