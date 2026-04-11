@@ -211,7 +211,6 @@ function PendingEllipsis() {
   }, [])
   return (
     <View style={s.messageWrap}>
-      <Text style={s.messageLabel}>claude</Text>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
         {dots.map((dot, i) => (
           <Animated.Text key={i} style={[s.cursor, { opacity: dot }]}>●</Animated.Text>
@@ -383,12 +382,18 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: Messag
       </View>
     )
   }
-  const isUser = message.role === 'user'
+  if (message.role === 'user') {
+    return (
+      <View style={[s.messageWrap, s.messageWrapRight]}>
+        <View style={s.userBubble}>
+          {renderText(message.text, s.textBlock)}
+          {message.streaming && <Text style={s.cursor}>▋</Text>}
+        </View>
+      </View>
+    )
+  }
   return (
-    <View style={[s.messageWrap, isUser && s.messageWrapRight]}>
-      <Text style={[s.messageLabel, isUser && s.messageLabelRight]}>
-        {isUser ? 'you' : 'claude'}
-      </Text>
+    <View style={s.messageWrap}>
       {message.isQuestion && <Text style={s.questionMark}>?</Text>}
       {renderText(message.text, s.textBlock)}
       {message.streaming && <Text style={s.cursor}>▋</Text>}
@@ -1624,11 +1629,10 @@ const s = StyleSheet.create({
   scrollBtnIcon:     { fontSize: 18, color: C.textSecondary, lineHeight: 22, fontFamily: ARIMO },
 
   // Messages
-  messageWrap:       { paddingHorizontal: 14, marginBottom: 14 },
-  messageWrapRight:  { alignItems: 'flex-end' },
-  messageLabel:      { fontSize: 11, color: C.textMuted, marginBottom: 4, marginLeft: 2, fontWeight: '600', letterSpacing: 0.5, textTransform: 'uppercase', fontFamily: ARIMO },
-  messageLabelRight: { marginLeft: 0, marginRight: 2 },
-  textBlock:         { color: C.textPrimary, fontSize: 15, lineHeight: 23, fontFamily: ARIMO },
+  messageWrap:      { paddingHorizontal: 14, marginBottom: 14 },
+  messageWrapRight: { alignItems: 'flex-end' },
+  userBubble:       { backgroundColor: C.surface, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 10, maxWidth: '80%' },
+  textBlock:        { color: C.textPrimary, fontSize: 15, lineHeight: 23, fontFamily: ARIMO },
   inlineCode:        { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 13, color: C.textPrimary, backgroundColor: C.surface, paddingHorizontal: 3, borderRadius: 3 },
   codeBlock:         { backgroundColor: C.surface, borderRadius: 6, padding: 10, marginVertical: 4 },
   codeBlockText:     { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 12, color: C.textPrimary, lineHeight: 18 },
