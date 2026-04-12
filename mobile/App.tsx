@@ -1094,21 +1094,30 @@ const ChatPane = memo(function ChatPane({
               ))}
             </ScrollView>
           )}
-          <TextInput
-            style={s.input}
-            value={input}
-            onChangeText={text => {
-              if (text.includes('\n')) { sendMessageRef.current(); return }
-              setInput(text)
-            }}
-            onSubmitEditing={() => sendMessageRef.current()}
-            placeholder={pendingQuestion ? 'answer…' : 'message…'}
-            placeholderTextColor={C.textMuted}
-            multiline
-            returnKeyType="send"
-            blurOnSubmit={false}
-            editable={status !== 'streaming'}
-          />
+          {status === 'streaming' ? (
+            <TouchableOpacity
+              style={s.inputStopBtn}
+              onPress={() => interruptRef.current()}
+              activeOpacity={0.75}
+            >
+              <Text style={s.stopBtnText}>■ stop</Text>
+            </TouchableOpacity>
+          ) : (
+            <TextInput
+              style={s.input}
+              value={input}
+              onChangeText={text => {
+                if (text.includes('\n')) { sendMessageRef.current(); return }
+                setInput(text)
+              }}
+              onSubmitEditing={() => sendMessageRef.current()}
+              placeholder={pendingQuestion ? 'answer…' : 'message…'}
+              placeholderTextColor={C.textMuted}
+              multiline
+              returnKeyType="send"
+              blurOnSubmit={false}
+            />
+          )}
         </View>
 
         {showScrollBtn && (
@@ -1682,6 +1691,7 @@ const s = StyleSheet.create({
   completionText: { fontSize: 14, color: C.textPrimary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   inputFloat:   { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 12, paddingBottom: 12 },
   input:        { backgroundColor: C.bg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 24, paddingHorizontal: 20, paddingVertical: 16, color: C.textPrimary, fontSize: 18, lineHeight: 26, minHeight: 48, maxHeight: 140, fontFamily: ARIMO, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
+  inputStopBtn: { backgroundColor: C.bg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 24, paddingHorizontal: 20, paddingVertical: 16, height: 80, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
   stopBtnText:  { fontSize: 14, color: C.red, fontWeight: '600', fontFamily: ARIMO },
 
   // Settings header button + dropdown
