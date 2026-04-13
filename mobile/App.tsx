@@ -6,7 +6,6 @@ import {
   AppState,
   FlatList,
   Keyboard,
-  Modal,
   PermissionsAndroid,
   Platform,
   ScrollView,
@@ -14,7 +13,6 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  useWindowDimensions,
   View,
 } from 'react-native'
 import { KeyboardProvider, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller'
@@ -259,126 +257,16 @@ function formatToolCall(name: string, input?: Record<string, unknown>): string {
   return `${capName}(${args})`
 }
 
-// ── AgentSessionBubble ────────────────────────────────────────────────────────
-
-const AgentSessionBubble = memo(function AgentSessionBubble({ message }: { message: Message }) {
-  const [expanded, setExpanded] = useState(false)
-  const scrollRef    = useRef<ScrollView>(null)
-  const pulseAnim    = useRef(new Animated.Value(0.5)).current
-  const scanAnim     = useRef(new Animated.Value(0)).current
-  const slideAnim    = useRef(new Animated.Value(1)).current
-  const { height: screenHeight } = useWindowDimensions()
-  const SHEET_HEIGHT = Math.round(screenHeight * 0.85)
-
-  // Pulsing dot + scanning bar while streaming
-  useEffect(() => {
-    if (!message.streaming) {
-      pulseAnim.setValue(1)
-      scanAnim.setValue(0)
-      return
-    }
-    const pulse = Animated.loop(Animated.sequence([
-      Animated.timing(pulseAnim, { toValue: 1,    duration: 600, useNativeDriver: true }),
-      Animated.timing(pulseAnim, { toValue: 0.25, duration: 600, useNativeDriver: true }),
-    ]))
-    const scan = Animated.loop(Animated.sequence([
-      Animated.timing(scanAnim, { toValue: 1, duration: 1200, useNativeDriver: true }),
-      Animated.timing(scanAnim, { toValue: 0, duration: 0,    useNativeDriver: true }),
-    ]))
-    pulse.start()
-    scan.start()
-    return () => { pulse.stop(); scan.stop() }
-  }, [message.streaming])
-
-  const openSheet = useCallback(() => {
-    slideAnim.setValue(1)
-    setExpanded(true)
-    Animated.spring(slideAnim, { toValue: 0, useNativeDriver: true, tension: 70, friction: 12 }).start()
-  }, [slideAnim])
-
-  const closeSheet = useCallback(() => {
-    Animated.timing(slideAnim, { toValue: 1, duration: 240, useNativeDriver: true }).start(() => setExpanded(false))
-  }, [slideAnim])
-
-  const sheetTranslate = slideAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, SHEET_HEIGHT],
-  })
-
-  // Show last portion of log so the preview tail tracks live output
-  const preview = message.text.length > 400
-    ? '\u2026' + message.text.slice(-400)
-    : message.text
-
-  return (
-    <View style={s.sessionWrap}>
-      <TouchableOpacity onPress={openSheet} activeOpacity={0.85}>
-        <View style={s.sessionBox}>
-          {/* Header bar */}
-          <View style={s.sessionBoxHeader}>
-            <Animated.View style={[s.sessionDot, {
-              opacity: pulseAnim,
-              backgroundColor: message.streaming ? C.accent : C.green,
-            }]} />
-            <Text style={s.sessionBoxLabel}>
-              {message.streaming ? (message.label ?? 'working\u2026') : 'session log'}
-            </Text>
-            <Text style={s.sessionExpandHint}>&#x2197;</Text>
-          </View>
-
-          {/* Animated scan line under header when streaming */}
-          {message.streaming && (
-            <Animated.View style={[s.sessionScanLine, {
-              transform: [{ translateX: scanAnim.interpolate({
-                inputRange: [0, 1], outputRange: [-300, 300],
-              }) }],
-            }]} />
-          )}
-
-          {/* Preview text — last ~3 lines of session output */}
-          <Text style={s.sessionPreviewText} numberOfLines={3}>{preview}</Text>
-        </View>
-      </TouchableOpacity>
-
-      {/* Expanded bottom-sheet log */}
-      <Modal visible={expanded} transparent animationType="none" onRequestClose={closeSheet}>
-        <TouchableOpacity style={s.sessionSheetBackdrop} activeOpacity={1} onPress={closeSheet} />
-        <Animated.View style={[s.sessionSheet, { height: SHEET_HEIGHT, transform: [{ translateY: sheetTranslate }] }]}>
-          <View style={s.sessionSheetHandle} />
-          <View style={s.sessionModalHeader}>
-            <View style={s.sessionBoxHeader}>
-              <View style={[s.sessionDot, { backgroundColor: message.streaming ? C.accent : C.green }]} />
-              <Text style={s.sessionModalTitle}>
-                {message.streaming ? (message.label ?? 'working\u2026') : 'session log'}
-              </Text>
-            </View>
-            <TouchableOpacity onPress={closeSheet} hitSlop={{ top: 8, bottom: 8, left: 16, right: 8 }}>
-              <Text style={s.sessionModalClose}>Done</Text>
-            </TouchableOpacity>
-          </View>
-          <ScrollView
-            ref={scrollRef}
-            style={s.sessionModalScroll}
-            onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
-          >
-            <Text style={s.sessionModalText}>{message.text}</Text>
-          </ScrollView>
-        </Animated.View>
-      </Modal>
-    </View>
-  )
-})
-
 // ── MessageBubble ─────────────────────────────────────────────────────────────
 
 const MessageBubble = memo(function MessageBubble({ message }: { message: Message }) {
   if (message.role === 'session') {
-    return <AgentSessionBubble message={message} />
+    return null
   }
   if (message.role === 'tool') {
     return (
-      <View style={s.messageWrap}>
-        <Text style={s.toolLine}>{message.text}</Text>
+      <View style={[s.messageWrap, { marginBottom: 3 }]}>
+        <Text style={s.toolLine} numberOfLines={1} ellipsizeMode="tail">{message.text}</Text>
       </View>
     )
   }
@@ -528,20 +416,9 @@ const ChatPane = memo(function ChatPane({
   // the history frame of the current connection.
   const liveGenRef      = useRef<number>(-1)
 
-  // Accumulates token text for responses that never call session_start (simple
-  // answers). Used as the assistant message text on 'done'.
-  const pendingTextRef  = useRef<string>('')
-
-  // ID of the session bubble currently being streamed into.  Set on
-  // 'session_start', cleared on 'session_end' / 'done' / 'error'.
-  const currentSessionIdRef = useRef<string | null>(null)
-
-  // Server-assigned session UUID for the session currently being streamed.
-  // Mirrors currentSessionIdRef but holds the server's UUID rather than the
-  // local bubble id.  Stored on the session_end assistant summary so that
-  // mergeSessionBubbles can treat it as client-only (never in server history)
-  // and session_start can remove it before the live replay re-creates it.
-  const serverSessionIdRef  = useRef<string | null>(null)
+  // ID of the assistant message currently being streamed into via 'token' frames.
+  // Set on the first token of a new response, cleared on 'done' / 'error' / 'question'.
+  const currentAssistantIdRef = useRef<string | null>(null)
 
 
   // Fetch @ completions whenever the input changes.
@@ -595,9 +472,7 @@ const ChatPane = memo(function ChatPane({
       // live_gen and bypass the stale-frame guard).
       wsRef.current?.close()
       updateStatus('connecting')
-      // Clear stale session ID so the token/tool fallback path can create a
-      // fresh session bubble if the server is mid-stream on reconnect.
-      currentSessionIdRef.current = null
+      currentAssistantIdRef.current = null
       // Advance the epoch so any onmessage closures from old sockets discard
       // their frames immediately.
       const myEpoch = ++connEpochRef.current
@@ -623,115 +498,29 @@ const ChatPane = memo(function ChatPane({
             // Record the authoritative live_gen from this snapshot so we can
             // discard any stale live frames that arrive after reconnect.
             liveGenRef.current = frame.live_gen
-            // Clear stale streaming state from the previous connection so that
-            // tokens from the new stream don't append to a partial pendingTextRef
-            // accumulated before the disconnect, which caused message duplication.
-            pendingTextRef.current = ''
-            currentSessionIdRef.current = null
-            serverSessionIdRef.current  = null
+            currentAssistantIdRef.current = null
 
             const serverMsgs: Message[] = frame.messages.map((m, i) => ({
               id: `h${i}`, role: m.role, text: m.text,
             }))
 
-            // Re-insert client-only bubbles (session, tool, and assistant
-            // summaries produced by session_end) from the local cache so they
-            // survive reconnection.
-            //
-            // Background: the server's history only contains messages that have
-            // plain-text content blocks.  Agentic-session assistant turns
-            // (which consist entirely of tool-use blocks) produce NO entry in
-            // the server history.  The session bubble itself, any tool lines
-            // inside it, and the assistant summary emitted by session_end are
-            // therefore CLIENT-ONLY — they will never appear in base.
-            //
-            // Strategy: walk both local and base in parallel, matching
-            // user/assistant server messages by text.  Between each pair of
-            // matched server entries, splice back in whatever client-only
-            // bubbles sat there in local.  After base is exhausted, flush ALL
-            // remaining local entries (not just session/tool) so that trailing
-            // assistant summaries are never silently dropped.
-            const mergeSessionBubbles = (base: Message[]): Message[] => {
-              const local = messagesRef.current
-              if (!local.length) return base
-
-              const result: Message[] = []
-              let li = 0 // pointer into local
-
-              for (let bi = 0; bi < base.length; bi++) {
-                const bm = base[bi]
-
-                // Collect any client-only bubbles that precede the next
-                // server-matched anchor in local.
-                //
-                // Client-only bubbles are those the server never includes in
-                // its history frame:
-                //   • 'session' and 'tool' role bubbles — always client-only.
-                //   • 'assistant' bubbles that have a sessionId set — these are
-                //     session_end summaries.  The server's history only contains
-                //     ContentBlock::Text turns; a session_end assistant turn
-                //     contains only a ToolUse block and is therefore excluded by
-                //     messages_to_history.  The summary will be re-created by
-                //     the session_end live-replay frame, so it must NOT be
-                //     matched against a server base message here.
-                //
-                //     NOTE: plain assistant messages from the simple-answer
-                //     path (done handler) have no sessionId and ARE in server
-                //     history — leave those for matching.
-                const pending: Message[] = []
-                while (li < local.length) {
-                  const lm = local[li]
-                  if (
-                    lm.role === 'session' ||
-                    lm.role === 'tool' ||
-                    (lm.role === 'assistant' && lm.sessionId != null)
-                  ) {
-                    pending.push(lm)
-                    li++
-                  } else {
-                    break
+            // Merge server messages with local cache to preserve stable FlatList
+            // ids and cost labels.  Tool lines are ephemeral and not re-inserted.
+            const mergeWithHistory = (base: Message[]): Message[] => {
+              const local = messagesRef.current.filter(
+                m => m.role === 'user' || m.role === 'assistant'
+              )
+              let li = 0
+              return base.map(bm => {
+                for (let i = li; i < local.length; i++) {
+                  if (local[i].role === bm.role && local[i].text === bm.text) {
+                    const lm = local[i]
+                    li = i + 1
+                    return { ...bm, id: lm.id, ...(lm.cost != null ? { cost: lm.cost } : {}) }
                   }
                 }
-
-                // Try to match bm against the next local server message.
-                if (li < local.length && local[li].role === bm.role && local[li].text === bm.text) {
-                  // Match — splice in the buffered client-only bubbles first,
-                  // then the server message (preserving client-only fields and
-                  // the local id so FlatList keys are stable across reconnects).
-                  result.push(...pending.map(m => ({ ...m, streaming: false })))
-                  const lm = local[li]
-                  result.push({ ...bm, id: lm.id, ...(lm.cost != null ? { cost: lm.cost } : {}) })
-                  li++
-                } else {
-                  // No match (local is stale/different) — still emit any
-                  // buffered client-only bubbles so they aren't lost, then
-                  // emit the server message with a fresh unique ID.
-                  // Using bm's h${i} id here would collide with a later
-                  // iteration that matches a local message whose id is also
-                  // h${i}, causing FlatList key conflicts and visible duplication.
-                  result.push(...pending.map(m => ({ ...m, streaming: false })))
-                  result.push({ ...bm, id: uid() })
-                  // Do NOT advance li: we haven't matched local[li] yet, so
-                  // leave the pointer in place for the next iteration.
-                }
-              }
-
-              // After base is exhausted, flush ALL remaining local entries.
-              // This covers:
-              //  • A session bubble (and its tool lines) that was still live at
-              //    disconnect time.  We mark it streaming:false here because
-              //    session_start will create a fresh bubble for the server replay;
-              //    keeping the old one streaming would leave two live bubbles.
-              //  • A completed session bubble followed by the assistant summary
-              //    produced by session_end — the summary has role='assistant'
-              //    and is client-only (never in server history), so the old
-              //    "session/tool only" flush silently dropped it every reconnect.
-              while (li < local.length) {
-                const lm = local[li++]
-                result.push(lm.streaming ? { ...lm, streaming: false } : lm)
-              }
-
-              return result
+                return { ...bm, id: uid() }
+              })
             }
 
             // If there's an unacknowledged pending message check whether the
@@ -741,29 +530,20 @@ const ChatPane = memo(function ChatPane({
             if (pending) {
               const lastUserMsg = [...frame.messages].reverse().find(m => m.role === 'user')
               if (lastUserMsg?.text === pending) {
-                // Server has it — clear the pending entry.
                 pendingMsgRef.current = null
                 AsyncStorage.removeItem(`pending_${connKey}`).catch(() => {})
-                // Server has the message; use authoritative history as-is,
-                // but re-insert any local session/tool bubbles.
-                setMessages(mergeSessionBubbles(serverMsgs))
+                setMessages(mergeWithHistory(serverMsgs))
               } else {
-                // Server never received it — show optimistic user bubble then
-                // resend.  The ack will clear pendingMsgRef.
                 pendingMsgRef.current = null
                 AsyncStorage.removeItem(`pending_${connKey}`).catch(() => {})
                 const optimisticBubble: Message = { id: uid(), role: 'user', text: pending }
-                pendingTextRef.current = ''
-                currentSessionIdRef.current = null
-                setMessages([...mergeSessionBubbles(serverMsgs), optimisticBubble])
+                setMessages([...mergeWithHistory(serverMsgs), optimisticBubble])
                 ws.send(JSON.stringify({ type: 'message', text: pending }))
                 updateStatus('streaming')
                 didResend = true
               }
             } else {
-              // No pending message — server is the ground truth, but
-              // re-insert local session/tool bubbles so they survive reconnect.
-              setMessages(mergeSessionBubbles(serverMsgs))
+              setMessages(mergeWithHistory(serverMsgs))
             }
 
             setPendingQuestion(false)
@@ -785,101 +565,44 @@ const ChatPane = memo(function ChatPane({
           case 'session_start': {
             if (frame.live_gen !== liveGenRef.current) break
             updateStatus('streaming')
-            pendingTextRef.current = ''
-            // Create a fresh bubble for this session.  On reconnect, the
-            // history-merge step may have already re-inserted the previous
-            // (incomplete) session bubble from local cache.  Remove any such
-            // stale bubble (matched by sessionId) before appending the new one
-            // so we don't end up with two session bubbles for the same session.
-            // The session_end summary also carries the same sessionId, so it
-            // is removed here too — the live replay's session_end will re-add it.
-            const sid = uid()
-            currentSessionIdRef.current = sid
-            serverSessionIdRef.current  = frame.session_id
-            setMessages(prev => [
-              ...prev.filter(m => m.sessionId !== frame.session_id),
-              { id: sid, role: 'session' as const, text: '', streaming: true, label: frame.label, sessionId: frame.session_id },
-            ])
             break
           }
           case 'session_end': {
-            if (frame.live_gen !== liveGenRef.current) break
-            const finishedSessionId       = currentSessionIdRef.current
-            const finishedServerSessionId = serverSessionIdRef.current
-            currentSessionIdRef.current = null
-            serverSessionIdRef.current  = null
-            pendingTextRef.current = ''
-            setMessages(prev => {
-              const finalized = prev.map(m =>
-                (finishedSessionId ? m.id === finishedSessionId : m.streaming && m.role === 'session')
-                  ? { ...m, streaming: false }
-                  : m
-              )
-              // Only append the summary bubble if there is actually summary text.
-              // Sessions that only call tools with no final text response should
-              // not create an empty assistant bubble.
-              // Tag with the server sessionId so mergeSessionBubbles treats it
-              // as client-only on reconnect (session_end turns are never in the
-              // server's history frame) and session_start can filter it out
-              // before the live replay re-creates it.
-              return frame.summary
-                ? [...finalized, {
-                    id: uid(), role: 'assistant' as const, text: frame.summary,
-                    ...(finishedServerSessionId ? { sessionId: finishedServerSessionId } : {}),
-                  }]
-                : finalized
-            })
             break
           }
           case 'token': {
-            // Discard tokens from a stale generation (old connection replay).
             if (frame.live_gen !== liveGenRef.current) break
             updateStatus('streaming')
-            // Always accumulate in pendingTextRef. The session bubble shows only
-            // tool call lines (added via 'tool' events). The final response text
-            // is appended as a clean assistant bubble by session_end. Streaming
-            // tokens into the session bubble caused the response to appear twice.
-            pendingTextRef.current += frame.text
+            const aid = currentAssistantIdRef.current
+            if (aid) {
+              setMessages(prev => prev.map(m => m.id === aid ? { ...m, text: m.text + frame.text } : m))
+            } else {
+              const newId = uid()
+              currentAssistantIdRef.current = newId
+              setMessages(prev => [...prev, { id: newId, role: 'assistant' as const, text: frame.text, streaming: true }])
+            }
             break
           }
           case 'done': {
-            // Discard done from a stale generation.
             if (frame.live_gen !== liveGenRef.current) break
             const cost = frame.cost_usd
-            const pendingText = pendingTextRef.current
-            pendingTextRef.current = ''
-            currentSessionIdRef.current = null
-            serverSessionIdRef.current  = null
+            const aid = currentAssistantIdRef.current
+            currentAssistantIdRef.current = null
             setMessages(prev => {
-              // If session_end already ran, just attach cost to the last assistant message.
-              // If this is a simple answer (no session), append the accumulated text now.
-              const last = prev[prev.length - 1]
               const finalized = prev.map(m => m.streaming ? { ...m, streaming: false } : m)
-              if (pendingText) {
-                // Simple answer path — no session bubble was ever opened.
-                const summaryMsg: Message = { id: uid(), role: 'assistant' as const, text: pendingText, cost }
-                const updated = [...finalized, summaryMsg]
-                AsyncStorage.setItem(`msgs_${connKey}`, JSON.stringify(updated)).catch(() => {})
-                return updated
-              } else {
-                // Session path — session_end already appended the summary; attach cost to it.
-                const updated = finalized.map((m, i) =>
-                  i === finalized.length - 1 && m.role === 'assistant' ? { ...m, cost } : m
-                )
-                AsyncStorage.setItem(`msgs_${connKey}`, JSON.stringify(updated)).catch(() => {})
-                return updated
-              }
+              const updated = aid
+                ? finalized.map(m => m.id === aid ? { ...m, cost } : m)
+                : finalized
+              AsyncStorage.setItem(`msgs_${connKey}`, JSON.stringify(updated)).catch(() => {})
+              return updated
             })
             updateStatus('ready')
             setPendingQuestion(false)
             break
           }
           case 'question': {
-            // Discard questions from a stale generation.
             if (frame.live_gen !== liveGenRef.current) break
-            pendingTextRef.current = ''
-            currentSessionIdRef.current = null
-            serverSessionIdRef.current  = null
+            currentAssistantIdRef.current = null
             setMessages(prev => {
               const finalized = prev.map(m => m.streaming ? { ...m, streaming: false } : m)
               return [...finalized, { id: uid(), role: 'assistant' as const, text: frame.question, isQuestion: true }]
@@ -889,15 +612,12 @@ const ChatPane = memo(function ChatPane({
             break
           }
           case 'tool': {
-            // Discard tool frames from a stale generation.
             if (frame.live_gen !== liveGenRef.current) break
-            // session_start / session_end are housekeeping — don't clutter the log.
             if (frame.name === 'session_start' || frame.name === 'session_end') break
-            const toolLine = '\n\u25b8 ' + formatToolCall(frame.name, frame.input) + '\n'
-            const sid = currentSessionIdRef.current
-            if (sid) {
-              setMessages(prev => prev.map(m => m.id === sid ? { ...m, text: m.text + toolLine, streaming: true } : m))
-            }
+            setMessages(prev => [
+              ...prev,
+              { id: uid(), role: 'tool' as const, text: '\u25b8 ' + formatToolCall(frame.name, frame.input) },
+            ])
             break
           }
           case 'ack': {
@@ -910,11 +630,8 @@ const ChatPane = memo(function ChatPane({
             break
           }
           case 'error': {
-            // Discard errors from a stale generation.
             if (frame.live_gen !== liveGenRef.current) break
-            pendingTextRef.current = ''
-            currentSessionIdRef.current = null
-            serverSessionIdRef.current  = null
+            currentAssistantIdRef.current = null
             setMessages(prev => {
               const finalized = prev.map(m => m.streaming ? { ...m, streaming: false } : m)
               const updated = [...finalized, { id: uid(), role: 'assistant' as const, text: `\u2717 ${frame.message}` }]
@@ -992,9 +709,7 @@ const ChatPane = memo(function ChatPane({
     const ws = wsRef.current
     if (!ws || ws.readyState !== WebSocket.OPEN) return
 
-    // Reset session state for this new turn.
-    currentSessionIdRef.current = null
-    pendingTextRef.current = ''
+    currentAssistantIdRef.current = null
     setMessages(prev => [
       ...prev,
       { id: uid(), role: 'user' as const, text },
@@ -1023,8 +738,7 @@ const ChatPane = memo(function ChatPane({
     // streaming frames that arrive before the server's history response are
     // discarded, not appended to the now-empty conversation.
     liveGenRef.current = -1
-    currentSessionIdRef.current = null
-    pendingTextRef.current = ''
+    currentAssistantIdRef.current = null
     wsRef.current?.send(JSON.stringify({ type: 'clear' }))
     setMessages([])
     setPendingQuestion(false)
@@ -1685,7 +1399,7 @@ const s = StyleSheet.create({
   cursor:            { color: C.accent, fontSize: 14, fontFamily: ARIMO },
   questionMark:      { color: C.yellow, fontWeight: '700', fontSize: 15, marginBottom: 2, fontFamily: ARIMO },
   costLabel:         { fontSize: 11, color: C.textMuted, marginTop: 4, marginLeft: 2, fontFamily: ARIMO },
-  toolLine:          { fontSize: 13, color: C.textMuted, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', marginBottom: 4, marginLeft: 2 },
+  toolLine:          { fontSize: 12, color: C.textMuted, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', marginLeft: 2 },
 
   // Input bar
   completionList: { maxHeight: 180, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border },
@@ -1714,24 +1428,5 @@ const s = StyleSheet.create({
   containerMenuItemUrl:     { fontSize: 16, color: C.textMuted, fontFamily: ARIMO, marginTop: 1 },
   containerMenuItemStatus:  { fontSize: 16, color: C.textMuted, fontFamily: ARIMO },
 
-  // Agent session bubble (collapsed inline)
-  sessionWrap:        { paddingHorizontal: 14, marginBottom: 14 },
-  sessionBox:         { borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderRadius: 10, paddingHorizontal: 12, paddingTop: 8, paddingBottom: 10, backgroundColor: C.surface, overflow: 'hidden' },
-  sessionBoxHeader:   { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
-  sessionDot:         { width: 7, height: 7, borderRadius: 3.5 },
-  sessionBoxLabel:    { flex: 1, fontSize: 11, fontWeight: '600', color: C.textSecondary, textTransform: 'uppercase', letterSpacing: 0.4, fontFamily: ARIMO },
-  sessionExpandHint:  { fontSize: 13, color: C.textMuted, fontFamily: ARIMO },
-  sessionScanLine:    { height: 1, backgroundColor: C.accent, opacity: 0.35, marginBottom: 6, width: 60 },
-  sessionPreviewText: { fontSize: 11, color: C.textSecondary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', lineHeight: 16 },
-
-  // Agent session bottom-sheet (expanded)
-  sessionSheetBackdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.45)' },
-  sessionSheet:         { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: C.bg, borderTopLeftRadius: 16, borderTopRightRadius: 16, shadowColor: '#000', shadowOpacity: 0.22, shadowRadius: 24, shadowOffset: { width: 0, height: -6 }, elevation: 20 },
-  sessionSheetHandle:   { width: 36, height: 4, borderRadius: 2, backgroundColor: C.border, alignSelf: 'center', marginTop: 10, marginBottom: 2 },
-  sessionModalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
-  sessionModalTitle:  { fontSize: 15, fontWeight: '600', color: C.textPrimary, fontFamily: ARIMO },
-  sessionModalClose:  { fontSize: 16, color: C.accent, fontWeight: '500', fontFamily: ARIMO },
-  sessionModalScroll: { flex: 1 },
-  sessionModalText:   { fontSize: 14, color: C.textPrimary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', lineHeight: 22, padding: 16 },
 })
 
