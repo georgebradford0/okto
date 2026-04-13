@@ -396,6 +396,14 @@ pub fn tool_definitions() -> Vec<AnthropicTool> {
                 "head":  { "type": "string", "description": "Source branch to merge from (defaults to current branch)" },
                 "base":  { "type": "string", "description": "Target branch to merge into (defaults to main)" }
             }, "required": ["title"] }) },
+        AnthropicTool { name: "add_mcp_server".into(),
+            description: "Add a new MCP server at runtime. Writes the entry to /data/mcp.json and connects to the server immediately — no container restart required. Use this to extend available tools on the fly.".into(),
+            input_schema: serde_json::json!({ "type": "object", "properties": {
+                "name":    { "type": "string", "description": "Logical name for the server (must be unique)" },
+                "command": { "type": "string", "description": "Executable to run, e.g. \"npx\", \"python3\", \"/data/tools/server.py\"" },
+                "args":    { "type": "array",  "items": { "type": "string" }, "description": "Arguments to pass to the command" },
+                "env":     { "type": "object", "additionalProperties": { "type": "string" }, "description": "Extra environment variables for the server process. Values of the form \"${VAR}\" are expanded from the host environment." }
+            }, "required": ["name", "command"] }) },
     ];
     tools.push(AnthropicTool { name: "session_start".into(),
         description: "MUST be called before any other tool. Required whenever any tool use is needed — even a single tool call. Provide a short label describing what you are about to do. Do NOT call this for simple questions or responses that require no tools.".into(),
@@ -769,6 +777,42 @@ pub async fn execute_tool(
                 }
             } else {
                 format!("error: unsupported git host in remote URL: {remote_url}")
+            }
+        }
+        "add_mcp_server" => {
+            let name = match input["name"].as_str().filter(|s| !s.is_empty()) {
+                Some(n) => n.to_string(),
+                None    => return "error: 'name' is required".to_string(),
+            };
+            let command = match input["command"].as_str().filter(|s| !s.is_empty()) {
+                Some(c) => c.to_string(),
+                None    => return "error: 'command' is required".to_string(),
+            };
+            let args: Vec<String> = input["args"].as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                .unwrap_or_default();
+            let env: HashMap<String, String> = input["env"].as_object()
+                .map(|m| m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
+                    .collect())
+                .unwrap_or_default();
+
+            let mut configs = mcp::load_mcp_configs();
+            if configs.iter().any(|c| c.name == name) {
+                return format!("error: MCP server '{name}' already exists");
+            }
+            configs.push(mcp::McpServerConfig { name: name.clone(), command, args, env });
+
+            let path = data_dir().join("mcp.json");
+            match serde_json::to_string_pretty(&configs) {
+                Err(e)   => format!("error serializing mcp.json: {e}"),
+                Ok(json) => match fs::write(&path, json) {
+                    Err(e) => format!("error writing mcp.json: {e}"),
+                    Ok(()) => {
+                        let summary = mcp::reload_mcp_pool(mcp_pool).await;
+                        format!("MCP server '{name}' added and connected. {summary}")
+                    }
+                }
             }
         }
         _ => {

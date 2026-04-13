@@ -23,19 +23,19 @@
 /// Values of the form `"${VAR}"` are substituted from the host environment.
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{ChildStdin, ChildStdout},
-    sync::Mutex,
+    sync::{Mutex, RwLock},
 };
 
 use crate::AnthropicTool;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct McpServerConfig {
     /// Logical name — used in log messages; does not need to match the server's
     /// own `serverInfo.name`.
@@ -276,29 +276,30 @@ impl TapWarnEmpty for Vec<AnthropicTool> {
 // ── Pool ──────────────────────────────────────────────────────────────────────
 
 /// A thread-safe pool of connected MCP clients.
-/// Wrap each client in a `Mutex` so sequential tool calls within the agentic
-/// loop can lock-and-call without cloning the client.
-pub type McpPool = Vec<std::sync::Arc<Mutex<McpClient>>>;
+/// The outer `Arc<RwLock<…>>` allows the pool itself to be mutated at runtime
+/// (hot-reload) while multiple async tasks hold cheap clones of the `Arc`.
+pub type McpPool = std::sync::Arc<RwLock<Vec<std::sync::Arc<Mutex<McpClient>>>>>;
 
 /// Initialise all configured MCP servers.  Servers that fail to start are
-/// skipped (errors are printed to stderr).
+/// skipped (errors are printed to stderr).  Spawns a background task that
+/// watches `mcp.json` for changes and hot-reloads the pool automatically.
 pub async fn init_mcp_pool() -> McpPool {
     let configs = load_mcp_configs();
-    if configs.is_empty() { return vec![]; }
-
-    let mut pool = Vec::with_capacity(configs.len());
+    let mut inner = Vec::with_capacity(configs.len());
     for cfg in &configs {
         if let Some(client) = McpClient::connect(cfg).await {
-            pool.push(std::sync::Arc::new(Mutex::new(client)));
+            inner.push(std::sync::Arc::new(Mutex::new(client)));
         }
     }
+    let pool = std::sync::Arc::new(RwLock::new(inner));
+    start_mcp_watcher(pool.clone());
     pool
 }
 
 /// Collect all tools from every client in the pool.
 pub async fn pool_tool_definitions(pool: &McpPool) -> Vec<AnthropicTool> {
     let mut tools = Vec::new();
-    for client in pool {
+    for client in pool.read().await.iter() {
         tools.extend(client.lock().await.tools.clone());
     }
     tools
@@ -308,11 +309,99 @@ pub async fn pool_tool_definitions(pool: &McpPool) -> Vec<AnthropicTool> {
 /// Returns `None` if no client owns the tool (caller should fall through to
 /// built-ins or return "unknown tool").
 pub async fn pool_call_tool(pool: &McpPool, name: &str, input: Value) -> Option<String> {
-    for client in pool {
-        let mut guard = client.lock().await;
-        if guard.tools.iter().any(|t| t.name == name) {
-            return Some(guard.call_tool(name, input).await);
+    let guard = pool.read().await;
+    for client in guard.iter() {
+        let mut c = client.lock().await;
+        if c.tools.iter().any(|t| t.name == name) {
+            return Some(c.call_tool(name, input).await);
         }
     }
     None
+}
+
+/// Diff `mcp.json` against the live pool: connect newly-added servers, drop
+/// removed ones.  Returns a human-readable summary of changes.
+pub async fn reload_mcp_pool(pool: &McpPool) -> String {
+    let new_configs = load_mcp_configs();
+    let new_name_set: std::collections::HashSet<String> =
+        new_configs.iter().map(|c| c.name.clone()).collect();
+
+    // --- Phase 1: collect current names and remove stale entries (write lock) ---
+    let existing_names: Vec<String>;
+    let removed_names: Vec<String>;
+    {
+        let mut guard = pool.write().await;
+
+        // Collect names (requires async lock on each client).
+        let mut names = Vec::new();
+        for client in guard.iter() {
+            names.push(client.lock().await.name.clone());
+        }
+        existing_names = names.clone();
+
+        // Identify indices to remove (reverse order to preserve indexing).
+        let to_remove: Vec<usize> = names.iter().enumerate()
+            .filter(|(_, n)| !new_name_set.contains(*n))
+            .map(|(i, _)| i)
+            .collect();
+        removed_names = to_remove.iter().map(|i| names[*i].clone()).collect();
+        for i in to_remove.into_iter().rev() {
+            guard.remove(i);
+        }
+    } // write lock released
+
+    // --- Phase 2: connect new servers (outside lock — may involve I/O) ---
+    let existing_name_set: std::collections::HashSet<String> =
+        existing_names.into_iter().collect();
+    let mut added_names = Vec::new();
+    let mut to_add = Vec::new();
+    for cfg in &new_configs {
+        if !existing_name_set.contains(&cfg.name) {
+            if let Some(client) = McpClient::connect(cfg).await {
+                added_names.push(cfg.name.clone());
+                to_add.push(std::sync::Arc::new(Mutex::new(client)));
+            }
+        }
+    }
+
+    if !to_add.is_empty() {
+        pool.write().await.extend(to_add);
+    }
+
+    // --- Build summary ---
+    if added_names.is_empty() && removed_names.is_empty() {
+        return "no changes".to_string();
+    }
+    let mut parts = Vec::new();
+    if !added_names.is_empty() {
+        parts.push(format!("added: {}", added_names.join(", ")));
+    }
+    if !removed_names.is_empty() {
+        parts.push(format!("removed: {}", removed_names.join(", ")));
+    }
+    parts.join("; ")
+}
+
+/// Spawn a background task that polls `mcp.json`'s modification time every
+/// 2 seconds and calls `reload_mcp_pool` when it changes.
+fn start_mcp_watcher(pool: McpPool) {
+    let path = crate::data_dir().join("mcp.json");
+    tokio::spawn(async move {
+        let mut last_modified = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok();
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            let modified = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok();
+            if modified != last_modified {
+                last_modified = modified;
+                if modified.is_some() {
+                    let summary = reload_mcp_pool(&pool).await;
+                    println!("[mcp] hot-reload triggered by file change: {summary}");
+                }
+            }
+        }
+    });
 }
