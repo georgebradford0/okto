@@ -15,6 +15,7 @@ services:
       - NOISE_PORT=${MASTER_PORT:-9000}
       - CHILD_PORT_RANGE=${CHILD_PORT_RANGE:-9100-9199}
       - CLAUDULHU_DEV=${CLAUDULHU_DEV:-0}
+      - STARTUP_SCRIPT=${STARTUP_SCRIPT:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - claudulhu-rulyeh-data:/data
