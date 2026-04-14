@@ -16,6 +16,9 @@ services:
       - CHILD_PORT_RANGE=${CHILD_PORT_RANGE:-9100-9199}
       - CLAUDULHU_DEV=${CLAUDULHU_DEV:-0}
       - STARTUP_SCRIPT=${STARTUP_SCRIPT:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - claudulhu-rulyeh-data:/data
