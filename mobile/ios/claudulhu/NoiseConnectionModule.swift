@@ -371,8 +371,16 @@ final class NoiseConnection: NSObject {
         }
 
         proxyFdsLock.lock(); proxyFds.insert(localFd); proxyFds.insert(remoteFd); proxyFdsLock.unlock()
+        // Close fds only if disconnect() hasn't already done so. disconnect() removes fds from
+        // proxyFds before closing them, so if remove() returns nil the fd was already closed and
+        // we must not close it again — the OS may have recycled the number for the new server socket.
         defer {
-            proxyFdsLock.lock(); proxyFds.remove(localFd); proxyFds.remove(remoteFd); proxyFdsLock.unlock()
+            proxyFdsLock.lock()
+            let ownLocal  = proxyFds.remove(localFd)  != nil
+            let ownRemote = proxyFds.remove(remoteFd) != nil
+            proxyFdsLock.unlock()
+            if ownLocal  { Darwin.close(localFd) }
+            if ownRemote { Darwin.close(remoteFd) }
         }
         print("[noise-proxy] TCP connected to \(host):\(port); starting handshake…")
 
@@ -411,9 +419,6 @@ final class NoiseConnection: NSObject {
         } catch {
             print("[noise-proxy] handshake/proxy error: \(error)")
         }
-
-        Darwin.close(localFd)
-        Darwin.close(remoteFd)
     }
 }
 
