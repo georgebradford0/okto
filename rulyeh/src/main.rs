@@ -365,7 +365,7 @@ async fn fetch_pubkey_via_exec(container_name: &str) -> Option<String> {
 
 const RULYEH_SYSTEM_PROMPT: &str = "\
 You are the master control node for a fleet of claudulhu coding assistant containers.\n\n\
-Standard child image: ghcr.io/georgebradford0/claudulhu-rulyeh:latest\n\
+Standard child image: ghcr.io/georgebradford0/rulyeh:latest\n\
   with --entrypoint /usr/local/bin/docker-entrypoint-server.sh\n\n\
 Child containers require:\n\
   --network claudulhu-net  --label claudulhu.managed=1  --label claudulhu.git_url=<url>\n\

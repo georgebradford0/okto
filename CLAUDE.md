@@ -10,7 +10,7 @@ Do **not** create git worktrees unless explicitly asked to. Commit and push dire
 
 | Component | Image |
 |-----------|-------|
-| `rulyeh/` (parent) | `ghcr.io/georgebradford0/claudulhu-rulyeh` |
+| `rulyeh/` (parent) | `ghcr.io/georgebradford0/rulyeh` |
 | `server/` (child)  | `ghcr.io/georgebradford0/claudulhu-server` |
 
 Build and push from the **repo root** (replace `X.Y.Z` with the new version). Always use `buildx` with `--platform` so both `linux/amd64` and `linux/arm64` are included in the manifest:
@@ -22,8 +22,8 @@ docker buildx build \
   --platform linux/amd64,linux/arm64 \
   --push \
   -f rulyeh/Dockerfile \
-  -t ghcr.io/georgebradford0/claudulhu-rulyeh:X.Y.Z \
-  -t ghcr.io/georgebradford0/claudulhu-rulyeh:latest \
+  -t ghcr.io/georgebradford0/rulyeh:X.Y.Z \
+  -t ghcr.io/georgebradford0/rulyeh:latest \
   .
 ```
 
@@ -79,7 +79,7 @@ Server listens on port 9000 (`NOISE_PORT`). The Curve25519 keypair is persisted 
 - Accepts `start_container` commands from the client to restart stopped containers, then triggers an immediate re-poll
 - Runs its own agentic loop (via `core`) so the user can ask it to create/manage child containers
 
-Image: `ghcr.io/georgebradford0/claudulhu-rulyeh`
+Image: `ghcr.io/georgebradford0/rulyeh`
 
 #### rulyeh environment variables
 

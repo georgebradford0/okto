@@ -63,7 +63,7 @@ docker run -d \
   -p 9000:9000 \
   -e ANTHROPIC_API_KEY=... \
   -e PUBLIC_HOST=<your-server-ip> \
-  ghcr.io/georgebradford0/claudulhu-rulyeh:latest
+  ghcr.io/georgebradford0/rulyeh:latest
 ```
 
 Rulyeh creates the `claudulhu-net` network on startup. Child containers are created by asking rulyeh in chat (e.g. "start a server for github.com/owner/repo").
@@ -71,7 +71,7 @@ Rulyeh creates the `claudulhu-net` network on startup. Child containers are crea
 ## Docker image
 
 ```
-ghcr.io/georgebradford0/claudulhu-rulyeh:latest
+ghcr.io/georgebradford0/rulyeh:latest
 ```
 
 Build (from repo root):
@@ -80,8 +80,8 @@ docker buildx build \
   --builder multiplatform \
   --platform linux/amd64,linux/arm64 \
   --push \
-  -t ghcr.io/georgebradford0/claudulhu-rulyeh:X.Y.Z \
-  -t ghcr.io/georgebradford0/claudulhu-rulyeh:latest \
+  -t ghcr.io/georgebradford0/rulyeh:X.Y.Z \
+  -t ghcr.io/georgebradford0/rulyeh:latest \
   -f rulyeh/Dockerfile \
   .
 ```

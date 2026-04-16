@@ -1,4 +1,4 @@
 services:
   rulyeh:
     build: !reset null
-    image: ghcr.io/georgebradford0/claudulhu-rulyeh:latest
+    image: ghcr.io/georgebradford0/rulyeh:latest

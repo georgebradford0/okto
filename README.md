@@ -6,7 +6,7 @@ An agentic coding assistant. Rulyeh (the master node) manages a fleet of per-rep
 
 | Component | Image | Role |
 |---|---|---|
-| **Rulyeh** | `ghcr.io/georgebradford0/claudulhu-rulyeh` | Master node — manages child containers, exposes the Noise WebSocket interface |
+| **Rulyeh** | `ghcr.io/georgebradford0/rulyeh` | Master node — manages child containers, exposes the Noise WebSocket interface |
 | **claudulhu-server** | `ghcr.io/georgebradford0/claudulhu-server` | Child container — one per repo, handles the agentic coding loop |
 
 ## Docker
@@ -18,7 +18,7 @@ Rulyeh is the entry point. It needs access to the Docker socket to spin up and m
 Pull the image:
 
 ```sh
-docker pull ghcr.io/georgebradford0/claudulhu-rulyeh:latest
+docker pull ghcr.io/georgebradford0/rulyeh:latest
 ```
 
 Run it:
@@ -31,7 +31,7 @@ docker run -d \
   -v rulyeh-data:/data \
   -e ANTHROPIC_API_KEY=sk-ant-... \
   -e GH_TOKEN=ghp_... \
-  ghcr.io/georgebradford0/claudulhu-rulyeh:latest
+  ghcr.io/georgebradford0/rulyeh:latest
 ```
 
 On startup the container prints a QR code. Scan it with the mobile app to connect — the app establishes an encrypted Noise Protocol tunnel (port 9000) and routes all traffic through it.
@@ -146,7 +146,7 @@ docker run -d --name claudulhu-rulyeh --restart unless-stopped \
   -v rulyeh-data:/data \
   -e ANTHROPIC_API_KEY=sk-ant-... \
   -e GH_TOKEN=ghp_... \
-  ghcr.io/georgebradford0/claudulhu-rulyeh:latest' \
+  ghcr.io/georgebradford0/rulyeh:latest' \
   --count 1 \
   --region us-east-1
 ```
