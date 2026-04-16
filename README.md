@@ -25,7 +25,7 @@ Run it:
 
 ```sh
 docker run -d \
-  --name claudulhu-rulyeh \
+  --name rulyeh \
   -p 9000:9000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v rulyeh-data:/data \
@@ -140,7 +140,7 @@ aws ec2 run-instances \
 apt-get update -y
 apt-get install -y docker.io
 systemctl enable --now docker
-docker run -d --name claudulhu-rulyeh --restart unless-stopped \
+docker run -d --name rulyeh --restart unless-stopped \
   -p 9000-9199:9000-9199 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v rulyeh-data:/data \
@@ -157,7 +157,7 @@ Once the instance is running, get its public IP and check the logs for the QR co
 INSTANCE_ID=<instance-id>
 aws ec2 describe-instances --instance-ids $INSTANCE_ID \
   --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
-ssh -i ~/.ssh/<your-key-pair>.pem ubuntu@<public-ip> "docker logs claudulhu-rulyeh"
+ssh -i ~/.ssh/<your-key-pair>.pem ubuntu@<public-ip> "docker logs rulyeh"
 ```
 
 ### PR/MR creation

@@ -3,6 +3,7 @@ services:
   # Single entry point for the mobile app.  Manages child repo containers via
   # the Docker socket.  Scan its QR code once; child containers appear in-app.
   rulyeh:
+    container_name: rulyeh
     image: ghcr.io/georgebradford0/rulyeh:latest
     build:
       context: .
