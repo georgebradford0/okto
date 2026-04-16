@@ -618,11 +618,9 @@ class ErrorBoundary extends React.Component<
 // ── AppInner ──────────────────────────────────────────────────────────────────
 
 function AppInner() {
-  const [conn,             setConn]             = useState<NoiseConnectionInfo | null>(null)
-  const [tunnelPort,       setTunnelPort]       = useState<number | null>(null)
-  const [tunnelError,      setTunnelError]      = useState<string | null>(null)
-  const [childTunnelPort,  setChildTunnelPort]  = useState<number | null>(null)
-  const [childTunnelError, setChildTunnelError] = useState<string | null>(null)
+  const [conn,        setConn]        = useState<NoiseConnectionInfo | null>(null)
+  const [tunnelPort,  setTunnelPort]  = useState<number | null>(null)
+  const [tunnelError, setTunnelError] = useState<string | null>(null)
   const [scanning,    setScanning]    = useState(false)
   const [chatStatus,  setChatStatus]  = useState<ConnStatus>('connecting')
   const [containers,          setContainers]          = useState<ContainerInfo[]>([])
@@ -631,10 +629,12 @@ function AppInner() {
   const [startingContainerId, setStartingContainerId] = useState<string | null>(null)
   const [startingError,       setStartingError]       = useState<string | null>(null)
   const startingContainerIdRef = useRef<string | null>(null)
-  const [noiseKey,    setNoiseKey]    = useState(0)
+  const [reconnectKey, setReconnectKey] = useState(0)
   const clearChatRef = useRef<() => void>(() => {})
 
-  const masterBaseUrl = tunnelPort ? `http://127.0.0.1:${tunnelPort}` : null
+  // masterBaseUrl is only valid when not viewing a child — fetching containers
+  // and sending master messages must always go through the master tunnel.
+  const masterBaseUrl = !activeChild && tunnelPort ? `http://127.0.0.1:${tunnelPort}` : null
 
   // Load saved master connection on mount and auto-connect.
   useEffect(() => {
@@ -653,64 +653,43 @@ function AppInner() {
     return () => { cancelled = true }
   }, [])
 
-  // Establish Noise tunnel when conn changes or after a child modal closes.
+  // Single connection effect — owns the entire Noise tunnel lifecycle.
+  // Connects to whichever target is currently active: child if one is open,
+  // master otherwise. On failure from a child, clears activeChild so the
+  // effect re-runs immediately and falls back to the master connection.
   useEffect(() => {
     setTunnelPort(null)
     setTunnelError(null)
-    if (!conn) return
-    if (!NoiseConnection) {
-      setTunnelError('Native Noise module unavailable')
-      return
-    }
-    let connected = false
-    const timer = setTimeout(() => {
-      NoiseConnection!.connect(conn.host, conn.port, conn.pk)
-        .then(port => { connected = true; setTunnelPort(port) })
-        .catch(e => setTunnelError(e?.message ?? String(e)))
-    }, 50)
-    return () => {
-      clearTimeout(timer)
-      if (connected) NoiseConnection?.disconnect()
-    }
-  }, [conn, noiseKey])
 
-  // Refs so the single AppState listener always sees current values without re-registering.
-  const activeChildRef = useRef<ContainerInfo | null>(null)
-  useEffect(() => { activeChildRef.current = activeChild }, [activeChild])
-  const connRef = useRef<NoiseConnectionInfo | null>(null)
-  useEffect(() => { connRef.current = conn }, [conn])
+    const target = activeChild
+      ? { host: activeChild.host, port: activeChild.port, pk: activeChild.pubkey }
+      : conn
+      ? { host: conn.host,        port: conn.port,        pk: conn.pk }
+      : null
 
-  // Connect to child container when activeChild is set; disconnect on close.
-  useEffect(() => {
-    if (!activeChild) return
-    setChildTunnelPort(null)
-    setChildTunnelError(null)
-    if (!NoiseConnection) { setChildTunnelError('Native Noise module unavailable'); return }
+    if (!target) return
+    if (!NoiseConnection) { setTunnelError('Native Noise module unavailable'); return }
+
+    let live = true
     NoiseConnection.disconnect()
-    let connected = false
-    NoiseConnection.connect(activeChild.host, activeChild.port, activeChild.pubkey)
-      .then(port => { connected = true; setChildTunnelPort(port) })
-      .catch(e => setChildTunnelError(e?.message ?? String(e)))
-    return () => { if (connected) NoiseConnection?.disconnect() }
-  }, [activeChild])
+    NoiseConnection.connect(target.host, target.port, target.pk)
+      .then(port => { if (live) setTunnelPort(port) })
+      .catch(e => {
+        if (!live) return
+        if (activeChild) {
+          setActiveChild(null) // fall back to master; re-triggers this effect
+        } else {
+          setTunnelError(e?.message ?? String(e))
+        }
+      })
 
-  // Single AppState listener — reconnects whichever tunnel was live when backgrounded.
+    return () => { live = false; NoiseConnection?.disconnect() }
+  }, [conn, activeChild, reconnectKey])
+
+  // Single AppState listener — bumps reconnectKey to re-run the connection effect.
   useEffect(() => {
-    const sub = AppState.addEventListener('change', nextState => {
-      if (nextState !== 'active') return
-      const child = activeChildRef.current
-      const c     = connRef.current
-      if (child) {
-        NoiseConnection?.disconnect()
-        NoiseConnection?.connect(child.host, child.port, child.pubkey)
-          .then(port => setChildTunnelPort(port))
-          .catch(e => setChildTunnelError(e?.message ?? String(e)))
-      } else if (c) {
-        NoiseConnection?.disconnect()
-        NoiseConnection?.connect(c.host, c.port, c.pk)
-          .then(port => setTunnelPort(port))
-          .catch(e => setTunnelError(e?.message ?? String(e)))
-      }
+    const sub = AppState.addEventListener('change', state => {
+      if (state === 'active') setReconnectKey(k => k + 1)
     })
     return () => sub.remove()
   }, [])
@@ -843,12 +822,9 @@ function AppInner() {
     return (
       <ChildChatScreen
         child={activeChild}
-        tunnelPort={childTunnelPort}
-        tunnelError={childTunnelError}
-        onClose={() => {
-          setActiveChild(null)
-          setNoiseKey(k => k + 1)
-        }}
+        tunnelPort={tunnelPort}
+        tunnelError={tunnelError}
+        onClose={() => setActiveChild(null)}
       />
     )
   }
