@@ -368,6 +368,7 @@ You are the master control node for a fleet of claudulhu coding assistant contai
 Standard child image: ghcr.io/georgebradford0/rulyeh:latest\n\
   with --entrypoint /usr/local/bin/docker-entrypoint-server.sh\n\n\
 Child containers require:\n\
+  --name <repo-name>  (derive from the repo, no prefix)\n\
   --network claudulhu-net  --label claudulhu.managed=1  --label claudulhu.git_url=<url>\n\
   NOISE_PORT set to a free port in 9100-9199\n\
   Named volumes for /data and /workspace\n\

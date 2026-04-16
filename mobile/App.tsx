@@ -211,7 +211,7 @@ function parseAtQuery(text: string): { atIndex: number; dirPart: string; filePar
 // ── Container display name ─────────────────────────────────────────────────────
 
 function containerDisplayName(name: string): string {
-  return name.replace(/^claudulhu-/, '')
+  return name
 }
 
 // ── MessageBubble ─────────────────────────────────────────────────────────────
