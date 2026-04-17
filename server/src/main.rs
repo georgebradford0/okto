@@ -1,7 +1,10 @@
 use std::{
     fs,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use axum::{
@@ -148,7 +151,7 @@ async fn message_handler(
 
     let messages = state.messages.lock().unwrap().clone();
 
-    match send_message(messages, &state.system, &model, &api_key, &state.cwd, None).await {
+    match send_message(messages, &state.system, &model, &api_key, &state.cwd, None, Arc::new(AtomicBool::new(false))).await {
         Ok((text, cost_usd, updated)) => {
             let mut msgs = state.messages.lock().unwrap();
             *msgs = updated;
@@ -218,14 +221,34 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
     let (event_tx, mut event_rx) = mpsc::channel::<ChatEvent>(256);
     let done_tx = event_tx.clone();
 
+    let aborted             = Arc::new(AtomicBool::new(false));
+    let aborted_for_listener = aborted.clone();
+
     tokio::spawn(async move {
-        match send_message(messages, &system, &model, &api_key, &cwd, Some(event_tx)).await {
+        while let Some(Ok(WsMessage::Text(t))) = ws_rx.next().await {
+            if serde_json::from_str::<serde_json::Value>(&t)
+                .ok()
+                .and_then(|v| v["type"].as_str().map(str::to_string))
+                .as_deref() == Some("interrupt")
+            {
+                aborted_for_listener.store(true, Ordering::Relaxed);
+                break;
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        match send_message(messages, &system, &model, &api_key, &cwd, Some(event_tx), aborted.clone()).await {
             Ok((_, cost_usd, updated)) => {
                 *msgs_arc.lock().unwrap() = updated.clone();
                 save_messages(&updated);
-                done_tx.send(ChatEvent::Result {
-                    cost_usd, turns: 0, session_id: String::new(), result: None,
-                }).await.ok();
+                if aborted.load(Ordering::Relaxed) {
+                    done_tx.send(ChatEvent::Interrupted { cost_usd }).await.ok();
+                } else {
+                    done_tx.send(ChatEvent::Result {
+                        cost_usd, turns: 0, session_id: String::new(), result: None,
+                    }).await.ok();
+                }
             }
             Err(e) => {
                 msgs_arc.lock().unwrap().pop();
@@ -243,6 +266,8 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
                 Some(serde_json::json!({"type":"tool_use","tool":tool,"input":input})),
             ChatEvent::Result { cost_usd, .. } =>
                 Some(serde_json::json!({"type":"done","cost_usd":cost_usd})),
+            ChatEvent::Interrupted { cost_usd } =>
+                Some(serde_json::json!({"type":"interrupted","cost_usd":cost_usd})),
             ChatEvent::Error { message } =>
                 Some(serde_json::json!({"type":"error","message":message})),
             _ => None,

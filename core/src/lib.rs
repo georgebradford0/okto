@@ -970,6 +970,7 @@ pub async fn call_turn(
 /// Returns (final_text, total_cost_usd, updated_messages).
 /// MCP is disabled; only built-in tools are available.
 /// If `event_tx` is Some, Text and ToolUse events are forwarded to the caller.
+/// Setting `aborted` to true between turns causes an early return.
 pub async fn send_message(
     mut messages: Vec<ApiMessage>,
     system:       &str,
@@ -977,8 +978,10 @@ pub async fn send_message(
     api_key:      &str,
     cwd:          &str,
     event_tx:     Option<mpsc::Sender<ChatEvent>>,
+    aborted:      Arc<AtomicBool>,
 ) -> Result<(String, f64, Vec<ApiMessage>), String> {
     let mut total_cost = 0.0f64;
+    let mut last_text  = String::new();
 
     let (dummy_tx, _rx) = mpsc::channel::<ChatEvent>(1);
     let tx = event_tx.unwrap_or(dummy_tx);
@@ -1004,6 +1007,10 @@ pub async fn send_message(
     };
 
     loop {
+        if aborted.load(Ordering::Relaxed) {
+            watcher.abort();
+            return Ok((last_text, total_cost, messages));
+        }
         let compacted = compact_history(&messages, 20);
         let mut messages_json: Vec<serde_json::Value> = compacted.iter()
             .map(|m| serde_json::to_value(m).unwrap())
@@ -1094,6 +1101,8 @@ pub async fn send_message(
             watcher.abort();
             return Ok((text_buf, total_cost, messages));
         }
+
+        last_text = text_buf;
 
         // Execute tools and collect results.
         let mut results = Vec::new();

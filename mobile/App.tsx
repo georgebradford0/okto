@@ -329,6 +329,7 @@ const ChatPane = memo(function ChatPane({
   const [inputAreaH,    setInputAreaH]    = useState(0)
 
   const sendMessageRef    = useRef<() => void>(() => {})
+  const wsRef             = useRef<WebSocket | null>(null)
   const listRef           = useRef<FlatList<Message>>(null)
   const isAtBottomRef     = useRef(true)
   const contentHeightRef  = useRef(0)
@@ -448,9 +449,11 @@ const ChatPane = memo(function ChatPane({
           : ''
         const toolText = firstVal ? `${event.tool}(${firstVal})` : (event.tool ?? '')
         setMessages(prev => [...prev, { id: uid(), role: 'tool' as const, text: toolText }])
-      } else if (event.type === 'done') {
+      } else if (event.type === 'done' || event.type === 'interrupted') {
+        wsRef.current = null
         loadHistory(event.cost_usd)
       } else if (event.type === 'error') {
+        wsRef.current = null
         setMessages(prev => [...prev, { id: uid(), role: 'assistant' as const, text: `\u2717 ${event.message ?? 'error'}` }])
         updateStatus('ready')
       }
@@ -458,9 +461,11 @@ const ChatPane = memo(function ChatPane({
 
     const wsUrl = baseUrl.replace(/^http/, 'ws') + '/stream'
     const ws = new WebSocket(wsUrl)
+    wsRef.current = ws
     ws.onopen = () => { ws.send(JSON.stringify({ text })) }
     ws.onmessage = (e) => { handleEvent(e.data) }
     ws.onerror = () => {
+      wsRef.current = null
       setMessages(prev => [...prev, { id: uid(), role: 'assistant' as const, text: '\u2717 network error' }])
       updateStatus('error')
     }
@@ -529,21 +534,35 @@ const ChatPane = memo(function ChatPane({
               ))}
             </ScrollView>
           )}
-          <TextInput
-            style={s.input}
-            value={input}
-            onChangeText={text => {
-              if (text.includes('\n')) { sendMessageRef.current(); return }
-              setInput(text)
-            }}
-            onSubmitEditing={() => sendMessageRef.current()}
-            placeholder="message…"
-            placeholderTextColor={C.textMuted}
-            multiline
-            returnKeyType="send"
-            blurOnSubmit={false}
-            editable={status !== 'streaming'}
-          />
+          {isPending ? (
+            <TouchableOpacity
+              style={s.inputStopBtn}
+              onPress={() => {
+                const ws = wsRef.current
+                if (ws) {
+                  ws.send(JSON.stringify({ type: 'interrupt' }))
+                }
+              }}
+              activeOpacity={0.7}
+            >
+              <Text style={s.stopBtnText}>■  stop</Text>
+            </TouchableOpacity>
+          ) : (
+            <TextInput
+              style={s.input}
+              value={input}
+              onChangeText={text => {
+                if (text.includes('\n')) { sendMessageRef.current(); return }
+                setInput(text)
+              }}
+              onSubmitEditing={() => sendMessageRef.current()}
+              placeholder="message…"
+              placeholderTextColor={C.textMuted}
+              multiline
+              returnKeyType="send"
+              blurOnSubmit={false}
+            />
+          )}
         </View>
 
         {showScrollBtn && (
