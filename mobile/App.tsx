@@ -714,12 +714,9 @@ function AppInner() {
     let cancelled = false
     const load = async () => {
       let saved: NoiseConnectionInfo | null = null
-      if (__DEV__) {
-        saved = DEV_CONN
-      } else {
-        const json = await AsyncStorage.getItem('masterConnection').catch(() => null)
-        if (json) { try { saved = JSON.parse(json) } catch {} }
-      }
+      const json = await AsyncStorage.getItem('masterConnection').catch(() => null)
+      if (json) { try { saved = JSON.parse(json) } catch {} }
+      if (!saved && __DEV__) { saved = DEV_CONN }
       if (!cancelled && saved) setConn(saved)
     }
     load()
