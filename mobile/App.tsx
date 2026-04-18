@@ -885,6 +885,7 @@ function AppInner() {
             startingContainerIdRef.current = null
             setStartingContainerId(null)
             setStartingError(null)
+            setTunnelPort(null)
             setActiveChild(started)
           }
         }
@@ -1068,6 +1069,7 @@ function AppInner() {
                     onPress={() => {
                       setShowSettingsMenu(false)
                       if (c.status === 'running') {
+                        setTunnelPort(null)
                         setActiveChild(c)
                       } else {
                         startContainer(c.id)
