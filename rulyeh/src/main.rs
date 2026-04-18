@@ -525,6 +525,7 @@ Child containers require:\n\
   Named volumes for /data and /workspace\n\
   Env vars: ANTHROPIC_API_KEY, GIT_URL, GH_TOKEN (required), PUBLIC_HOST\n\n\
 GH_TOKEN is set in this environment and the gh CLI is available — use it for all GitHub operations.\n\n\
+You have a message_child(container_name, text) tool to send a message to a specific child container's agent and receive its response. Use it to delegate coding tasks, query a child's state, or coordinate work across containers.\n\n\
 Be concise and direct.";
 
 // ── Child messaging tools ──────────────────────────────────────────────────────

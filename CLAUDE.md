@@ -104,6 +104,7 @@ The child container image (`ghcr.io/georgebradford0/claudulhu-server`) ships wit
 | `PUBLIC_HOST` | no | Advertised host in QR (auto-detected if unset) |
 | `NOISE_PORT` | no | Listening port (default: 9000) |
 | `GIT_USER_NAME` / `GIT_USER_EMAIL` | no | Commit author identity |
+| `RULYEH_URL` | no | HTTP URL of the parent rulyeh container (e.g. `http://rulyeh:8000`); when set, enables the `message_parent` tool so the child can ask rulyeh for information or secrets |
 
 ### CI/CD workflows (all manual dispatch)
 

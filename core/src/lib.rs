@@ -1301,6 +1301,14 @@ pub fn build_system_prompt(repo_path: &str, branch: Option<&str>, worktree_path:
         \n- Never use filler phrases like \"I'll now...\", \"Let me...\", \"I've completed...\", \"Sure!\" etc.\
         \n- Never pad responses.";
 
+    let parent_tool_note = if std::env::var("RULYEH_URL").is_ok() {
+        "\n\nYou have a message_parent(text) tool available. Use it to send a message to the parent \
+         (rulyeh) container's agent and receive a response — for example to request secrets, \
+         configuration, or to hand off a task."
+    } else {
+        ""
+    };
+
     let claude_md = std::fs::read_to_string(format!("{}/CLAUDE.md", repo_path))
         .map(|s| format!("\n\n# Project instructions (CLAUDE.md)\n{}", s))
         .unwrap_or_default();
@@ -1310,12 +1318,12 @@ pub fn build_system_prompt(repo_path: &str, branch: Option<&str>, worktree_path:
             "You are an AI coding assistant working on branch '{branch}' in the git worktree at {wt}.\
              This is your working directory — use it for all file operations and git commands.\
              Do not cd to any other directory.\
-             Any path preceded by '@' (e.g. @src/main.rs) is a reference to a file path in the git repository.{claude_md}{tool_guidance}"
+             Any path preceded by '@' (e.g. @src/main.rs) is a reference to a file path in the git repository.{claude_md}{tool_guidance}{parent_tool_note}"
         ),
         _ => format!(
             "You are an AI assistant helping manage the git repository at {repo_path}.\
              You can inspect code, answer questions, and help coordinate work across branches.\
-             Any path preceded by '@' (e.g. @src/main.rs) is a reference to a file path in the git repository.{claude_md}{tool_guidance}"
+             Any path preceded by '@' (e.g. @src/main.rs) is a reference to a file path in the git repository.{claude_md}{tool_guidance}{parent_tool_note}"
         ),
     }
 }
