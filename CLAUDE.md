@@ -6,6 +6,8 @@
 
 Do **not** create git worktrees unless explicitly asked to. Commit and push directly on the current branch.
 
+Do **not** commit debug/diagnostic logging (`println!`, `console.log`, etc. added purely for investigation). Suggest the user add logs locally instead.
+
 ## Docker images
 
 | Component | Image |
