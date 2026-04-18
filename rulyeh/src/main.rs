@@ -514,7 +514,8 @@ async fn fetch_pubkey_via_exec(container_name: &str) -> Option<String> {
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 
-const RULYEH_SYSTEM_PROMPT: &str = "\
+fn build_system_prompt(rulyeh_url: &str) -> String {
+    format!("\
 You are the master control node for a fleet of claudulhu coding assistant containers.\n\n\
 Standard child image: ghcr.io/georgebradford0/rulyeh:latest\n\
   with --entrypoint /usr/local/bin/docker-entrypoint-server.sh\n\n\
@@ -523,10 +524,12 @@ Child containers require:\n\
   --network claudulhu-net  --label claudulhu.managed=1  --label claudulhu.git_url=<url>\n\
   NOISE_PORT set to a free port in 9100-9199\n\
   Named volumes for /data and /workspace\n\
-  Env vars: ANTHROPIC_API_KEY, GIT_URL, GH_TOKEN (required), PUBLIC_HOST\n\n\
+  Env vars: ANTHROPIC_API_KEY, GIT_URL, GH_TOKEN (required), PUBLIC_HOST, RULYEH_URL={rulyeh_url}\n\n\
+Always pass RULYEH_URL={rulyeh_url} to every child container so it can message you back.\n\n\
 GH_TOKEN is set in this environment and the gh CLI is available — use it for all GitHub operations.\n\n\
 You have a message_child(container_name, text) tool to send a message to a specific child container's agent and receive its response. Use it to delegate coding tasks, query a child's state, or coordinate work across containers.\n\n\
-Be concise and direct.";
+Be concise and direct.")
+}
 
 // ── Child messaging tools ──────────────────────────────────────────────────────
 
@@ -628,6 +631,13 @@ async fn main() {
     let noise_port: u16 = std::env::var("NOISE_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(9000);
     let http_port:  u16 = 8000;
     let public_host = std::env::var("PUBLIC_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    // RULYEH_NAME lets operators set the intra-Docker DNS name of this container.
+    // Defaults to the HOSTNAME env var (set by Docker to the container name/ID),
+    // then falls back to "rulyeh".
+    let rulyeh_name = std::env::var("RULYEH_NAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "rulyeh".to_string());
+    let rulyeh_url = format!("http://{}:{}", rulyeh_name, http_port);
 
     println!("[claudulhu-rulyeh] Noise public key: {pubkey_b32}");
 
@@ -643,7 +653,7 @@ async fn main() {
     let state = Arc::new(AppState {
         messages:      Arc::new(Mutex::new(messages)),
         last_cost_usd: Mutex::new(None),
-        system:        RULYEH_SYSTEM_PROMPT.to_string(),
+        system:        build_system_prompt(&rulyeh_url),
         containers:    Arc::new(Mutex::new(Vec::new())),
         poll_trigger:  poll_trigger.clone(),
         pubkey_b32,
