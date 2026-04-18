@@ -218,7 +218,7 @@ async fn message_handler(
         .cloned()
         .collect();
 
-    info!("[rulyeh/message_handler] calling send_message with {} messages", messages.len());
+    info!("[rulyeh/message_handler] DEBUG conversation ({} messages): {}", messages.len(), serde_json::to_string(&messages).unwrap_or_default());
     match send_message(messages, &state.system, &model, &api_key, "/", None, Arc::new(AtomicBool::new(false)), &rulyeh_extra_tools(), rulyeh_extra_executor()).await {
         Ok((text, cost_usd, updated)) => {
             let elapsed = start.elapsed().as_millis();
@@ -314,6 +314,7 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
         }
     });
 
+    info!("[rulyeh/handle_stream] DEBUG conversation ({} messages): {}", messages.len(), serde_json::to_string(&messages).unwrap_or_default());
     tokio::spawn(async move {
         match send_message(messages, &system, &model, &api_key, "/", Some(event_tx), aborted.clone(), &rulyeh_extra_tools(), rulyeh_extra_executor()).await {
             Ok((_, cost_usd, mut updated)) => {
@@ -580,7 +581,13 @@ fn rulyeh_extra_executor() -> Option<Arc<dyn Fn(String, serde_json::Value)
     -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
     + Send + Sync>>
 {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .pool_idle_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("failed to build message_child HTTP client");
     Some(Arc::new(move |name: String, input: serde_json::Value| {
+        let client = client.clone();
         Box::pin(async move {
             if name != "message_child" {
                 return format!("unknown tool: {name}");
@@ -597,7 +604,6 @@ fn rulyeh_extra_executor() -> Option<Arc<dyn Fn(String, serde_json::Value)
             let url = format!("http://{}:8000/message", container_name);
             info!("[rulyeh/message_child] → POST {url} container={container_name} ({} chars): {preview}", text.len());
             let start = Instant::now();
-            let client = reqwest::Client::new();
             match client
                 .post(&url)
                 .json(&serde_json::json!({ "text": text }))

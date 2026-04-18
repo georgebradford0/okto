@@ -123,9 +123,9 @@ const statusColor = (st: ConnStatus): string => {
 
 function renderInlineSegment(text: string, baseStyle: object, key: number) {
   const parts = text.split(/\*\*(.+?)\*\*/gs)
-  if (parts.length === 1) return <Text key={key} style={baseStyle}>{text}</Text>
+  if (parts.length === 1) return <Text key={key} style={baseStyle} selectable>{text}</Text>
   return (
-    <Text key={key} style={baseStyle}>
+    <Text key={key} style={baseStyle} selectable>
       {parts.map((part, i) =>
         i % 2 === 1
           ? <Text key={i} style={{ fontWeight: '900' }}>{part}</Text>
@@ -144,7 +144,7 @@ function renderText(text: string, baseStyle: object) {
       const inner = block.slice(3, -3).replace(/^\n/, '')
       elements.push(
         <View key={bi} style={s.codeBlock}>
-          <Text style={s.codeBlockText}>{inner}</Text>
+          <Text style={s.codeBlockText} selectable>{inner}</Text>
         </View>
       )
     } else {
@@ -153,7 +153,7 @@ function renderText(text: string, baseStyle: object) {
         elements.push(renderInlineSegment(block, baseStyle, bi))
       } else {
         elements.push(
-          <Text key={bi} style={baseStyle}>
+          <Text key={bi} style={baseStyle} selectable>
             {inlineParts.map((part, i) =>
               i % 2 === 1
                 ? <Text key={i} style={s.inlineCode}>{part}</Text>
@@ -237,7 +237,7 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: Messag
   if (message.role === 'tool') {
     return (
       <View style={[s.messageWrap, { marginBottom: 3 }]}>
-        <Text style={s.toolLine} numberOfLines={1} ellipsizeMode="tail">{message.text}</Text>
+        <Text style={s.toolLine} selectable>{message.text}</Text>
       </View>
     )
   }

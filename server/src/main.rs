@@ -448,8 +448,14 @@ fn make_extra_executor() -> Option<Arc<dyn Fn(String, serde_json::Value)
         Ok(u) => u,
         Err(_) => return None,
     };
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .pool_idle_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("failed to build message_parent HTTP client");
     Some(Arc::new(move |name: String, input: serde_json::Value| {
         let rulyeh_url = rulyeh_url.clone();
+        let client = client.clone();
         Box::pin(async move {
             if name != "message_parent" {
                 return format!("unknown tool: {name}");
@@ -462,7 +468,6 @@ fn make_extra_executor() -> Option<Arc<dyn Fn(String, serde_json::Value)
             let url = format!("{}/message", rulyeh_url.trim_end_matches('/'));
             info!("[server/message_parent] → POST {url} ({} chars): {preview}", text.len());
             let start = Instant::now();
-            let client = reqwest::Client::new();
             match client
                 .post(&url)
                 .json(&serde_json::json!({ "text": text }))
