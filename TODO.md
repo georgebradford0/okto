@@ -1,5 +1,6 @@
 # TODO
 
+- [ ] Setup a more robust system for managing children containers
 - [ ] Change core to give Claude root access to docker container
 - [ ] Make README.md professional for sharing with others
 - [ ] Setup push notifications on mobile to let user know when something is finished.

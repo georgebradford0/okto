@@ -432,7 +432,7 @@ fn make_extra_executor() -> Option<Arc<dyn Fn(String, serde_json::Value)
         Err(_) => return None,
     };
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(300))
         .pool_idle_timeout(std::time::Duration::from_secs(30))
         .build()
         .expect("failed to build message_parent HTTP client");

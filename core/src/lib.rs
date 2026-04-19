@@ -8,6 +8,7 @@ use std::{
         Arc, Mutex, OnceLock,
     },
 };
+use tracing::info;
 
 pub mod mcp;
 pub use mcp::{McpPool, init_mcp_pool};
@@ -1003,7 +1004,7 @@ pub async fn send_message(
     let mut total_cost = 0.0f64;
     let mut last_text  = String::new();
 
-    let (dummy_tx, _rx) = mpsc::channel::<ChatEvent>(1);
+    let (dummy_tx, _) = mpsc::channel::<ChatEvent>(1);
     let tx = event_tx.unwrap_or(dummy_tx);
     let pending_question = std::sync::Arc::new(tokio::sync::Mutex::new(
         None::<oneshot::Sender<String>>,
@@ -1026,11 +1027,14 @@ pub async fn send_message(
         t
     };
 
+    let mut turn = 0usize;
     loop {
+        turn += 1;
         if aborted.load(Ordering::Relaxed) {
             watcher.abort();
             return Ok((last_text, total_cost, messages));
         }
+        info!("[send_message] turn={turn} messages={}", messages.len());
         let compacted = compact_history(&messages, 20);
         let mut messages_json: Vec<serde_json::Value> = compacted.iter()
             .map(|m| serde_json::to_value(m).unwrap())
@@ -1079,6 +1083,13 @@ pub async fn send_message(
 
         let stop_reason = json["stop_reason"].as_str().unwrap_or("end_turn").to_string();
         let usage = &json["usage"];
+        info!(
+            "[send_message] turn={turn} stop_reason={stop_reason} in={} out={} cache_create={} cache_read={}",
+            usage["input_tokens"].as_u64().unwrap_or(0),
+            usage["output_tokens"].as_u64().unwrap_or(0),
+            usage["cache_creation_input_tokens"].as_u64().unwrap_or(0),
+            usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
+        );
         total_cost += cost_usd(
             model,
             usage["input_tokens"].as_u64().unwrap_or(0),
@@ -1097,6 +1108,8 @@ pub async fn send_message(
                     "text" => {
                         let t = block["text"].as_str().unwrap_or("").to_string();
                         if !t.is_empty() {
+                            let preview = t.chars().take(120).collect::<String>();
+                            info!("[send_message] turn={turn} text ({} chars): {preview}", t.len());
                             tx.send(ChatEvent::Text { text: t.clone() }).await.ok();
                             text_buf.push_str(&t);
                             blocks.push(ContentBlock::Text { text: t });
@@ -1106,6 +1119,7 @@ pub async fn send_message(
                         let id    = block["id"].as_str().unwrap_or("").to_string();
                         let name  = block["name"].as_str().unwrap_or("").to_string();
                         let input = block["input"].clone();
+                        info!("[send_message] turn={turn} tool_use name={name} input={input}");
                         tx.send(ChatEvent::ToolUse { tool: name.clone(), input: input.clone() }).await.ok();
                         tool_uses.push((id.clone(), name.clone(), input.clone()));
                         blocks.push(ContentBlock::ToolUse { id, name, input });
@@ -1131,6 +1145,8 @@ pub async fn send_message(
                 execute_tool(&name, &input, cwd, &tx, pending_question.clone(), extra_executor.as_deref()).await,
                 tool_output_limit(&name),
             );
+            let result_preview = result.chars().take(200).collect::<String>();
+            info!("[send_message] turn={turn} tool_result name={name} ({} chars): {result_preview}", result.len());
             results.push(ContentBlock::ToolResult {
                 tool_use_id: id,
                 content:     vec![serde_json::json!({"type":"text","text":result})],
