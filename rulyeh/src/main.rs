@@ -697,8 +697,14 @@ fn rulyeh_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serd
 
                     info!("[rulyeh/create_container] creating {container_name} port={noise_port} git={git_url}");
 
+                    let pull = if std::env::var("CLAUDULHU_DEV").as_deref() == Ok("1") {
+                        "missing"
+                    } else {
+                        "always"
+                    };
+
                     let mut cmd = tokio::process::Command::new("docker");
-                    cmd.args(["run", "-d", "--pull", "always"]);
+                    cmd.args(["run", "-d", "--pull", pull]);
                     cmd.args(["--name", &container_name]);
                     cmd.args(["--network", "claudulhu-net"]);
                     cmd.args(["--label", "claudulhu.managed=1"]);
