@@ -568,12 +568,61 @@ async fn main() {
         .route("/branches",    get(get_branches_handler))
         .route("/completions", get(get_completions_handler))
         .route("/config",      get(get_config_handler).put(update_config_handler))
-        .with_state(state)
+        .with_state(state.clone())
         .layer(cors);
 
     let addr = format!("0.0.0.0:{http_port}");
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("failed to bind HTTP port");
     info!("[server] HTTP listening on {addr} (Noise proxy on 0.0.0.0:{noise_port}, repo: {repo})");
+
+    if let Ok(prompt) = std::env::var("STARTUP_PROMPT") {
+        if !prompt.is_empty() {
+            let state_sp   = Arc::clone(&state);
+            let api_key_sp = resolve_api_key().unwrap_or_default();
+            let model_sp   = read_config().model.unwrap_or_else(|| "claude-sonnet-4-6".to_string());
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                info!("[server] running STARTUP_PROMPT ({} chars)", prompt.len());
+                state_sp.is_streaming.store(true, Ordering::Relaxed);
+                {
+                    let mut msgs = state_sp.messages.lock().unwrap();
+                    msgs.push(ApiMessage {
+                        role:    "user".to_string(),
+                        content: vec![ContentBlock::Text { text: prompt.clone() }],
+                    });
+                    save_messages(&msgs);
+                }
+                let messages: Vec<ApiMessage> = state_sp.messages.lock().unwrap().iter()
+                    .filter(|m| m.role != "interrupted")
+                    .cloned()
+                    .collect();
+                match send_message(
+                    messages,
+                    &state_sp.system,
+                    &model_sp,
+                    &api_key_sp,
+                    &state_sp.cwd,
+                    None,
+                    Arc::new(AtomicBool::new(false)),
+                    &make_extra_tools(),
+                    make_extra_executor(),
+                ).await {
+                    Ok((_, cost_usd, updated)) => {
+                        *state_sp.messages.lock().unwrap() = updated.clone();
+                        save_messages(&updated);
+                        *state_sp.last_cost_usd.lock().unwrap() = Some(cost_usd);
+                        info!("[server] STARTUP_PROMPT complete cost=${cost_usd:.4}");
+                    }
+                    Err(e) => {
+                        state_sp.messages.lock().unwrap().pop();
+                        save_messages(&state_sp.messages.lock().unwrap());
+                        error!("[server] STARTUP_PROMPT error: {e}");
+                    }
+                }
+                state_sp.is_streaming.store(false, Ordering::Relaxed);
+            });
+        }
+    }
 
     axum::serve(listener, app).await.unwrap();
 }

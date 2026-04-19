@@ -575,6 +575,14 @@ fn create_container_tool() -> AnthropicTool {
                 "noise_port": {
                     "type": "integer",
                     "description": "Optional Noise port (9100–9199). Auto-assigned if omitted."
+                },
+                "startup_script": {
+                    "type": "string",
+                    "description": "Optional shell script executed inside the child container before the server starts. Passed as STARTUP_SCRIPT env var."
+                },
+                "startup_prompt": {
+                    "type": "string",
+                    "description": "Optional initial message sent to the child's agentic loop once it is ready. Passed as STARTUP_PROMPT env var."
                 }
             },
             "required": ["git_url"]
@@ -693,7 +701,9 @@ fn rulyeh_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serd
                     let env_port  = format!("NOISE_PORT={noise_port}");
                     let env_host  = format!("PUBLIC_HOST={pub_host}");
                     let env_rul   = format!("RULYEH_URL={rulyeh_url}");
-                    let env_gh    = if gh_token.is_empty() { None } else { Some(format!("GH_TOKEN={gh_token}")) };
+                    let env_gh             = if gh_token.is_empty() { None } else { Some(format!("GH_TOKEN={gh_token}")) };
+                    let env_startup_script = input.get("startup_script").and_then(|v| v.as_str()).map(|s| format!("STARTUP_SCRIPT={s}"));
+                    let env_startup_prompt = input.get("startup_prompt").and_then(|v| v.as_str()).map(|s| format!("STARTUP_PROMPT={s}"));
 
                     info!("[rulyeh/create_container] creating {container_name} port={noise_port} git={git_url}");
 
@@ -716,6 +726,8 @@ fn rulyeh_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serd
                     cmd.args(["-e", &env_api]);
                     cmd.args(["-e", &env_git]);
                     if let Some(ref gh) = env_gh { cmd.args(["-e", gh.as_str()]); }
+                    if let Some(ref s) = env_startup_script { cmd.args(["-e", s.as_str()]); }
+                    if let Some(ref s) = env_startup_prompt { cmd.args(["-e", s.as_str()]); }
                     cmd.args(["-e", &env_port]);
                     cmd.args(["-e", &env_host]);
                     cmd.args(["-e", &env_rul]);
