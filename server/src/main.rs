@@ -27,7 +27,7 @@ use claudulhu_core::{
     ContentBlock, DEV_PUBKEY_BASE32, DEV_STATIC_PRIVATE, DEV_STATIC_PUBLIC,
 };
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::{Any, CorsLayer};
 
@@ -128,13 +128,20 @@ fn messages_to_history(messages: &[ApiMessage], last_cost_usd: Option<f64>) -> V
 
 // ── App state ─────────────────────────────────────────────────────────────────
 
+// Holds the live streaming state shared between the active streaming loop and any watchers.
+// Events are buffered so that a watcher joining mid-turn can replay everything it missed.
+struct StreamState {
+    buffer: Vec<String>,
+    subs:   Vec<mpsc::UnboundedSender<String>>,
+}
+
 struct AppState {
     messages:      Arc<Mutex<Vec<ApiMessage>>>,
     last_cost_usd: Mutex<Option<f64>>,
     system:        String,
     cwd:           String,
-    /// Broadcast channel for live stream events — watchers subscribe here.
-    stream_tx:     broadcast::Sender<String>,
+    /// Buffered events for the current turn + live subscriber list.
+    stream_state:  Mutex<StreamState>,
     /// True while a /stream loop is running.
     is_streaming:  AtomicBool,
 }
@@ -217,17 +224,21 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
         }
     };
 
-    // ── Watch mode: just subscribe to the broadcast and relay ─────────────────
+    // ── Watch mode: replay the current-turn buffer then forward live events ─────
     if first.get("type").and_then(|v| v.as_str()) == Some("watch") {
-        let mut rx = state.stream_tx.subscribe();
-        loop {
-            match rx.recv().await {
-                Ok(json_str) => {
-                    if ws_tx.send(WsMessage::Text(json_str)).await.is_err() { break; }
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-            }
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        // Atomically snapshot the buffer and register as a subscriber so no events are lost.
+        let replay = {
+            let mut ss = state.stream_state.lock().unwrap();
+            let replay = ss.buffer.clone();
+            ss.subs.push(tx);
+            replay
+        };
+        for event in replay {
+            if ws_tx.send(WsMessage::Text(event)).await.is_err() { return; }
+        }
+        while let Some(msg) = rx.recv().await {
+            if ws_tx.send(WsMessage::Text(msg)).await.is_err() { break; }
         }
         return;
     }
@@ -272,6 +283,12 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
     let aborted             = Arc::new(AtomicBool::new(false));
     let aborted_for_listener = aborted.clone();
 
+    // Clear any leftover buffer/subs from a previous turn before starting a new one.
+    {
+        let mut ss = state.stream_state.lock().unwrap();
+        ss.buffer.clear();
+        ss.subs.clear();
+    }
     state.is_streaming.store(true, Ordering::Relaxed);
 
     tokio::spawn(async move {
@@ -332,12 +349,17 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
         };
         if let Some(json) = json_opt {
             let json_str = json.to_string();
-            // Broadcast to any watchers (ignore send errors — no watchers is fine).
-            state.stream_tx.send(json_str.clone()).ok();
+            {
+                let mut ss = state.stream_state.lock().unwrap();
+                ss.buffer.push(json_str.clone());
+                ss.subs.retain(|tx| tx.send(json_str.clone()).is_ok());
+            }
             if ws_tx.send(WsMessage::Text(json_str)).await.is_err() { break; }
         }
     }
     state.is_streaming.store(false, Ordering::Relaxed);
+    // Drop subscriber senders so watcher rx channels close cleanly.
+    state.stream_state.lock().unwrap().subs.clear();
 }
 
 async fn clear_handler(State(state): State<Arc<AppState>>) -> StatusCode {
@@ -544,13 +566,12 @@ async fn main() {
     let messages = load_messages();
     info!("[server] loaded {} message(s) from history, repo={repo}", messages.len());
 
-    let (stream_tx, _) = broadcast::channel(256);
     let state = Arc::new(AppState {
         messages:      Arc::new(Mutex::new(messages)),
         last_cost_usd: Mutex::new(None),
         system,
         cwd: repo.clone(),
-        stream_tx,
+        stream_state:  Mutex::new(StreamState { buffer: Vec::new(), subs: Vec::new() }),
         is_streaming:  AtomicBool::new(false),
     });
 
