@@ -1293,6 +1293,18 @@ pub async fn run_startup_prompt(
 
 // ── System Prompt ─────────────────────────────────────────────────────────────
 
+/// System prompt for the ephemeral loop that handles inbound message_parent /
+/// message_child calls.  The loop runs to completion and its final text is
+/// returned as the HTTP response — so the model MUST always emit a text block
+/// in the last turn.
+pub fn build_ephemeral_system_prompt() -> &'static str {
+    "You are responding to a query from another container in the claudulhu network. \
+     Use whatever tools are available to answer fully. \
+     IMPORTANT: you MUST end your response with a text message that directly answers \
+     the query — even if you used tools to gather information, always write a final \
+     text summary before stopping. Never end on a tool_use turn."
+}
+
 pub fn build_system_prompt(repo_path: &str, branch: Option<&str>, worktree_path: Option<&str>) -> String {
     let tool_guidance = "\n\nTool use guidelines (IMPORTANT — follow to minimise token cost):\
         \n- To modify an existing file use edit_file (str_replace). Never read the whole file just to rewrite it.\

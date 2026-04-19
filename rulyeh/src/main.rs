@@ -22,9 +22,9 @@ use axum::{
     Json, Router,
 };
 use claudulhu_core::{
-    init_shell_env, load_or_generate_keypair, read_config, resolve_api_key, run_noise_proxy,
-    send_message, to_base32, ApiMessage, AnthropicTool, ChatEvent, ContentBlock,
-    DEV_PUBKEY_BASE32, DEV_STATIC_PRIVATE, DEV_STATIC_PUBLIC,
+    build_ephemeral_system_prompt, init_shell_env, load_or_generate_keypair, read_config,
+    resolve_api_key, run_noise_proxy, send_message, to_base32, ApiMessage, AnthropicTool,
+    ChatEvent, ContentBlock, DEV_PUBKEY_BASE32, DEV_STATIC_PRIVATE, DEV_STATIC_PUBLIC,
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
@@ -186,8 +186,8 @@ async fn history_handler(State(state): State<Arc<AppState>>) -> Json<serde_json:
 struct PostMessage { text: String }
 
 async fn message_handler(
-    State(state): State<Arc<AppState>>,
-    Json(body):   Json<PostMessage>,
+    State(_state): State<Arc<AppState>>,
+    Json(body):    Json<PostMessage>,
 ) -> impl IntoResponse {
     let preview: String = body.text.chars().take(120).collect();
     info!("[rulyeh/message_handler] received ({} chars): {preview}", body.text.len());
@@ -210,7 +210,7 @@ async fn message_handler(
     }];
 
     info!("[rulyeh/message_handler] DEBUG ephemeral send_message: {}", serde_json::to_string(&messages).unwrap_or_default());
-    match send_message(messages, &state.system, &model, &api_key, "/", None, Arc::new(AtomicBool::new(false)), &rulyeh_extra_tools(), rulyeh_extra_executor()).await {
+    match send_message(messages, build_ephemeral_system_prompt(), &model, &api_key, "/", None, Arc::new(AtomicBool::new(false)), &rulyeh_extra_tools(), rulyeh_extra_executor()).await {
         Ok((text, cost_usd, _)) => {
             let elapsed = start.elapsed().as_millis();
             info!("[rulyeh/message_handler] done in {elapsed}ms cost=${cost_usd:.4} response=({} chars)", text.len());

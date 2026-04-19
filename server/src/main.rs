@@ -21,10 +21,10 @@ use axum::{
     Json, Router,
 };
 use claudulhu_core::{
-    build_system_prompt, effective_repo, get_branches_for_repo, init_shell_env,
-    load_or_generate_keypair, read_config, resolve_api_key, run_noise_proxy, send_message,
-    to_base32, write_config, ApiMessage, AnthropicTool, ChatEvent, Config, ContentBlock,
-    DEV_PUBKEY_BASE32, DEV_STATIC_PRIVATE, DEV_STATIC_PUBLIC,
+    build_ephemeral_system_prompt, build_system_prompt, effective_repo, get_branches_for_repo,
+    init_shell_env, load_or_generate_keypair, read_config, resolve_api_key, run_noise_proxy,
+    send_message, to_base32, write_config, ApiMessage, AnthropicTool, ChatEvent, Config,
+    ContentBlock, DEV_PUBKEY_BASE32, DEV_STATIC_PRIVATE, DEV_STATIC_PUBLIC,
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{broadcast, mpsc};
@@ -178,7 +178,7 @@ async fn message_handler(
     }];
 
     info!("[server/message_handler] calling ephemeral send_message");
-    match send_message(messages, &state.system, &model, &api_key, &state.cwd, None, Arc::new(AtomicBool::new(false)), &make_extra_tools(), make_extra_executor()).await {
+    match send_message(messages, build_ephemeral_system_prompt(), &model, &api_key, &state.cwd, None, Arc::new(AtomicBool::new(false)), &make_extra_tools(), make_extra_executor()).await {
         Ok((text, cost_usd, _)) => {
             let elapsed = start.elapsed().as_millis();
             info!("[server/message_handler] done in {elapsed}ms cost=${cost_usd:.4} response=({} chars)", text.len());
