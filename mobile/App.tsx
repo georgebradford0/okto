@@ -121,59 +121,166 @@ const statusColor = (st: ConnStatus): string => {
 
 // ── Text rendering ─────────────────────────────────────────────────────────────
 
-function renderInlineSegment(text: string, baseStyle: object, key: number) {
-  const parts = text.split(/\*\*(.+?)\*\*/gs)
-  if (parts.length === 1) return <Text key={key} style={baseStyle} selectable>{text}</Text>
+// Render inline markdown spans: **bold**, *italic*, _italic_, ~~strike~~, `code`
+// within a single line of text (fenced code blocks already stripped before this).
+function renderInlineSpans(text: string, baseStyle: object, key: React.Key): React.ReactNode {
+  // Tokenise into bold / italic / strikethrough / inline-code / plain segments.
+  const tokens: Array<{ kind: 'bold' | 'italic' | 'strike' | 'code' | 'plain'; value: string }> = []
+  const re = /\*\*(.+?)\*\*|__(.+?)__|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?)(?<!_)_(?!_)|~~(.+?)~~|`([^`]+)`/gs
+  let last = 0, m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) tokens.push({ kind: 'plain', value: text.slice(last, m.index) })
+    if      (m[1] != null) tokens.push({ kind: 'bold',   value: m[1] })
+    else if (m[2] != null) tokens.push({ kind: 'bold',   value: m[2] })
+    else if (m[3] != null) tokens.push({ kind: 'italic', value: m[3] })
+    else if (m[4] != null) tokens.push({ kind: 'italic', value: m[4] })
+    else if (m[5] != null) tokens.push({ kind: 'strike', value: m[5] })
+    else if (m[6] != null) tokens.push({ kind: 'code',   value: m[6] })
+    last = m.index + m[0].length
+  }
+  if (last < text.length) tokens.push({ kind: 'plain', value: text.slice(last) })
+  if (tokens.length === 0) return null
+  if (tokens.length === 1 && tokens[0].kind === 'plain') {
+    return <Text key={key} style={baseStyle} selectable>{tokens[0].value}</Text>
+  }
   return (
     <Text key={key} style={baseStyle} selectable>
-      {parts.map((part, i) =>
-        i % 2 === 1
-          ? <Text key={i} style={{ fontWeight: '900' }}>{part}</Text>
-          : part
-      )}
+      {tokens.map((tok, i) => {
+        switch (tok.kind) {
+          case 'bold':   return <Text key={i} style={{ fontWeight: '900' }}>{tok.value}</Text>
+          case 'italic': return <Text key={i} style={{ fontStyle: 'italic' }}>{tok.value}</Text>
+          case 'strike': return <Text key={i} style={{ textDecorationLine: 'line-through' }}>{tok.value}</Text>
+          case 'code':   return <Text key={i} style={s.inlineCode}>{tok.value}</Text>
+          default:       return tok.value
+        }
+      })}
     </Text>
   )
 }
 
 function renderText(text: string, baseStyle: object) {
   if (!text) return null
-  const blocks = text.split(/(```[\s\S]*?```)/g)
+
+  // Split on fenced code blocks first; preserve them as opaque tokens.
+  const segments = text.split(/(```[\s\S]*?```)/g)
   const elements: React.ReactNode[] = []
-  blocks.forEach((block, bi) => {
-    if (block.startsWith('```') && block.endsWith('```')) {
-      const inner = block.slice(3, -3).replace(/^\n/, '')
+  let keyCounter = 0
+
+  segments.forEach(segment => {
+    // ── Fenced code block ──────────────────────────────────────────────────────
+    if (segment.startsWith('```') && segment.endsWith('```')) {
+      const inner = segment.slice(3, -3).replace(/^\w[^\n]*\n/, ln => {
+        // strip optional language tag (e.g. ```typescript\n)
+        return /^[a-zA-Z0-9_+-]+\n/.test(ln) ? '' : ln
+      }).replace(/^\n/, '')
       elements.push(
-        <View key={bi} style={s.codeBlock}>
+        <View key={keyCounter++} style={s.codeBlock}>
           <Text style={s.codeBlockText} selectable>{inner}</Text>
         </View>
       )
-    } else {
-      const inlineParts = block.split(/`([^`]+)`/g)
-      if (inlineParts.length === 1) {
-        elements.push(renderInlineSegment(block, baseStyle, bi))
-      } else {
+      return
+    }
+
+    // ── Line-by-line block-level parsing ───────────────────────────────────────
+    const lines = segment.split('\n')
+    let i = 0
+    while (i < lines.length) {
+      const line = lines[i]
+
+      // Blank line — skip
+      if (line.trim() === '') { i++; continue }
+
+      // Heading: # / ## / ###
+      const headingMatch = line.match(/^(#{1,6})\s+(.*)/)
+      if (headingMatch) {
+        const level = headingMatch[1].length
+        const fontSize = level === 1 ? 22 : level === 2 ? 20 : 18
+        const fontWeight = level <= 2 ? '700' : '600'
+        const mt = level <= 2 ? 12 : 8
         elements.push(
-          <Text key={bi} style={baseStyle} selectable>
-            {inlineParts.map((part, i) =>
-              i % 2 === 1
-                ? <Text key={i} style={s.inlineCode}>{part}</Text>
-                : (() => {
-                    const boldParts = part.split(/\*\*(.+?)\*\*/gs)
-                    if (boldParts.length === 1) return part
-                    return boldParts.map((bp, j) =>
-                      j % 2 === 1
-                        ? <Text key={j} style={{ fontWeight: '900' }}>{bp}</Text>
-                        : bp
-                    )
-                  })()
-            )}
+          <Text key={keyCounter++} style={[baseStyle, { fontSize, fontWeight, marginTop: mt, marginBottom: 2 }]} selectable>
+            {headingMatch[2]}
           </Text>
         )
+        i++; continue
       }
+
+      // Horizontal rule: --- / *** / ___
+      if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(line)) {
+        elements.push(
+          <View key={keyCounter++} style={{ borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border, marginVertical: 8 }} />
+        )
+        i++; continue
+      }
+
+      // Blockquote: > ...
+      if (line.startsWith('> ') || line === '>') {
+        const quoteLines: string[] = []
+        while (i < lines.length && (lines[i].startsWith('> ') || lines[i] === '>')) {
+          quoteLines.push(lines[i].replace(/^>\s?/, ''))
+          i++
+        }
+        elements.push(
+          <View key={keyCounter++} style={{ borderLeftWidth: 3, borderLeftColor: C.border, paddingLeft: 10, marginVertical: 4 }}>
+            {renderText(quoteLines.join('\n'), baseStyle)}
+          </View>
+        )
+        continue
+      }
+
+      // Unordered list: lines starting with - / * / +
+      if (/^[\s]*[-*+]\s/.test(line)) {
+        const listItems: Array<{ indent: number; content: string }> = []
+        while (i < lines.length && /^[\s]*[-*+]\s/.test(lines[i])) {
+          const indentMatch = lines[i].match(/^(\s*)[-*+]\s(.*)/)
+          listItems.push({ indent: Math.floor((indentMatch?.[1]?.length ?? 0) / 2), content: indentMatch?.[2] ?? '' })
+          i++
+        }
+        elements.push(
+          <View key={keyCounter++} style={{ marginVertical: 2 }}>
+            {listItems.map((item, li) => (
+              <View key={li} style={{ flexDirection: 'row', marginLeft: item.indent * 16, marginBottom: 2 }}>
+                <Text style={[baseStyle, { marginRight: 6, lineHeight: 26 }]} selectable>•</Text>
+                <View style={{ flex: 1 }}>{renderInlineSpans(item.content, baseStyle, li)}</View>
+              </View>
+            ))}
+          </View>
+        )
+        continue
+      }
+
+      // Ordered list: lines starting with 1. / 2. etc.
+      if (/^\s*\d+\.\s/.test(line)) {
+        const listItems: Array<{ num: string; content: string }> = []
+        while (i < lines.length && /^\s*\d+\.\s/.test(lines[i])) {
+          const m = lines[i].match(/^\s*(\d+)\.\s(.*)/)
+          listItems.push({ num: m?.[1] ?? '', content: m?.[2] ?? '' })
+          i++
+        }
+        elements.push(
+          <View key={keyCounter++} style={{ marginVertical: 2 }}>
+            {listItems.map((item, li) => (
+              <View key={li} style={{ flexDirection: 'row', marginBottom: 2 }}>
+                <Text style={[baseStyle, { marginRight: 6, minWidth: 20, lineHeight: 26 }]} selectable>{item.num}.</Text>
+                <View style={{ flex: 1 }}>{renderInlineSpans(item.content, baseStyle, li)}</View>
+              </View>
+            ))}
+          </View>
+        )
+        continue
+      }
+
+      // Plain paragraph line — render inline spans
+      const node = renderInlineSpans(line, baseStyle, keyCounter++)
+      if (node) elements.push(node)
+      i++
     }
   })
+
   return <>{elements}</>
 }
+
+
 
 // ── PendingEllipsis ───────────────────────────────────────────────────────────
 
