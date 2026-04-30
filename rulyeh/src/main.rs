@@ -2,7 +2,6 @@ mod k8s;
 mod aws;
 
 use std::{
-    collections::HashMap,
     fs,
     path::PathBuf,
     sync::{
@@ -29,6 +28,7 @@ use claudulhu_core::{
     resolve_api_key, run_noise_proxy, send_message, to_base32, ApiMessage, AnthropicTool,
     ChatEvent, ContentBlock, DEV_PUBKEY_BASE32, DEV_STATIC_PRIVATE, DEV_STATIC_PUBLIC,
 };
+use hex;
 use futures_util::{SinkExt, StreamExt};
 use kube::Client;
 use tokio::sync::mpsc;
@@ -47,21 +47,6 @@ fn data_dir() -> PathBuf {
         PathBuf::from(d)
     } else {
         PathBuf::from("/data")
-    }
-}
-
-fn registry_path() -> PathBuf { data_dir().join("pubkey_registry.json") }
-
-fn load_pubkey_registry() -> HashMap<String, String> {
-    fs::read_to_string(registry_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
-}
-
-fn save_pubkey_registry(registry: &HashMap<String, String>) {
-    if let Ok(json) = serde_json::to_string(registry) {
-        fs::write(registry_path(), json).ok();
     }
 }
 
@@ -165,15 +150,17 @@ fn messages_to_history(messages: &[ApiMessage], last_cost_usd: Option<f64>) -> V
 // ── App state ─────────────────────────────────────────────────────────────────
 
 struct AppState {
-    messages:      Arc<Mutex<Vec<ApiMessage>>>,
-    last_cost_usd: Mutex<Option<f64>>,
-    system:        String,
-    containers:    Arc<Mutex<Vec<ContainerInfo>>>,
-    poll_trigger:  Arc<Notify>,
-    pubkey_b32:    String,
-    public_host:   String,
-    rulyeh_url:    String,
-    kube_client:   Client,
+    messages:             Arc<Mutex<Vec<ApiMessage>>>,
+    last_cost_usd:        Mutex<Option<f64>>,
+    system:               String,
+    containers:           Arc<Mutex<Vec<ContainerInfo>>>,
+    poll_trigger:         Arc<Notify>,
+    pubkey_b32:           String,
+    /// Hex-encoded 64-byte keypair (32 private + 32 public); injected into children.
+    noise_private_key_hex: String,
+    public_host:          String,
+    rulyeh_url:           String,
+    kube_client:          Client,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -403,12 +390,9 @@ async fn poll_containers(state: Arc<AppState>) {
     tokio::time::sleep(Duration::from_secs(5)).await;
     loop {
         match k8s::list_managed_deployments(&state.kube_client).await {
-            Ok(mut children) => {
-                let mut registry = load_pubkey_registry();
-                let mut dirty    = false;
-
-                let mut new_containers: Vec<ContainerInfo> = children
-                    .iter_mut()
+            Ok(children) => {
+                let new_containers: Vec<ContainerInfo> = children
+                    .into_iter()
                     .map(|c| ContainerInfo {
                         id:          c.name.clone(),
                         name:        c.name.clone(),
@@ -416,28 +400,11 @@ async fn poll_containers(state: Arc<AppState>) {
                         status:      c.status.clone(),
                         host:        state.public_host.clone(),
                         port:        c.noise_port,
-                        pubkey:      String::new(),
+                        pubkey:      state.pubkey_b32.clone(),
                         remote:      c.remote,
                         instance_id: c.instance_id.clone(),
                     })
                     .collect();
-
-                for c in &mut new_containers {
-                    if let Some(pk) = registry.get(&c.name) {
-                        c.pubkey = pk.clone();
-                    } else if c.status == "running" {
-                        info!("[containers] fetching pubkey for {}", c.name);
-                        if let Some(pk) = k8s::fetch_pubkey_via_exec(&state.kube_client, &c.name).await {
-                            c.pubkey = pk.clone();
-                            registry.insert(c.name.clone(), pk);
-                            dirty = true;
-                        } else {
-                            error!("[containers] pubkey fetch failed for {}", c.name);
-                        }
-                    }
-                }
-
-                if dirty { save_pubkey_registry(&registry); }
 
                 let changed = {
                     let current = state.containers.lock().unwrap();
@@ -658,10 +625,11 @@ async fn exec_create_container(state: Arc<AppState>, input: serde_json::Value) -
         return "error: instance_type is required when remote=true".to_string();
     }
 
-    let api_key    = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
-    let gh_token   = std::env::var("GH_TOKEN").ok().filter(|s| !s.is_empty());
-    let pub_host   = state.public_host.clone();
-    let rulyeh_url = state.rulyeh_url.clone();
+    let api_key             = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
+    let gh_token            = std::env::var("GH_TOKEN").ok().filter(|s| !s.is_empty());
+    let pub_host            = state.public_host.clone();
+    let rulyeh_url          = state.rulyeh_url.clone();
+    let noise_private_key   = state.noise_private_key_hex.clone();
     let startup_script = input.get("startup_script").and_then(|v| v.as_str()).map(str::to_string);
     let startup_prompt = input.get("startup_prompt").and_then(|v| v.as_str()).map(str::to_string);
 
@@ -745,18 +713,19 @@ async fn exec_create_container(state: Arc<AppState>, input: serde_json::Value) -
     info!("[rulyeh/create_container] creating {child_name} port={noise_port} git={} remote={remote}", git_url.as_deref().unwrap_or("(none)"));
 
     let params = k8s::CreateChildParams {
-        name:           &child_name,
-        git_url:        git_url.as_deref(),
+        name:              &child_name,
+        git_url:           git_url.as_deref(),
         noise_port,
-        api_key:        &api_key,
-        gh_token:       gh_token.as_deref(),
-        pub_host:       &pub_host,
-        rulyeh_url:     &rulyeh_url,
-        startup_script: startup_script.as_deref(),
-        startup_prompt: startup_prompt.as_deref(),
+        api_key:           &api_key,
+        gh_token:          gh_token.as_deref(),
+        pub_host:          &pub_host,
+        rulyeh_url:        &rulyeh_url,
+        startup_script:    startup_script.as_deref(),
+        startup_prompt:    startup_prompt.as_deref(),
         node_selector,
         remote,
-        instance_id:    ec2_instance_id.as_deref(),
+        instance_id:       ec2_instance_id.as_deref(),
+        noise_private_key: &noise_private_key,
     };
 
     match k8s::create_child_resources(&state.kube_client, &params).await {
@@ -767,8 +736,8 @@ async fn exec_create_container(state: Arc<AppState>, input: serde_json::Value) -
             format!("Created child '{child_name}' on NodePort {noise_port}.")
         }
         Err(e) => {
-            error!("[rulyeh/create_container] failed: {e}");
-            format!("error: {e}")
+            error!("[rulyeh/create_container] failed: {e:#}");
+            format!("error: {e:#}")
         }
     }
 }
@@ -844,7 +813,13 @@ async fn main() {
         load_or_generate_keypair(&key_file)
     };
 
-    let pubkey_b32   = to_base32(&static_public);
+    let pubkey_b32 = to_base32(&static_public);
+    // Hex-encode the 64-byte keypair so it can be injected into children as an env var.
+    let noise_private_key_hex = {
+        let mut combined = static_private.clone();
+        combined.extend_from_slice(&static_public);
+        hex::encode(&combined)
+    };
     let noise_port: u16 = std::env::var("NOISE_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(9000);
     let http_port:  u16 = 8000;
     let public_host = std::env::var("PUBLIC_HOST")
@@ -879,12 +854,13 @@ async fn main() {
     let poll_trigger = Arc::new(Notify::new());
 
     let state = Arc::new(AppState {
-        messages:      Arc::new(Mutex::new(messages)),
-        last_cost_usd: Mutex::new(None),
-        system:        build_system_prompt(),
-        containers:    Arc::new(Mutex::new(Vec::new())),
-        poll_trigger:  poll_trigger.clone(),
+        messages:              Arc::new(Mutex::new(messages)),
+        last_cost_usd:         Mutex::new(None),
+        system:                build_system_prompt(),
+        containers:            Arc::new(Mutex::new(Vec::new())),
+        poll_trigger:          poll_trigger.clone(),
         pubkey_b32,
+        noise_private_key_hex,
         public_host,
         rulyeh_url,
         kube_client,

@@ -20,5 +20,6 @@ reqwest        = { version = "0.12", features = ["json"] }
 anyhow              = "1.0"
 tracing             = "0.1"
 tracing-subscriber  = { version = "0.3", features = ["env-filter", "fmt", "time"] }
-kube                = { version = "0.99", features = ["runtime", "derive", "ws"] }
+kube                = { version = "0.99", features = ["runtime", "derive"] }
 k8s-openapi         = { version = "0.24", features = ["v1_32"] }
+hex                 = "0.4"

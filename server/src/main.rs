@@ -534,9 +534,21 @@ async fn main() {
     let is_dev   = std::env::var("CLAUDULHU_DEV").as_deref() == Ok("1");
     let key_file = std::env::var("NOISE_KEY_FILE").unwrap_or_else(|_| NOISE_KEY_FILE.to_string());
 
+    let injected_keypair: Option<(Vec<u8>, Vec<u8>)> = std::env::var("NOISE_PRIVATE_KEY").ok()
+        .and_then(|s| {
+            let bytes = hex::decode(s.trim()).ok()?;
+            if bytes.len() == 64 {
+                Some((bytes[..32].to_vec(), bytes[32..].to_vec()))
+            } else {
+                None
+            }
+        });
+
     if args.get(1).map(|s| s.as_str()) == Some("--print-pubkey") {
         let pubkey = if is_dev {
             DEV_PUBKEY_BASE32.to_string()
+        } else if let Some((_, public)) = &injected_keypair {
+            to_base32(public)
         } else {
             let (_, public) = load_or_generate_keypair(&key_file);
             to_base32(&public)
@@ -548,6 +560,8 @@ async fn main() {
     let (static_private, static_public) = if is_dev {
         warn!("[server] DEV MODE: using fixed dev keypair (CLAUDULHU_DEV=1)");
         (DEV_STATIC_PRIVATE.to_vec(), DEV_STATIC_PUBLIC.to_vec())
+    } else if let Some(kp) = injected_keypair {
+        kp
     } else {
         load_or_generate_keypair(&key_file)
     };

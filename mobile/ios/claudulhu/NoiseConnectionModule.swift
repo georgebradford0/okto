@@ -295,6 +295,14 @@ final class NoiseConnection: NSObject {
 
     @objc static func requiresMainQueueSetup() -> Bool { false }
 
+    @objc func constantsToExport() -> [AnyHashable: Any]! {
+        #if targetEnvironment(simulator)
+        return ["isSimulator": true]
+        #else
+        return ["isSimulator": false]
+        #endif
+    }
+
     @objc func connect(
         _ host: String,
         port: Double,

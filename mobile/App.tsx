@@ -5,6 +5,7 @@ import {
   Animated,
   AppState,
   FlatList,
+  NativeModules,
   Platform,
   ScrollView,
   StyleSheet,
@@ -81,8 +82,20 @@ const connKeyFor = (c: NoiseConnectionInfo) => `${c.host}:${c.port}:${c.pk.slice
 // Fixed dev keypair baked into the server when CLAUDULHU_DEV=1.
 // Public key (base32): 34577VOSZRDRTUB7XYTT6FS62Y4QYYVLQJCHP4XNDQA2763AU5YQ
 //
-// iOS Simulator shares the Mac's network stack — 127.0.0.1 reaches Docker's
-// bound port directly.
+// iOS Simulator shares the Mac's network stack — 127.0.0.1 reaches the host
+// directly. Physical devices cannot reach 127.0.0.1 this way.
+const isEmulator = Platform.OS === 'ios'
+  ? !!((NativeModules.NoiseConnection as any)?.isSimulator)
+  : Platform.OS === 'android'
+    ? (() => {
+        const c = NativeModules.PlatformConstants ?? {}
+        const fp: string = c.Fingerprint ?? ''
+        const model: string = c.Model ?? ''
+        return fp.startsWith('generic') || fp.includes('emulator') ||
+               model.includes('Emulator') || model.includes('Android SDK')
+      })()
+    : false
+
 const DEV_HOST = '127.0.0.1'
 const DEV_CONN: NoiseConnectionInfo = {
   v:     2,
@@ -147,10 +160,10 @@ function renderInlineSpans(text: string, baseStyle: object, key: React.Key): Rea
     <Text key={key} style={baseStyle} selectable>
       {tokens.map((tok, i) => {
         switch (tok.kind) {
-          case 'bold':   return <Text key={i} style={{ fontWeight: '900' }}>{tok.value}</Text>
-          case 'italic': return <Text key={i} style={{ fontStyle: 'italic' }}>{tok.value}</Text>
-          case 'strike': return <Text key={i} style={{ textDecorationLine: 'line-through' }}>{tok.value}</Text>
-          case 'code':   return <Text key={i} style={s.inlineCode}>{tok.value}</Text>
+          case 'bold':   return <Text key={i} style={{ fontWeight: '900' }} selectable>{tok.value}</Text>
+          case 'italic': return <Text key={i} style={{ fontStyle: 'italic' }} selectable>{tok.value}</Text>
+          case 'strike': return <Text key={i} style={{ textDecorationLine: 'line-through' }} selectable>{tok.value}</Text>
+          case 'code':   return <Text key={i} style={s.inlineCode} selectable>{tok.value}</Text>
           default:       return tok.value
         }
       })}
@@ -270,10 +283,24 @@ function renderText(text: string, baseStyle: object) {
         continue
       }
 
-      // Plain paragraph line — render inline spans
-      const node = renderInlineSpans(line, baseStyle, keyCounter++)
-      if (node) elements.push(node)
-      i++
+      // Plain paragraph — batch consecutive non-block lines into one Text so
+      // iOS selection handles can span the whole paragraph.
+      const paraLines: string[] = []
+      while (i < lines.length) {
+        const l = lines[i]
+        if (l.trim() === '') { i++; break }
+        if (/^#{1,6}\s/.test(l))           break
+        if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(l)) break
+        if (l.startsWith('> ') || l === '>') break
+        if (/^[\s]*[-*+]\s/.test(l))        break
+        if (/^\s*\d+\.\s/.test(l))          break
+        paraLines.push(l)
+        i++
+      }
+      if (paraLines.length > 0) {
+        const node = renderInlineSpans(paraLines.join('\n'), baseStyle, keyCounter++)
+        if (node) elements.push(node)
+      }
     }
   })
 
@@ -337,7 +364,7 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: Messag
   if (message.role === 'interrupted') {
     return (
       <View style={[s.messageWrap, { marginBottom: 3, paddingLeft: 28 }]}>
-        <Text style={s.interruptedLine}>■ interrupted</Text>
+        <Text style={s.interruptedLine} selectable>■ interrupted</Text>
       </View>
     )
   }
@@ -926,8 +953,9 @@ function AppInner() {
     const load = async () => {
       let saved: NoiseConnectionInfo | null = null
       const json = await AsyncStorage.getItem('masterConnection').catch(() => null)
-      if (json) { try { saved = JSON.parse(json) } catch {} }
-      if (!saved && __DEV__) { saved = DEV_CONN }
+      if (json) { try { saved = JSON.parse(json) } catch (e) { logE(`[app] failed to parse saved connection: ${e}`) } }
+      if (!saved && __DEV__ && isEmulator) { log('[app] no saved connection, using DEV_CONN'); saved = DEV_CONN }
+      if (saved) log(`[app] loaded connection host=${saved.host} port=${saved.port} pk=${saved.pk.slice(0, 8)}…`)
       if (!cancelled && saved) setConn(saved)
     }
     load()
@@ -948,11 +976,17 @@ function AppInner() {
       ? { host: conn.host,        port: conn.port,        pk: conn.pk }
       : null
 
-    if (!target) return
+    if (!target) { log('[noise] no target, skipping connect'); return }
     if (!NoiseConnection) {
       logE('[noise] native module unavailable')
       setTunnelError('Native Noise module unavailable')
       return
+    }
+
+    if (activeChild) {
+      log(`[noise] connecting to child "${activeChild.name}" host=${target.host} port=${target.port} pk=${target.pk.slice(0, 8)}… status=${activeChild.status}`)
+    } else {
+      log(`[noise] connecting to master host=${target.host} port=${target.port} pk=${target.pk.slice(0, 8)}…`)
     }
 
     let live = true
@@ -996,6 +1030,9 @@ function AppInner() {
       .then(r => r.json())
       .then((data: { containers: ContainerInfo[] }) => {
         log(`[app] fetchContainers: ${data.containers.length} container(s)`)
+        data.containers.forEach(c => {
+          log(`[app]   container id=${c.id} name=${c.name} status=${c.status} host=${c.host} port=${c.port} pubkey=${c.pubkey ? c.pubkey.slice(0, 8) + '…' : '(none)'}`)
+        })
         setContainers(data.containers)
         const waitingId = startingContainerIdRef.current
         if (waitingId) {
@@ -1027,8 +1064,14 @@ function AppInner() {
 
   const handleQrScanned = useCallback((raw: string) => {
     setScanning(false)
+    log(`[qr] scanned raw=${raw}`)
     const parsed = parseQrData(raw)
-    if (!parsed) { setTunnelError('Invalid QR code'); return }
+    if (!parsed) {
+      logE(`[qr] parse failed for: ${raw}`)
+      setTunnelError('Invalid QR code')
+      return
+    }
+    log(`[qr] parsed host=${parsed.host} port=${parsed.port} pk=${parsed.pk.slice(0, 8)}…`)
     AsyncStorage.setItem('masterConnection', JSON.stringify(parsed)).catch(() => {})
     setConn(parsed)
   }, [])
@@ -1050,6 +1093,7 @@ function AppInner() {
 
   const startContainer = useCallback((id: string) => {
     if (!masterBaseUrl) return
+    log(`[app] startContainer id=${id}`)
     startingContainerIdRef.current = id
     setStartingContainerId(id)
     setStartingError(null)
@@ -1061,13 +1105,16 @@ function AppInner() {
       .then(r => r.json())
       .then((data: { error?: string }) => {
         if (data.error) {
+          logE(`[app] startContainer error: ${data.error}`)
           startingContainerIdRef.current = null
           setStartingContainerId(null)
           setStartingError(data.error)
+        } else {
+          log(`[app] startContainer request accepted, polling for running state`)
         }
-        // On success, the poll interval will detect the running container.
       })
       .catch(e => {
+        logE(`[app] startContainer request failed: ${String(e)}`)
         startingContainerIdRef.current = null
         setStartingContainerId(null)
         setStartingError(String(e))

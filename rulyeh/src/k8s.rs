@@ -4,14 +4,13 @@ use std::time::Duration;
 use anyhow::Context;
 use k8s_openapi::api::{
     apps::v1::Deployment,
-    core::v1::{Node, PersistentVolumeClaim, Pod, Secret, Service},
+    core::v1::{Node, PersistentVolumeClaim, Secret, Service},
 };
 use kube::{
-    api::{AttachParams, DeleteParams, ListParams, Patch, PatchParams, PostParams},
+    api::{DeleteParams, ListParams, Patch, PatchParams, PostParams},
     Api, Client,
 };
 use serde_json::json;
-use tokio::io::AsyncReadExt;
 use tracing::{error, info};
 
 pub const NAMESPACE: &str = "claudulhu";
@@ -45,9 +44,10 @@ pub async fn list_managed_deployments(client: &Client) -> anyhow::Result<Vec<Chi
 
     for d in list {
         let name = d.metadata.name.unwrap_or_default();
-        let labels = d.metadata.labels.unwrap_or_default();
-        let git_url = labels.get("claudulhu.git_url").cloned().unwrap_or_default();
-        let remote = labels.get("claudulhu.remote").map(|v| v == "1").unwrap_or(false);
+        let labels      = d.metadata.labels.unwrap_or_default();
+        let annotations = d.metadata.annotations.unwrap_or_default();
+        let git_url     = annotations.get("claudulhu.git_url").cloned().unwrap_or_default();
+        let remote      = labels.get("claudulhu.remote").map(|v| v == "1").unwrap_or(false);
         let instance_id = labels.get("claudulhu.ec2-instance-id").cloned();
 
         let status = {
@@ -89,47 +89,6 @@ pub async fn list_managed_deployments(client: &Client) -> anyhow::Result<Vec<Chi
     Ok(results)
 }
 
-pub async fn fetch_pubkey_via_exec(client: &Client, child_name: &str) -> Option<String> {
-    let pods: Api<Pod> = Api::namespaced(client.clone(), NAMESPACE);
-    let running = pods
-        .list(&ListParams::default().labels(&format!("app={child_name}")))
-        .await
-        .ok()?;
-
-    let pod_name = running
-        .iter()
-        .find(|p| {
-            p.status
-                .as_ref()
-                .and_then(|s| s.phase.as_deref())
-                == Some("Running")
-        })
-        .and_then(|p| p.metadata.name.as_deref())
-        .map(str::to_string)?;
-
-    let ap = AttachParams::default()
-        .stdout(true)
-        .stderr(false)
-        .stdin(false);
-
-    let mut attached = tokio::time::timeout(
-        Duration::from_secs(10),
-        pods.exec(&pod_name, vec!["claudulhu-server", "--print-pubkey"], &ap),
-    )
-    .await
-    .ok()?  // Elapsed timeout → None
-    .ok()?; // kube Error → None
-
-    let mut stdout = attached.stdout()?;
-    let mut buf = Vec::new();
-    tokio::time::timeout(Duration::from_secs(5), stdout.read_to_end(&mut buf))
-        .await
-        .ok()?
-        .ok()?;
-
-    let pk = String::from_utf8(buf).ok()?.trim().to_string();
-    if pk.is_empty() { None } else { Some(pk) }
-}
 
 pub async fn assign_nodeport(client: &Client) -> anyhow::Result<u16> {
     let services: Api<Service> = Api::namespaced(client.clone(), NAMESPACE);
@@ -179,6 +138,8 @@ pub struct CreateChildParams<'a> {
     pub node_selector: Option<HashMap<String, String>>,
     pub remote: bool,
     pub instance_id: Option<&'a str>,
+    /// Hex-encoded 64-byte keypair (32 private + 32 public) to inject into the child.
+    pub noise_private_key: &'a str,
 }
 
 pub async fn create_child_resources(client: &Client, p: &CreateChildParams<'_>) -> anyhow::Result<()> {
@@ -218,7 +179,6 @@ async fn create_deployment(client: &Client, p: &CreateChildParams<'_>) -> anyhow
 
     let mut meta_labels = json!({
         "claudulhu.managed": "1",
-        "claudulhu.git_url": p.git_url.unwrap_or(""),
         "app": p.name,
     });
     if p.remote {
@@ -228,11 +188,19 @@ async fn create_deployment(client: &Client, p: &CreateChildParams<'_>) -> anyhow
         meta_labels["claudulhu.ec2-instance-id"] = json!(iid);
     }
 
+    // git_url is stored as an annotation (no format restrictions) rather than a
+    // label — URLs contain '/' and ':' which are invalid in label values.
+    let mut meta_annotations = json!({});
+    if let Some(url) = p.git_url {
+        meta_annotations["claudulhu.git_url"] = json!(url);
+    }
+
     let mut env = vec![
-        json!({"name": "ANTHROPIC_API_KEY", "value": p.api_key}),
-        json!({"name": "NOISE_PORT",        "value": "9000"}),
-        json!({"name": "PUBLIC_HOST",       "value": p.pub_host}),
-        json!({"name": "RULYEH_URL",        "value": p.rulyeh_url}),
+        json!({"name": "ANTHROPIC_API_KEY",  "value": p.api_key}),
+        json!({"name": "NOISE_PORT",         "value": "9000"}),
+        json!({"name": "PUBLIC_HOST",        "value": p.pub_host}),
+        json!({"name": "RULYEH_URL",         "value": p.rulyeh_url}),
+        json!({"name": "NOISE_PRIVATE_KEY",  "value": p.noise_private_key}),
     ];
     if let Some(url) = p.git_url {
         env.push(json!({"name": "GIT_URL", "value": url}));
@@ -245,6 +213,9 @@ async fn create_deployment(client: &Client, p: &CreateChildParams<'_>) -> anyhow
     }
     if let Some(s) = p.startup_prompt {
         env.push(json!({"name": "STARTUP_PROMPT", "value": s}));
+    }
+    if std::env::var("CLAUDULHU_DEV").as_deref() == Ok("1") {
+        env.push(json!({"name": "CLAUDULHU_DEV", "value": "1"}));
     }
 
     let pull_policy = if std::env::var("CLAUDULHU_DEV").as_deref() == Ok("1") {
@@ -287,13 +258,14 @@ async fn create_deployment(client: &Client, p: &CreateChildParams<'_>) -> anyhow
         "metadata": {
             "name": p.name,
             "namespace": NAMESPACE,
-            "labels": meta_labels
+            "labels": meta_labels,
+            "annotations": meta_annotations
         },
         "spec": {
             "replicas": 1,
             "selector": { "matchLabels": { "app": p.name } },
             "template": {
-                "metadata": { "labels": meta_labels },
+                "metadata": { "labels": meta_labels, "annotations": meta_annotations },
                 "spec": pod_spec
             }
         }

@@ -22,6 +22,7 @@ export interface Spec extends TurboModule {
    * Tear down the proxy listener and all active connections.
    */
   disconnect(): void;
+
 }
 
 const NativeNoiseConnection = TurboModuleRegistry.get<Spec>('NoiseConnection');

@@ -52,14 +52,23 @@ cd claudulhu
 
 ## Setup
 
-### 1. Create the namespace and RBAC
+### 1. Open firewall ports
+
+In your cloud provider's firewall / security group, allow **inbound TCP** on:
+
+| Port | Used by |
+|------|---------|
+| 30090 | rulyeh Noise tunnel (mobile connects here) |
+| 30100–30199 | Child container Noise tunnels |
+
+### 2. Create the namespace and RBAC
 
 ```sh
 kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/rbac.yaml
 ```
 
-### 2. Create secrets
+### 3. Create secrets
 
 ```sh
 kubectl create secret generic claudulhu-secrets \
@@ -68,7 +77,7 @@ kubectl create secret generic claudulhu-secrets \
   -n claudulhu
 ```
 
-### 3. Store the k3s join token
+### 4. Store the k3s join token
 
 Only needed if you want rulyeh to provision remote EC2 worker nodes on demand. Skip if you're running everything on a single node.
 
@@ -78,13 +87,13 @@ kubectl create secret generic k3s-join-token \
   -n claudulhu
 ```
 
-### 4. Deploy rulyeh
+### 5. Deploy rulyeh
 
 ```sh
 kubectl apply -f k8s/rulyeh.yaml
 ```
 
-### 5. Get the QR code
+### 6. Get the QR code
 
 ```sh
 kubectl logs -n claudulhu deploy/rulyeh
