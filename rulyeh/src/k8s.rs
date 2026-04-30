@@ -168,7 +168,7 @@ pub async fn read_join_token(client: &Client) -> anyhow::Result<String> {
 
 pub struct CreateChildParams<'a> {
     pub name: &'a str,
-    pub git_url: &'a str,
+    pub git_url: Option<&'a str>,
     pub noise_port: u16,
     pub api_key: &'a str,
     pub gh_token: Option<&'a str>,
@@ -218,7 +218,7 @@ async fn create_deployment(client: &Client, p: &CreateChildParams<'_>) -> anyhow
 
     let mut meta_labels = json!({
         "claudulhu.managed": "1",
-        "claudulhu.git_url": p.git_url,
+        "claudulhu.git_url": p.git_url.unwrap_or(""),
         "app": p.name,
     });
     if p.remote {
@@ -230,11 +230,13 @@ async fn create_deployment(client: &Client, p: &CreateChildParams<'_>) -> anyhow
 
     let mut env = vec![
         json!({"name": "ANTHROPIC_API_KEY", "value": p.api_key}),
-        json!({"name": "GIT_URL",           "value": p.git_url}),
         json!({"name": "NOISE_PORT",        "value": "9000"}),
         json!({"name": "PUBLIC_HOST",       "value": p.pub_host}),
         json!({"name": "RULYEH_URL",        "value": p.rulyeh_url}),
     ];
+    if let Some(url) = p.git_url {
+        env.push(json!({"name": "GIT_URL", "value": url}));
+    }
     if let Some(gh) = p.gh_token {
         env.push(json!({"name": "GH_TOKEN", "value": gh}));
     }

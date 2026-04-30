@@ -512,11 +512,11 @@ fn create_container_tool() -> AnthropicTool {
             "properties": {
                 "git_url": {
                     "type": "string",
-                    "description": "The Git repository URL to clone and operate on."
+                    "description": "The Git repository URL to clone and operate on. Omit to start a container without a repository (e.g. for ML workloads or arbitrary compute)."
                 },
                 "name": {
                     "type": "string",
-                    "description": "Optional name override. Defaults to rulyeh-<repo-name>."
+                    "description": "Optional name override. Defaults to rulyeh-<repo-name>, or rulyeh-workload-<port> if no git_url."
                 },
                 "noise_port": {
                     "type": "integer",
@@ -539,7 +539,7 @@ fn create_container_tool() -> AnthropicTool {
                     "description": "EC2 instance type (e.g. t3.medium). Required when remote=true."
                 }
             },
-            "required": ["git_url"]
+            "required": []
         }),
     }
 }
@@ -632,19 +632,24 @@ async fn exec_message_child(client: reqwest::Client, input: serde_json::Value) -
 }
 
 async fn exec_create_container(state: Arc<AppState>, input: serde_json::Value) -> String {
-    let git_url = match input.get("git_url").and_then(|v| v.as_str()) {
-        Some(u) => u.to_string(),
-        None => return "error: missing 'git_url' field".to_string(),
-    };
-    let repo_slug = git_url.trim_end_matches('/')
-        .split('/')
-        .last()
-        .unwrap_or("repo")
-        .trim_end_matches(".git")
-        .to_lowercase();
+    let git_url = input.get("git_url").and_then(|v| v.as_str()).map(str::to_string);
+
     let child_name = input.get("name").and_then(|v| v.as_str())
         .map(str::to_string)
-        .unwrap_or_else(|| format!("rulyeh-{repo_slug}"));
+        .unwrap_or_else(|| {
+            match &git_url {
+                Some(u) => {
+                    let slug = u.trim_end_matches('/')
+                        .split('/')
+                        .last()
+                        .unwrap_or("repo")
+                        .trim_end_matches(".git")
+                        .to_lowercase();
+                    format!("rulyeh-{slug}")
+                }
+                None => format!("rulyeh-workload"),
+            }
+        });
 
     let remote       = input.get("remote").and_then(|v| v.as_bool()).unwrap_or(false);
     let instance_type = input.get("instance_type").and_then(|v| v.as_str()).map(str::to_string);
@@ -737,11 +742,11 @@ async fn exec_create_container(state: Arc<AppState>, input: serde_json::Value) -
         ec2_instance_id = Some(instance_id);
     }
 
-    info!("[rulyeh/create_container] creating {child_name} port={noise_port} git={git_url} remote={remote}");
+    info!("[rulyeh/create_container] creating {child_name} port={noise_port} git={} remote={remote}", git_url.as_deref().unwrap_or("(none)"));
 
     let params = k8s::CreateChildParams {
         name:           &child_name,
-        git_url:        &git_url,
+        git_url:        git_url.as_deref(),
         noise_port,
         api_key:        &api_key,
         gh_token:       gh_token.as_deref(),
