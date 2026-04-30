@@ -1,0 +1,68 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rulyeh
+  namespace: claudulhu
+---
+# Namespace-scoped role for workload resources
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rulyeh
+  namespace: claudulhu
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rulyeh
+  namespace: claudulhu
+subjects:
+  - kind: ServiceAccount
+    name: rulyeh
+    namespace: claudulhu
+roleRef:
+  kind: Role
+  name: rulyeh
+  apiGroup: rbac.authorization.k8s.io
+---
+# Cluster-scoped role for node management (remote EC2 provisioning)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rulyeh-nodes
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rulyeh-nodes
+subjects:
+  - kind: ServiceAccount
+    name: rulyeh
+    namespace: claudulhu
+roleRef:
+  kind: ClusterRole
+  name: rulyeh-nodes
+  apiGroup: rbac.authorization.k8s.io

@@ -33,13 +33,6 @@ if [ -n "$STARTUP_SCRIPT" ]; then
     echo "[claudulhu-rulyeh] STARTUP_SCRIPT complete."
 fi
 
-# ── Docker network ────────────────────────────────────────────────────────────
-# Create the shared bridge network for master ↔ child container communication.
-docker network create claudulhu-net 2>/dev/null || true
-# Ensure rulyeh is connected to claudulhu-net even if started without compose.
-docker network connect claudulhu-net "$(hostname)" 2>/dev/null || true
-echo "[claudulhu-rulyeh] Docker network claudulhu-net ready"
-
 # ── Noise key ─────────────────────────────────────────────────────────────────
 NOISE_PUBKEY=$(claudulhu-rulyeh --print-pubkey)
 echo "[claudulhu-rulyeh] Noise public key: ${NOISE_PUBKEY}"

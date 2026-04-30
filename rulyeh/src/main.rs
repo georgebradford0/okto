@@ -1,3 +1,6 @@
+mod k8s;
+mod aws;
+
 use std::{
     collections::HashMap,
     fs,
@@ -27,6 +30,7 @@ use claudulhu_core::{
     ChatEvent, ContentBlock, DEV_PUBKEY_BASE32, DEV_STATIC_PRIVATE, DEV_STATIC_PUBLIC,
 };
 use futures_util::{SinkExt, StreamExt};
+use kube::Client;
 use tokio::sync::mpsc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
@@ -72,6 +76,9 @@ struct ContainerInfo {
     host:    String,
     port:    u16,
     pubkey:  String,
+    remote:  bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instance_id: Option<String>,
 }
 
 // ── Session persistence ───────────────────────────────────────────────────────
@@ -144,7 +151,6 @@ fn messages_to_history(messages: &[ApiMessage], last_cost_usd: Option<f64>) -> V
             _ => {}
         }
     }
-    // Attach cost to the last assistant message.
     if let Some(cost) = last_cost_usd {
         for msg in result.iter_mut().rev() {
             if msg.role == "assistant" {
@@ -159,14 +165,15 @@ fn messages_to_history(messages: &[ApiMessage], last_cost_usd: Option<f64>) -> V
 // ── App state ─────────────────────────────────────────────────────────────────
 
 struct AppState {
-    messages:     Arc<Mutex<Vec<ApiMessage>>>,
+    messages:      Arc<Mutex<Vec<ApiMessage>>>,
     last_cost_usd: Mutex<Option<f64>>,
-    system:       String,
-    containers:   Arc<Mutex<Vec<ContainerInfo>>>,
-    poll_trigger: Arc<Notify>,
-    pubkey_b32:   String,
-    public_host:  String,
-    rulyeh_url:   String,
+    system:        String,
+    containers:    Arc<Mutex<Vec<ContainerInfo>>>,
+    poll_trigger:  Arc<Notify>,
+    pubkey_b32:    String,
+    public_host:   String,
+    rulyeh_url:    String,
+    kube_client:   Client,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -204,13 +211,11 @@ async fn message_handler(
     };
     let model = read_config().model.unwrap_or_else(|| "claude-sonnet-4-6".to_string());
 
-    // Ephemeral loop — does not touch the shared conversation history.
     let messages = vec![ApiMessage {
         role:    "user".to_string(),
         content: vec![ContentBlock::Text { text: body.text }],
     }];
 
-    info!("[rulyeh/message_handler] DEBUG ephemeral send_message: {}", serde_json::to_string(&messages).unwrap_or_default());
     match send_message(messages, build_ephemeral_system_prompt(), &model, &api_key, "/", None, Arc::new(AtomicBool::new(false)), &rulyeh_extra_tools(), rulyeh_extra_executor(state.clone())).await {
         Ok((text, cost_usd, _)) => {
             let elapsed = start.elapsed().as_millis();
@@ -298,7 +303,6 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
         }
     });
 
-    info!("[rulyeh/handle_stream] DEBUG conversation ({} messages): {}", messages.len(), serde_json::to_string(&messages).unwrap_or_default());
     let executor = rulyeh_extra_executor(Arc::clone(&state));
     tokio::spawn(async move {
         match send_message(messages, &system, &model, &api_key, "/", Some(event_tx), aborted.clone(), &rulyeh_extra_tools(), executor).await {
@@ -379,26 +383,15 @@ async fn start_container_handler(
                            Json(serde_json::json!({"error": "container not found"}))).into_response(),
     };
 
-    let result = tokio::process::Command::new("docker")
-        .args(["start", &name])
-        .output()
-        .await;
-
-    match result {
-        Ok(out) if out.status.success() => {
-            info!("[containers] started {name}, triggering re-poll");
+    match k8s::scale_deployment(&state.kube_client, &name, 1).await {
+        Ok(_) => {
+            info!("[containers] scaled {name} to 1, triggering re-poll");
             tokio::time::sleep(Duration::from_secs(3)).await;
             state.poll_trigger.notify_one();
             (StatusCode::OK, Json(serde_json::json!({}))).into_response()
         }
-        Ok(out) => {
-            let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            let msg = if msg.is_empty() { "docker start failed".to_string() } else { msg };
-            error!("[containers] docker start failed: {msg}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": msg}))).into_response()
-        }
         Err(e) => {
-            error!("[containers] docker start error: {e}");
+            error!("[containers] scale {name} failed: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
         }
     }
@@ -409,19 +402,34 @@ async fn start_container_handler(
 async fn poll_containers(state: Arc<AppState>) {
     tokio::time::sleep(Duration::from_secs(5)).await;
     loop {
-        match fetch_managed_containers(&state.public_host).await {
-            Ok(mut new_containers) => {
+        match k8s::list_managed_deployments(&state.kube_client).await {
+            Ok(mut children) => {
                 let mut registry = load_pubkey_registry();
                 let mut dirty    = false;
 
+                let mut new_containers: Vec<ContainerInfo> = children
+                    .iter_mut()
+                    .map(|c| ContainerInfo {
+                        id:          c.name.clone(),
+                        name:        c.name.clone(),
+                        git_url:     c.git_url.clone(),
+                        status:      c.status.clone(),
+                        host:        state.public_host.clone(),
+                        port:        c.noise_port,
+                        pubkey:      String::new(),
+                        remote:      c.remote,
+                        instance_id: c.instance_id.clone(),
+                    })
+                    .collect();
+
                 for c in &mut new_containers {
-                    if let Some(pk) = registry.get(&c.id) {
+                    if let Some(pk) = registry.get(&c.name) {
                         c.pubkey = pk.clone();
                     } else if c.status == "running" {
                         info!("[containers] fetching pubkey for {}", c.name);
-                        if let Some(pk) = fetch_pubkey_via_exec(&c.name).await {
+                        if let Some(pk) = k8s::fetch_pubkey_via_exec(&state.kube_client, &c.name).await {
                             c.pubkey = pk.clone();
-                            registry.insert(c.id.clone(), pk);
+                            registry.insert(c.name.clone(), pk);
                             dirty = true;
                         } else {
                             error!("[containers] pubkey fetch failed for {}", c.name);
@@ -438,7 +446,7 @@ async fn poll_containers(state: Arc<AppState>) {
                 if changed {
                     let n = new_containers.len();
                     *state.containers.lock().unwrap() = new_containers;
-                    info!("[containers] state changed: {n} container(s)");
+                    info!("[containers] state changed: {n} child(ren)");
                 }
             }
             Err(e) => error!("[containers] poll error: {e}"),
@@ -450,98 +458,37 @@ async fn poll_containers(state: Arc<AppState>) {
     }
 }
 
-async fn fetch_managed_containers(public_host: &str) -> anyhow::Result<Vec<ContainerInfo>> {
-    let ids_out = tokio::time::timeout(
-        Duration::from_secs(10),
-        tokio::process::Command::new("docker")
-            .args(["ps", "-a", "--filter", "label=claudulhu.managed=1", "-q"])
-            .output(),
-    ).await.map_err(|_| anyhow::anyhow!("docker ps timed out"))?
-    .map_err(|e| anyhow::anyhow!("docker ps failed: {e}"))?;
-
-    let ids: Vec<&str> = std::str::from_utf8(&ids_out.stdout)?
-        .lines()
-        .filter(|l| !l.is_empty())
-        .collect();
-
-    if ids.is_empty() { return Ok(vec![]); }
-
-    let mut cmd = tokio::process::Command::new("docker");
-    cmd.arg("inspect");
-    for id in &ids { cmd.arg(id); }
-    let inspect_out = tokio::time::timeout(Duration::from_secs(10), cmd.output())
-        .await.map_err(|_| anyhow::anyhow!("docker inspect timed out"))?
-        .map_err(|e| anyhow::anyhow!("docker inspect failed: {e}"))?;
-
-    let inspect: Vec<serde_json::Value> = serde_json::from_slice(&inspect_out.stdout)?;
-    let mut results = Vec::new();
-
-    for c in inspect {
-        let id     = c["Id"].as_str().unwrap_or("").chars().take(12).collect::<String>();
-        let name   = c["Name"].as_str().unwrap_or("").trim_start_matches('/').to_string();
-        let status = c["State"]["Status"].as_str().unwrap_or("unknown").to_string();
-
-        let noise_port: u16 = c["Config"]["Env"]
-            .as_array()
-            .and_then(|env| {
-                env.iter().find_map(|e| {
-                    e.as_str()?.strip_prefix("NOISE_PORT=").and_then(|v| v.parse().ok())
-                })
-            })
-            .unwrap_or(9100);
-
-        let git_url = c["Config"]["Labels"]["claudulhu.git_url"]
-            .as_str().unwrap_or("").to_string();
-
-        results.push(ContainerInfo {
-            id, name, git_url, status,
-            host:   public_host.to_string(),
-            port:   noise_port,
-            pubkey: String::new(),
-        });
-    }
-
-    Ok(results)
-}
-
-async fn fetch_pubkey_via_exec(container_name: &str) -> Option<String> {
-    let fut = tokio::process::Command::new("docker")
-        .args(["exec", container_name, "claudulhu-server", "--print-pubkey"])
-        .output();
-    let out = tokio::time::timeout(Duration::from_secs(5), fut).await.ok()?.ok()?;
-    if !out.status.success() { return None; }
-    let pk = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    if pk.is_empty() { None } else { Some(pk) }
-}
-
 // ── System prompt ─────────────────────────────────────────────────────────────
 
 fn build_system_prompt() -> String {
     "\
-You are the master control node for a fleet of claudulhu coding assistant containers.\n\n\
-To create a new child container for a Git repository, use the create_container tool — \
-it handles Docker networking, port assignment, volumes, and environment variables automatically.\n\n\
-To send a message to a running child container's agent, use message_child(container_name, text). \
-Use this to delegate coding tasks or coordinate work across containers.\n\n\
+You are the master control node for a fleet of claudulhu coding assistant containers running on Kubernetes.\n\n\
+To create a new child for a Git repository, use the create_container tool — \
+it handles Kubernetes resources (Deployments, Services, PVCs), port assignment (NodePorts 30100–30199), \
+and all required environment variables automatically. \
+Pass remote=true and instance_type to provision an EC2 worker node first.\n\n\
+To send a message to a running child's agent, use message_child(container_name, text). \
+Use this to delegate coding tasks or coordinate work across children.\n\n\
+To permanently remove a child and all its resources, use terminate_container(name).\n\n\
 GH_TOKEN is set in this environment and the gh CLI is available — use it for all GitHub operations.\n\n\
 Be concise and direct."
         .to_string()
 }
 
-// ── Child messaging tools ──────────────────────────────────────────────────────
+// ── Tools ─────────────────────────────────────────────────────────────────────
 
 fn message_child_tool() -> AnthropicTool {
     AnthropicTool {
         name: "message_child".to_string(),
         description: "Send a message to a child container's agent and wait for its response. \
-                       Use this to delegate tasks or ask questions to a specific child container."
+                       Use this to delegate tasks or ask questions to a specific child."
             .to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
                 "container_name": {
                     "type": "string",
-                    "description": "The name of the child container to message."
+                    "description": "The name of the child to message."
                 },
                 "text": {
                     "type": "string",
@@ -556,10 +503,9 @@ fn message_child_tool() -> AnthropicTool {
 fn create_container_tool() -> AnthropicTool {
     AnthropicTool {
         name: "create_container".to_string(),
-        description: "Create and start a new claudulhu child container for a Git repository. \
-                       Automatically handles Docker networking (claudulhu-net), port assignment \
-                       (9100–9199), named volumes, and all required environment variables. \
-                       Returns the container name and Noise port on success."
+        description: "Create and start a new claudulhu child for a Git repository on Kubernetes. \
+                       Handles port assignment (NodePorts 30100–30199), PVCs, Deployment, and Services. \
+                       Set remote=true to provision an EC2 worker node first; requires instance_type in that case."
             .to_string(),
         input_schema: serde_json::json!({
             "type": "object",
@@ -570,19 +516,27 @@ fn create_container_tool() -> AnthropicTool {
                 },
                 "name": {
                     "type": "string",
-                    "description": "Optional container name override. Defaults to rulyeh-<repo-name>."
+                    "description": "Optional name override. Defaults to rulyeh-<repo-name>."
                 },
                 "noise_port": {
                     "type": "integer",
-                    "description": "Optional Noise port (9100–9199). Auto-assigned if omitted."
+                    "description": "Optional NodePort (30100–30199). Auto-assigned if omitted."
                 },
                 "startup_script": {
                     "type": "string",
-                    "description": "Optional shell script executed inside the child container before the server starts. Passed as STARTUP_SCRIPT env var."
+                    "description": "Optional shell script run inside the child before the server starts."
                 },
                 "startup_prompt": {
                     "type": "string",
-                    "description": "Optional initial message sent to the child's agentic loop once it is ready. Passed as STARTUP_PROMPT env var."
+                    "description": "Optional initial prompt sent to the child's agentic loop once ready."
+                },
+                "remote": {
+                    "type": "boolean",
+                    "description": "If true, provision an EC2 worker node before scheduling the child."
+                },
+                "instance_type": {
+                    "type": "string",
+                    "description": "EC2 instance type (e.g. t3.medium). Required when remote=true."
                 }
             },
             "required": ["git_url"]
@@ -590,8 +544,28 @@ fn create_container_tool() -> AnthropicTool {
     }
 }
 
+fn terminate_container_tool() -> AnthropicTool {
+    AnthropicTool {
+        name: "terminate_container".to_string(),
+        description: "Permanently terminate a child and delete all its Kubernetes resources \
+                       (Deployment, Services, PVCs). For remote children, also terminates the EC2 \
+                       instance and removes the K8s node. Irreversible — all PVC data is lost."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The name of the child to terminate."
+                }
+            },
+            "required": ["name"]
+        }),
+    }
+}
+
 fn rulyeh_extra_tools() -> Vec<AnthropicTool> {
-    vec![message_child_tool(), create_container_tool()]
+    vec![message_child_tool(), create_container_tool(), terminate_container_tool()]
 }
 
 fn rulyeh_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_json::Value)
@@ -608,156 +582,224 @@ fn rulyeh_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serd
         let state  = state.clone();
         Box::pin(async move {
             match name.as_str() {
-                "message_child" => {
-                    let container_name = match input.get("container_name").and_then(|v| v.as_str()) {
-                        Some(n) => n.to_string(),
-                        None => return "error: missing 'container_name' field".to_string(),
-                    };
-                    let text = match input.get("text").and_then(|v| v.as_str()) {
-                        Some(t) => t.to_string(),
-                        None => return "error: missing 'text' field".to_string(),
-                    };
-                    let preview: String = text.chars().take(120).collect();
-                    let url = format!("http://{}:8000/message", container_name);
-                    info!("[rulyeh/message_child] → POST {url} container={container_name} ({} chars): {preview}", text.len());
-                    let start = Instant::now();
-                    match client
-                        .post(&url)
-                        .json(&serde_json::json!({ "text": text }))
-                        .send()
-                        .await
-                    {
-                        Ok(resp) => {
-                            let status  = resp.status();
-                            let elapsed = start.elapsed().as_millis();
-                            info!("[rulyeh/message_child] ← HTTP {status} in {elapsed}ms from {container_name}");
-                            match resp.json::<serde_json::Value>().await {
-                                Ok(body) => {
-                                    let result = body
-                                        .get("text")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("(no response text)")
-                                        .to_string();
-                                    let rpreview: String = result.chars().take(120).collect();
-                                    info!("[rulyeh/message_child] response ({} chars): {rpreview}", result.len());
-                                    result
-                                }
-                                Err(e) => {
-                                    error!("[rulyeh/message_child] parse error from {container_name}: {e}");
-                                    format!("error parsing child response: {e}")
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            let elapsed = start.elapsed().as_millis();
-                            error!("[rulyeh/message_child] request to {container_name} failed in {elapsed}ms: {e}");
-                            format!("error contacting child '{container_name}': {e}")
-                        }
-                    }
-                }
-                "create_container" => {
-                    let git_url = match input.get("git_url").and_then(|v| v.as_str()) {
-                        Some(u) => u.to_string(),
-                        None => return "error: missing 'git_url' field".to_string(),
-                    };
-                    let repo_slug = git_url.trim_end_matches('/')
-                        .split('/')
-                        .last()
-                        .unwrap_or("repo")
-                        .trim_end_matches(".git")
-                        .to_lowercase();
-                    let container_name = input.get("name")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| format!("rulyeh-{repo_slug}"));
-
-                    // Grab free port — release lock before any await.
-                    let noise_port: u16 = {
-                        let used_ports: std::collections::HashSet<u16> = state.containers
-                            .lock().unwrap()
-                            .iter()
-                            .map(|c| c.port)
-                            .collect();
-                        match input.get("noise_port").and_then(|v| v.as_u64()) {
-                            Some(p) => p as u16,
-                            None => match (9100u16..=9199).find(|p| !used_ports.contains(p)) {
-                                Some(p) => p,
-                                None => return "error: no free ports available in range 9100–9199".to_string(),
-                            },
-                        }
-                    };
-
-                    let api_key    = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
-                    let gh_token   = std::env::var("GH_TOKEN").unwrap_or_default();
-                    let pub_host   = state.public_host.clone();
-                    let rulyeh_url = state.rulyeh_url.clone();
-
-                    let label_git = format!("claudulhu.git_url={git_url}");
-                    let port_map  = format!("{noise_port}:{noise_port}");
-                    let vol_data  = format!("{container_name}-data:/data");
-                    let vol_ws    = format!("{container_name}-workspace:/workspace");
-                    let env_api   = format!("ANTHROPIC_API_KEY={api_key}");
-                    let env_git   = format!("GIT_URL={git_url}");
-                    let env_port  = format!("NOISE_PORT={noise_port}");
-                    let env_host  = format!("PUBLIC_HOST={pub_host}");
-                    let env_rul   = format!("RULYEH_URL={rulyeh_url}");
-                    let env_gh             = if gh_token.is_empty() { None } else { Some(format!("GH_TOKEN={gh_token}")) };
-                    let env_startup_script = input.get("startup_script").and_then(|v| v.as_str()).map(|s| format!("STARTUP_SCRIPT={s}"));
-                    let env_startup_prompt = input.get("startup_prompt").and_then(|v| v.as_str()).map(|s| format!("STARTUP_PROMPT={s}"));
-
-                    info!("[rulyeh/create_container] creating {container_name} port={noise_port} git={git_url}");
-
-                    let pull = if std::env::var("CLAUDULHU_DEV").as_deref() == Ok("1") {
-                        "missing"
-                    } else {
-                        "always"
-                    };
-
-                    let mut cmd = tokio::process::Command::new("docker");
-                    cmd.args(["run", "-d", "--pull", pull]);
-                    cmd.args(["--name", &container_name]);
-                    cmd.args(["--network", "claudulhu-net"]);
-                    cmd.args(["--label", "claudulhu.managed=1"]);
-                    cmd.args(["--label", &label_git]);
-                    cmd.args(["-p", &port_map]);
-                    cmd.args(["--restart", "unless-stopped"]);
-                    cmd.args(["-v", &vol_data]);
-                    cmd.args(["-v", &vol_ws]);
-                    cmd.args(["-e", &env_api]);
-                    cmd.args(["-e", &env_git]);
-                    if let Some(ref gh) = env_gh { cmd.args(["-e", gh.as_str()]); }
-                    if let Some(ref s) = env_startup_script { cmd.args(["-e", s.as_str()]); }
-                    if let Some(ref s) = env_startup_prompt { cmd.args(["-e", s.as_str()]); }
-                    cmd.args(["-e", &env_port]);
-                    cmd.args(["-e", &env_host]);
-                    cmd.args(["-e", &env_rul]);
-                    cmd.args(["--entrypoint", "/usr/local/bin/docker-entrypoint-server.sh"]);
-                    cmd.arg("ghcr.io/georgebradford0/rulyeh:latest");
-
-                    match cmd.output().await {
-                        Ok(out) if out.status.success() => {
-                            let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                            let short = &id[..id.len().min(12)];
-                            info!("[rulyeh/create_container] created {container_name} id={short}");
-                            tokio::time::sleep(Duration::from_secs(3)).await;
-                            state.poll_trigger.notify_one();
-                            format!("Created container '{container_name}' on Noise port {noise_port}. ID: {short}")
-                        }
-                        Ok(out) => {
-                            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                            error!("[rulyeh/create_container] docker run failed: {err}");
-                            format!("error: docker run failed: {err}")
-                        }
-                        Err(e) => {
-                            error!("[rulyeh/create_container] command error: {e}");
-                            format!("error: {e}")
-                        }
-                    }
-                }
+                "message_child" => exec_message_child(client, input).await,
+                "create_container" => exec_create_container(state, input).await,
+                "terminate_container" => exec_terminate_container(state, input).await,
                 other => format!("unknown tool: {other}"),
             }
         })
     }))
+}
+
+async fn exec_message_child(client: reqwest::Client, input: serde_json::Value) -> String {
+    let container_name = match input.get("container_name").and_then(|v| v.as_str()) {
+        Some(n) => n.to_string(),
+        None => return "error: missing 'container_name' field".to_string(),
+    };
+    let text = match input.get("text").and_then(|v| v.as_str()) {
+        Some(t) => t.to_string(),
+        None => return "error: missing 'text' field".to_string(),
+    };
+    let preview: String = text.chars().take(120).collect();
+    let url = format!("http://{}:8000/message", container_name);
+    info!("[rulyeh/message_child] → POST {url} ({} chars): {preview}", text.len());
+    let start = Instant::now();
+    match client.post(&url).json(&serde_json::json!({ "text": text })).send().await {
+        Ok(resp) => {
+            let status  = resp.status();
+            let elapsed = start.elapsed().as_millis();
+            info!("[rulyeh/message_child] ← HTTP {status} in {elapsed}ms from {container_name}");
+            match resp.json::<serde_json::Value>().await {
+                Ok(body) => {
+                    let result = body.get("text").and_then(|v| v.as_str())
+                        .unwrap_or("(no response text)").to_string();
+                    let rpreview: String = result.chars().take(120).collect();
+                    info!("[rulyeh/message_child] response ({} chars): {rpreview}", result.len());
+                    result
+                }
+                Err(e) => {
+                    error!("[rulyeh/message_child] parse error from {container_name}: {e}");
+                    format!("error parsing child response: {e}")
+                }
+            }
+        }
+        Err(e) => {
+            let elapsed = start.elapsed().as_millis();
+            error!("[rulyeh/message_child] request to {container_name} failed in {elapsed}ms: {e}");
+            format!("error contacting child '{container_name}': {e}")
+        }
+    }
+}
+
+async fn exec_create_container(state: Arc<AppState>, input: serde_json::Value) -> String {
+    let git_url = match input.get("git_url").and_then(|v| v.as_str()) {
+        Some(u) => u.to_string(),
+        None => return "error: missing 'git_url' field".to_string(),
+    };
+    let repo_slug = git_url.trim_end_matches('/')
+        .split('/')
+        .last()
+        .unwrap_or("repo")
+        .trim_end_matches(".git")
+        .to_lowercase();
+    let child_name = input.get("name").and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("rulyeh-{repo_slug}"));
+
+    let remote       = input.get("remote").and_then(|v| v.as_bool()).unwrap_or(false);
+    let instance_type = input.get("instance_type").and_then(|v| v.as_str()).map(str::to_string);
+
+    if remote && instance_type.is_none() {
+        return "error: instance_type is required when remote=true".to_string();
+    }
+
+    let api_key    = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
+    let gh_token   = std::env::var("GH_TOKEN").ok().filter(|s| !s.is_empty());
+    let pub_host   = state.public_host.clone();
+    let rulyeh_url = state.rulyeh_url.clone();
+    let startup_script = input.get("startup_script").and_then(|v| v.as_str()).map(str::to_string);
+    let startup_prompt = input.get("startup_prompt").and_then(|v| v.as_str()).map(str::to_string);
+
+    // Assign NodePort
+    let noise_port = match input.get("noise_port").and_then(|v| v.as_u64()) {
+        Some(p) => p as u16,
+        None => match k8s::assign_nodeport(&state.kube_client).await {
+            Ok(p) => p,
+            Err(e) => return format!("error: {e}"),
+        },
+    };
+
+    let mut node_selector: Option<std::collections::HashMap<String, String>> = None;
+    let mut ec2_instance_id: Option<String> = None;
+
+    if remote {
+        let sg  = std::env::var("AWS_SECURITY_GROUP_ID").unwrap_or_default();
+        let sub = std::env::var("AWS_SUBNET_ID").unwrap_or_default();
+        let cp  = std::env::var("K3S_CONTROL_PLANE_URL").unwrap_or_default();
+        if sg.is_empty() || sub.is_empty() || cp.is_empty() {
+            return "error: AWS_SECURITY_GROUP_ID, AWS_SUBNET_ID, and K3S_CONTROL_PLANE_URL must be set for remote provisioning".to_string();
+        }
+
+        // Read join token
+        let join_token = match k8s::read_join_token(&state.kube_client).await {
+            Ok(t) => t,
+            Err(e) => return format!("error reading k3s join token: {e}"),
+        };
+
+        // Select latest Ubuntu 24.04 AMI
+        let ami = match aws::describe_latest_ubuntu_ami().await {
+            Ok(a) => a,
+            Err(e) => return format!("error selecting AMI: {e}"),
+        };
+        info!("[rulyeh/create_container] remote ami={ami} instance_type={}", instance_type.as_deref().unwrap_or(""));
+
+        let user_data = format!(
+            "#!/bin/bash\nset -e\ncurl -sfL https://get.k3s.io | K3S_URL={cp} K3S_TOKEN={join_token} K3S_NODE_LABEL=\"claudulhu.child-name={child_name}\" sh -\n"
+        );
+
+        let spec = aws::InstanceSpec {
+            ami: &ami,
+            instance_type: instance_type.as_deref().unwrap_or("t3.medium"),
+            security_group_id: &sg,
+            subnet_id: &sub,
+            child_name: &child_name,
+            user_data: &user_data,
+        };
+
+        let instance_id = match aws::run_instance(&spec).await {
+            Ok(id) => id,
+            Err(e) => return format!("error launching EC2 instance: {e}"),
+        };
+        info!("[rulyeh/create_container] launched EC2 {instance_id}");
+
+        // Poll for running state
+        if let Err(e) = aws::wait_for_instance_running(&instance_id).await {
+            return format!("error waiting for EC2 instance: {e}");
+        }
+
+        // Wait for node to join and be Ready
+        let node_name = match k8s::wait_for_node_ready(&state.kube_client, &child_name, 180).await {
+            Ok(n) => n,
+            Err(e) => return format!("error waiting for K8s node: {e}"),
+        };
+
+        // Label the node
+        let mut labels = std::collections::HashMap::new();
+        labels.insert("claudulhu.ec2-instance-id".to_string(), instance_id.clone());
+        labels.insert("claudulhu.child-name".to_string(), child_name.clone());
+        if let Err(e) = k8s::label_node(&state.kube_client, &node_name, &labels).await {
+            error!("[rulyeh/create_container] label node failed: {e}");
+        }
+
+        let mut ns = std::collections::HashMap::new();
+        ns.insert("claudulhu.child-name".to_string(), child_name.clone());
+        node_selector = Some(ns);
+        ec2_instance_id = Some(instance_id);
+    }
+
+    info!("[rulyeh/create_container] creating {child_name} port={noise_port} git={git_url} remote={remote}");
+
+    let params = k8s::CreateChildParams {
+        name:           &child_name,
+        git_url:        &git_url,
+        noise_port,
+        api_key:        &api_key,
+        gh_token:       gh_token.as_deref(),
+        pub_host:       &pub_host,
+        rulyeh_url:     &rulyeh_url,
+        startup_script: startup_script.as_deref(),
+        startup_prompt: startup_prompt.as_deref(),
+        node_selector,
+        remote,
+        instance_id:    ec2_instance_id.as_deref(),
+    };
+
+    match k8s::create_child_resources(&state.kube_client, &params).await {
+        Ok(_) => {
+            info!("[rulyeh/create_container] created {child_name}");
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            state.poll_trigger.notify_one();
+            format!("Created child '{child_name}' on NodePort {noise_port}.")
+        }
+        Err(e) => {
+            error!("[rulyeh/create_container] failed: {e}");
+            format!("error: {e}")
+        }
+    }
+}
+
+async fn exec_terminate_container(state: Arc<AppState>, input: serde_json::Value) -> String {
+    let name = match input.get("name").and_then(|v| v.as_str()) {
+        Some(n) => n.to_string(),
+        None => return "error: missing 'name' field".to_string(),
+    };
+
+    let (remote, instance_id) = {
+        let containers = state.containers.lock().unwrap();
+        containers.iter()
+            .find(|c| c.name == name)
+            .map(|c| (c.remote, c.instance_id.clone()))
+            .unwrap_or((false, None))
+    };
+
+    let node_name = if remote {
+        k8s::find_node_for_child(&state.kube_client, &name).await
+    } else {
+        None
+    };
+
+    match k8s::delete_child_resources(
+        &state.kube_client,
+        &name,
+        node_name.as_deref(),
+        instance_id.as_deref(),
+    ).await {
+        Ok(_) => {
+            state.poll_trigger.notify_one();
+            format!("Terminated '{name}' and deleted all resources.")
+        }
+        Err(e) => format!("error: {e}"),
+    }
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -809,11 +851,18 @@ async fn main() {
                 .map(|a| a.ip().to_string())
                 .unwrap_or_else(|_| "127.0.0.1".to_string())
         });
-    let rulyeh_name = std::env::var("RULYEH_NAME")
-        .unwrap_or_else(|_| "rulyeh".to_string());
-    let rulyeh_url = format!("http://{}:{}", rulyeh_name, http_port);
+    let rulyeh_name = std::env::var("RULYEH_NAME").unwrap_or_else(|_| "rulyeh".to_string());
+    let rulyeh_url  = format!("http://{}:{}", rulyeh_name, http_port);
 
     info!("[rulyeh] noise_pubkey={pubkey_b32} noise_port={noise_port} http_port={http_port} public_host={public_host}");
+
+    let kube_client = match k8s::build_client().await {
+        Ok(c) => { info!("[rulyeh] K8s client initialized"); c }
+        Err(e) => {
+            error!("[rulyeh] failed to initialize K8s client: {e}");
+            std::process::exit(1);
+        }
+    };
 
     tokio::spawn(run_noise_proxy(static_private, noise_port, http_port));
 
@@ -833,6 +882,7 @@ async fn main() {
         pubkey_b32,
         public_host,
         rulyeh_url,
+        kube_client,
     });
 
     tokio::spawn(poll_containers(state.clone()));
