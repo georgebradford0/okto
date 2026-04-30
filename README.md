@@ -131,20 +131,13 @@ kubectl patch secret claudulhu-secrets -n claudulhu \
   }}'
 ```
 
-**Add these env vars to the rulyeh Deployment in `k8s/rulyeh.yaml`:**
+Set `AWS_DEFAULT_REGION` in `k8s/rulyeh.yaml` if you're not using `us-east-1`, then redeploy:
 
-```yaml
-- name: AWS_SECURITY_GROUP_ID
-  value: "sg-xxxxxxxxxxxxxxxxx"   # inbound: TCP 30100–30199 + TCP 6443
-- name: AWS_SUBNET_ID
-  value: "subnet-xxxxxxxxxxxxxxxxx"
-- name: K3S_CONTROL_PLANE_URL
-  value: "https://<control-plane-ip>:6443"
-- name: AWS_DEFAULT_REGION
-  value: "us-east-1"
+```sh
+kubectl apply -f k8s/rulyeh.yaml
 ```
 
-Then redeploy: `kubectl apply -f k8s/rulyeh.yaml`
+Rulyeh has access to the AWS CLI and can look up or create the necessary resources (security group, subnet, control plane URL) on demand — just ask it in chat.
 
 **Then ask rulyeh:**
 

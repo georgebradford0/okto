@@ -60,7 +60,7 @@ spec:
                   key: aws-secret-access-key
                   optional: true
             - name: AWS_DEFAULT_REGION
-              value: "us-east-1"
+              value: "us-west-2"
           volumeMounts:
             - name: data
               mountPath: /data
