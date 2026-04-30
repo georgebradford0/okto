@@ -1,6 +1,6 @@
 # claudulhu
 
-An agentic coding assistant. Rulyeh (the master node) manages a fleet of per-repo coding assistant containers and exposes the client-facing interface. Clients connect via an encrypted Noise tunnel.
+An agentic coding assistant. Rulyeh manages a fleet of per-repo coding assistant containers and exposes the client-facing interface. Clients connect via an encrypted Noise tunnel.
 
 ## Architecture
 
@@ -15,9 +15,32 @@ Both roles use the same image: `ghcr.io/georgebradford0/rulyeh:latest`
 
 ## Prerequisites
 
-- A [k3s](https://k3s.io) cluster (single node is fine)
-- `kubectl` configured to talk to it
-- The `k8s/` manifests from this repo
+### k3s
+
+Install k3s on your server (single node is fine):
+
+```sh
+curl -sfL https://get.k3s.io | sh -
+```
+
+`kubectl` is included. To use it without `sudo`:
+
+```sh
+mkdir -p ~/.kube
+sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+sudo chown $USER ~/.kube/config
+```
+
+To manage the cluster from another machine, copy `~/.kube/config` to that machine and replace `127.0.0.1` with your server's IP.
+
+### k8s/ manifests
+
+Clone this repo (or just download the `k8s/` directory) onto any machine with `kubectl` access:
+
+```sh
+git clone https://github.com/georgebradford0/claudulhu
+cd claudulhu
+```
 
 ---
 
