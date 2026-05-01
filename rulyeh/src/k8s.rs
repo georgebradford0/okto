@@ -198,6 +198,7 @@ async fn create_deployment(client: &Client, p: &CreateChildParams<'_>) -> anyhow
     let mut env = vec![
         json!({"name": "ANTHROPIC_API_KEY",  "value": p.api_key}),
         json!({"name": "NOISE_PORT",         "value": "9000"}),
+        json!({"name": "PUBLIC_PORT",        "value": p.noise_port.to_string()}),
         json!({"name": "PUBLIC_HOST",        "value": p.pub_host}),
         json!({"name": "RULYEH_URL",         "value": p.rulyeh_url}),
         json!({"name": "NOISE_PRIVATE_KEY",  "value": p.noise_private_key}),

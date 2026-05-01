@@ -83,7 +83,7 @@ Only needed if you want rulyeh to provision remote EC2 worker nodes on demand. S
 
 ```sh
 kubectl create secret generic k3s-join-token \
-  --from-literal=token="$(cat /var/lib/rancher/k3s/server/node-token)" \
+  --from-literal=token="$(sudo cat /var/lib/rancher/k3s/server/node-token)" \
   -n claudulhu
 ```
 
