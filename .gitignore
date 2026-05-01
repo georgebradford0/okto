@@ -9,3 +9,5 @@ deploy/update_container.sh
 deploy/update_remote.sh
 .env
 down.sh
+scripts/restart-all.sh
+scripts/restart_rulyeh.sh
