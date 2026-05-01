@@ -68,9 +68,27 @@ struct HistMsg {
     text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output: Option<String>,
 }
 
 fn messages_to_history(messages: &[ApiMessage], last_cost_usd: Option<f64>) -> Vec<HistMsg> {
+    // Build tool_use_id → output text from ToolResult blocks in user messages.
+    let mut tool_outputs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for m in messages {
+        if m.role == "user" {
+            for block in &m.content {
+                if let ContentBlock::ToolResult { tool_use_id, content } = block {
+                    let text = content.first()
+                        .and_then(|v| v["text"].as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    tool_outputs.insert(tool_use_id.clone(), text);
+                }
+            }
+        }
+    }
+
     let mut result = Vec::new();
     for m in messages {
         match m.role.as_str() {
@@ -78,36 +96,28 @@ fn messages_to_history(messages: &[ApiMessage], last_cost_usd: Option<f64>) -> V
                 let text: String = m.content.iter()
                     .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
                     .collect();
-                if !text.is_empty() { result.push(HistMsg { role: "user".to_string(), text, cost_usd: None }); }
+                if !text.is_empty() { result.push(HistMsg { role: "user".to_string(), text, cost_usd: None, output: None }); }
             }
             "interrupted" => {
-                result.push(HistMsg { role: "interrupted".to_string(), text: "interrupted".to_string(), cost_usd: None });
+                result.push(HistMsg { role: "interrupted".to_string(), text: "interrupted".to_string(), cost_usd: None, output: None });
             }
             "assistant" => {
                 let text: String = m.content.iter()
                     .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
                     .collect();
-                if !text.is_empty() { result.push(HistMsg { role: "assistant".to_string(), text, cost_usd: None }); }
+                if !text.is_empty() { result.push(HistMsg { role: "assistant".to_string(), text, cost_usd: None, output: None }); }
                 for block in &m.content {
-                    if let ContentBlock::ToolUse { name, input, .. } = block {
+                    if let ContentBlock::ToolUse { id, name, input } = block {
                         let preview = input.as_object()
                             .and_then(|map| map.values().next())
                             .and_then(|v| v.as_str())
-                            .map(|s| {
-                                let s = s.trim();
-                                // safe truncation at char boundary
-                                let limit = 60;
-                                if s.len() <= limit { s.to_string() }
-                                else {
-                                    let b = s.char_indices().take_while(|(i, _)| *i <= limit).last().map(|(i, _)| i).unwrap_or(limit);
-                                    format!("{}…", &s[..b])
-                                }
-                            });
+                            .map(|s| s.trim().to_string());
                         let text = match preview {
                             Some(p) => format!("{name}({p})"),
                             None    => name.clone(),
                         };
-                        result.push(HistMsg { role: "tool".to_string(), text, cost_usd: None });
+                        let output = tool_outputs.get(id).cloned();
+                        result.push(HistMsg { role: "tool".to_string(), text, cost_usd: None, output });
                     }
                 }
             }

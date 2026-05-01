@@ -551,14 +551,6 @@ const ChatPane = memo(function ChatPane({
       log(`[chat] stream done cost_usd=${event.cost_usd}`)
       lastToolIdRef.current = null
       wsRef.current = null
-      if (event.cost_usd != null) {
-        setMessages(prev => {
-          const idx = [...prev].reverse().findIndex(m => m.role === 'assistant')
-          if (idx === -1) return prev
-          const realIdx = prev.length - 1 - idx
-          return prev.map((m, i) => i === realIdx ? { ...m, cost: event.cost_usd } : m)
-        })
-      }
       opts.onDone()
     } else if (event.type === 'interrupted') {
       log(`[chat] stream interrupted cost_usd=${event.cost_usd}`)
@@ -616,13 +608,14 @@ const ChatPane = memo(function ChatPane({
     log(`[chat] loadHistory GET ${baseUrl}/history`)
     fetch(`${baseUrl}/history`)
       .then(r => r.json())
-      .then((data: { messages: Array<{ role: string; text: string; cost_usd?: number }>; is_streaming?: boolean }) => {
+      .then((data: { messages: Array<{ role: string; text: string; cost_usd?: number; output?: string }>; is_streaming?: boolean }) => {
         log(`[chat] history loaded ${data.messages.length} messages is_streaming=${data.is_streaming}`)
         const msgs: Message[] = data.messages.map((m, i) => ({
           id:   `h${i}`,
           role: m.role as Message['role'],
           text: m.text,
           ...(m.cost_usd != null ? { cost: m.cost_usd } : {}),
+          ...(m.output    != null ? { output: m.output } : {}),
         }))
         setMessages(msgs)
         if (data.is_streaming) {
@@ -731,7 +724,7 @@ const ChatPane = memo(function ChatPane({
       handleStreamEvent(e.data, {
         streamingIdRef,
         hasAssistantMsgRef,
-        onDone: () => updateStatus('ready'),
+        onDone: () => loadHistoryRef.current(),
       })
     }
     ws.onerror = (e) => {
