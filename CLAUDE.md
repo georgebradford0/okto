@@ -16,7 +16,7 @@ There is one image used for both parent and child containers:
 |-------|---------|
 | `ghcr.io/georgebradford0/rulyeh` | rulyeh (parent) and all child containers |
 
-Children use the same image with `--entrypoint /usr/local/bin/docker-entrypoint-server.sh`.
+Child Deployments use the same image with `command: ["/usr/local/bin/docker-entrypoint-server.sh"]` set in the pod spec. Each child gets its own Deployment, two PVCs (`{name}-data`, `{name}-workspace`), a ClusterIP Service (port 8000), and a NodePort Service (port 9000, assigned from range 30100–30199).
 
 Build and push from the **repo root** (replace `X.Y.Z` with the new version). Always use `buildx` with `--platform` so both `linux/amd64` and `linux/arm64` are included in the manifest:
 
@@ -47,7 +47,7 @@ Claudulhu is an agentic coding assistant: a server runs an AI loop against a git
 |-----------|----------|------|
 | `core/` | Rust | Shared library: agentic loop, Claude API streaming, git/worktree ops, config |
 | `server/` | Rust + Axum | Child container: Noise handshake → WebSocket → runs agentic loop against a single git repo |
-| `rulyeh/` | Rust + Axum | Parent container: orchestrates child containers via Docker socket; mobile connects here first |
+| `rulyeh/` | Rust + Axum | Parent container: orchestrates child Kubernetes Deployments; mobile connects here first |
 | `mobile/` | React Native (TS) | iOS/Android client: QR scan → native Noise tunnel → WebSocket UI |
 
 ### Transport
@@ -65,10 +65,10 @@ Server listens on port 9000 (`NOISE_PORT`). The Curve25519 keypair is persisted 
 
 `rulyeh` is the parent orchestration node. The mobile client connects to it first via the QR-scanned Noise tunnel. It:
 
-- Polls Docker (every 10 s) for child containers labelled `claudulhu.managed=1`
+- Polls Kubernetes (every 10 s) for Deployments in the `claudulhu` namespace labelled `claudulhu.managed=1`
 - Caches each child's Noise public key in `/data/pubkey_registry.json`
-- Pushes `container_list` frames to all connected clients when container state changes
-- Accepts `start_container` commands from the client to restart stopped containers, then triggers an immediate re-poll
+- Exposes `/containers` HTTP endpoint; clients poll it to get the current container list
+- Accepts `start_container` commands from the client, which scale the child Deployment to 1 replica and trigger an immediate re-poll
 - Runs its own agentic loop (via `core`) so the user can ask it to create/manage child containers
 
 Image: `ghcr.io/georgebradford0/rulyeh`
