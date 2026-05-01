@@ -321,6 +321,84 @@ async fn create_services(client: &Client, name: &str, noise_port: u16) -> anyhow
     Ok(())
 }
 
+/// Rollout-restart one or more Deployments by patching the `kubectl.kubernetes.io/restartedAt`
+/// pod-template annotation.  Pass `names = &[]` to restart **all** managed children plus rulyeh
+/// itself; otherwise only the named deployments are restarted.
+pub async fn restart_deployments(client: &Client, names: &[&str]) -> anyhow::Result<Vec<String>> {
+    let deployments: Api<Deployment> = Api::namespaced(client.clone(), NAMESPACE);
+    let now = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        // Format as RFC 3339 UTC (kubectl accepts this format)
+        let s = secs % 60;
+        let m = (secs / 60) % 60;
+        let h = (secs / 3600) % 24;
+        let mut remaining_days = secs / 86400;
+        // Simple date calculation from Unix epoch
+        let mut year = 1970u32;
+        loop {
+            let days_in_year: u64 = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
+            if remaining_days < days_in_year { break; }
+            remaining_days -= days_in_year;
+            year += 1;
+        }
+        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+        let month_days: [u64; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        let mut month = 1u32;
+        for &md in &month_days {
+            if remaining_days < md { break; }
+            remaining_days -= md;
+            month += 1;
+        }
+        let day = remaining_days + 1;
+        format!("{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{s:02}Z")
+    };
+    let patch = json!({
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": {
+                        "kubectl.kubernetes.io/restartedAt": now
+                    }
+                }
+            }
+        }
+    });
+
+    let targets: Vec<String> = if names.is_empty() {
+        // All managed children + rulyeh itself
+        let list = deployments
+            .list(&ListParams::default().labels("claudulhu.managed=1"))
+            .await
+            .context("list managed deployments")?;
+        let mut t: Vec<String> = list
+            .iter()
+            .filter_map(|d| d.metadata.name.clone())
+            .collect();
+        t.push("rulyeh".to_string());
+        t
+    } else {
+        names.iter().map(|s| s.to_string()).collect()
+    };
+
+    let mut restarted = Vec::new();
+    for name in &targets {
+        match deployments
+            .patch(name, &PatchParams::default(), &Patch::Merge(patch.clone()))
+            .await
+        {
+            Ok(_) => {
+                info!("[k8s] restarted Deployment {name}");
+                restarted.push(name.clone());
+            }
+            Err(e) => {
+                error!("[k8s] restart Deployment {name} failed: {e}");
+            }
+        }
+    }
+    Ok(restarted)
+}
+
 pub async fn scale_deployment(client: &Client, name: &str, replicas: i32) -> anyhow::Result<()> {
     let deployments: Api<Deployment> = Api::namespaced(client.clone(), NAMESPACE);
     deployments

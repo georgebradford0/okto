@@ -546,8 +546,23 @@ fn terminate_container_tool() -> AnthropicTool {
     }
 }
 
+fn restart_all_containers_tool() -> AnthropicTool {
+    AnthropicTool {
+        name: "restart_all_containers".to_string(),
+        description: "Rollout-restart all managed child Deployments and rulyeh itself so that \
+                       they pick up the latest image. Use this after pushing a new container image \
+                       to apply the update across the cluster."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        }),
+    }
+}
+
 fn rulyeh_extra_tools() -> Vec<AnthropicTool> {
-    vec![message_child_tool(), create_container_tool(), terminate_container_tool()]
+    vec![message_child_tool(), create_container_tool(), terminate_container_tool(), restart_all_containers_tool()]
 }
 
 fn rulyeh_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_json::Value)
@@ -567,6 +582,7 @@ fn rulyeh_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serd
                 "message_child" => exec_message_child(client, input).await,
                 "create_container" => exec_create_container(state, input).await,
                 "terminate_container" => exec_terminate_container(state, input).await,
+                "restart_all_containers" => exec_restart_all_containers(state).await,
                 other => format!("unknown tool: {other}"),
             }
         })
@@ -789,6 +805,19 @@ async fn exec_terminate_container(state: Arc<AppState>, input: serde_json::Value
         Ok(_) => {
             state.poll_trigger.notify_one();
             format!("Terminated '{name}' and deleted all resources.")
+        }
+        Err(e) => format!("error: {e}"),
+    }
+}
+
+async fn exec_restart_all_containers(state: Arc<AppState>) -> String {
+    match k8s::restart_deployments(&state.kube_client, &[]).await {
+        Ok(restarted) if restarted.is_empty() => {
+            "No deployments found to restart.".to_string()
+        }
+        Ok(restarted) => {
+            state.poll_trigger.notify_one();
+            format!("Rollout restart triggered for: {}.", restarted.join(", "))
         }
         Err(e) => format!("error: {e}"),
     }
