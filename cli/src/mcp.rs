@@ -113,20 +113,23 @@ pub async fn add(
     let init_fail_marker  = format!("[mcp] '{name}' initialize failed");
     let no_tools_marker   = format!("[mcp] warning: server '{name}' advertised no tools");
 
+    let success = logs.contains(&connected_marker) || logs.contains(&no_tools_marker);
+
+    if !success {
+        configs.retain(|c| c.name != name);
+        write_config(&pod, &configs).await?;
+    }
+
     if logs.contains(&connected_marker) {
         println!("✓ MCP server '{name}' connected successfully.");
-    } else if logs.contains(&spawn_fail_marker) {
-        configs.retain(|c| c.name != name);
-        write_config(&pod, &configs).await?;
-        anyhow::bail!("MCP server '{name}' failed to spawn — command not found or not executable. Entry removed.");
-    } else if logs.contains(&init_fail_marker) {
-        configs.retain(|c| c.name != name);
-        write_config(&pod, &configs).await?;
-        anyhow::bail!("MCP server '{name}' process started but MCP handshake failed. Entry removed.");
     } else if logs.contains(&no_tools_marker) {
         println!("⚠ MCP server '{name}' connected but advertised no tools.");
+    } else if logs.contains(&spawn_fail_marker) {
+        anyhow::bail!("MCP server '{name}' failed to spawn — command not found or not executable.");
+    } else if logs.contains(&init_fail_marker) {
+        anyhow::bail!("MCP server '{name}' process started but MCP handshake failed.");
     } else {
-        println!("? Could not confirm result from logs — run `claudulhu logs {container}` to investigate.");
+        anyhow::bail!("MCP server '{name}' did not confirm connection within timeout — entry not saved. Run `claudulhu logs {container}` to investigate.");
     }
 
     Ok(())
