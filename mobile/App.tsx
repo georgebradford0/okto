@@ -1,24 +1,25 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
-import React, { useCallback, useEffect, memo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Animated,
   AppState,
   FlatList,
   NativeModules,
+  PermissionsAndroid,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native'
 import { KeyboardProvider, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller'
 import Reanimated, { useAnimatedStyle } from 'react-native-reanimated'
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Camera, useCameraDevice, useCodeScanner } from 'react-native-vision-camera'
-import { PermissionsAndroid } from 'react-native'
 import NoiseConnection from './src/NativeNoiseConnection'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -194,7 +195,9 @@ function renderText(text: string, baseStyle: object) {
       }).replace(/^\n/, '')
       elements.push(
         <View key={keyCounter++} style={s.codeBlock}>
-          <Text style={s.codeBlockText} selectable>{inner}</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            <Text style={s.codeBlockText} selectable>{inner}</Text>
+          </ScrollView>
         </View>
       )
       return
@@ -365,6 +368,7 @@ function containerDisplayName(name: string): string {
 
 const MessageBubble = memo(function MessageBubble({ message }: { message: Message }) {
   const [toolExpanded, setToolExpanded] = useState(false)
+  const renderedText = useMemo(() => renderText(message.text, s.textBlock), [message.text])
 
   if (message.role === 'session') {
     return null
@@ -383,7 +387,10 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: Messag
         onPress={() => setToolExpanded(v => !v)}
         activeOpacity={0.7}
       >
-        <Text style={s.toolLine} selectable numberOfLines={toolExpanded ? undefined : 1} ellipsizeMode="tail">{message.text}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Text style={[s.toolLine, { flex: 1 }]} selectable numberOfLines={toolExpanded ? undefined : 1} ellipsizeMode="tail">{message.text}</Text>
+          <Text style={[s.toolChevron, { transform: [{ rotate: toolExpanded ? '90deg' : '0deg' }] }]}>›</Text>
+        </View>
         {toolExpanded && message.output != null && (
           <View style={s.toolOutputBlock}>
             <Text style={s.toolOutputText} selectable>{message.output}</Text>
@@ -396,14 +403,14 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: Messag
     return (
       <View style={[s.messageWrap, s.messageWrapRight]}>
         <View style={s.userBubble}>
-          {renderText(message.text, s.textBlock)}
+          {renderedText}
         </View>
       </View>
     )
   }
   return (
     <View style={s.messageWrap}>
-      {renderText(message.text, s.textBlock)}
+      {renderedText}
       {message.cost != null && (
         <Text style={s.costLabel}>{formatCost(message.cost)}</Text>
       )}
@@ -429,6 +436,8 @@ function CreatureAnim() {
 // ── QrScanner ─────────────────────────────────────────────────────────────────
 
 function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void; onCancel: () => void }) {
+  const { width, height } = useWindowDimensions()
+  const reticleSize = Math.round(Math.min(width, height) * 0.6)
   const device      = useCameraDevice('back')
   const scannedRef  = useRef(false)
   const codeScanner = useCodeScanner({
@@ -454,7 +463,7 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
         <View style={s.scannerTopBar}>
           <Text style={s.scannerTitle}>Scan QR code</Text>
         </View>
-        <View style={s.scannerReticle}>
+        <View style={[s.scannerReticle, { width: reticleSize, height: reticleSize }]}>
           <View style={[s.scannerCorner, s.cornerTL]} />
           <View style={[s.scannerCorner, s.cornerTR]} />
           <View style={[s.scannerCorner, s.cornerBL]} />
@@ -500,6 +509,7 @@ const ChatPane = memo(function ChatPane({
   const contentHeightRef  = useRef(0)
   const listHeightRef     = useRef(0)
   const lastToolIdRef     = useRef<string | null>(null)
+  const historyAbortRef   = useRef<AbortController | null>(null)
 
   const updateStatus = useCallback((s: ConnStatus) => {
     setStatus(s)
@@ -610,8 +620,11 @@ const ChatPane = memo(function ChatPane({
   const loadHistoryRef = useRef<() => void>(() => {})
 
   const loadHistory = useCallback(() => {
+    historyAbortRef.current?.abort()
+    const controller = new AbortController()
+    historyAbortRef.current = controller
     log(`[chat] loadHistory GET ${baseUrl}/history`)
-    fetch(`${baseUrl}/history`)
+    fetch(`${baseUrl}/history`, { signal: controller.signal })
       .then(r => { log(`[chat] loadHistory HTTP ${r.status}`); return r.json() })
       .then((data: { messages: Array<{ role: string; text: string; cost_usd?: number; output?: string }>; is_streaming?: boolean }) => {
         log(`[chat] history loaded ${data.messages.length} messages is_streaming=${data.is_streaming}`)
@@ -634,6 +647,7 @@ const ChatPane = memo(function ChatPane({
         }, 50)
       })
       .catch(e => {
+        if ((e as Error).name === 'AbortError') return
         logE(`[chat] loadHistory failed: ${String(e)}`)
         updateStatus('error')
       })
@@ -659,6 +673,7 @@ const ChatPane = memo(function ChatPane({
   useEffect(() => {
     updateStatus('connecting')
     loadHistory()
+    return () => { historyAbortRef.current?.abort() }
   }, [baseUrl])
 
   // Re-fetch history when app foregrounds (tunnel may have reconnected).
@@ -684,11 +699,13 @@ const ChatPane = memo(function ChatPane({
     const parsed = parseAtQuery(input)
     if (!parsed) { setCompletions([]); return }
     let cancelled = false
-    fetch(`${baseUrl}/completions?dir_part=${encodeURIComponent(parsed.dirPart)}&file_part=${encodeURIComponent(parsed.filePart)}`)
-      .then(r => r.json())
-      .then((data: string[]) => { if (!cancelled) setCompletions(data) })
-      .catch(() => { if (!cancelled) setCompletions([]) })
-    return () => { cancelled = true }
+    const timer = setTimeout(() => {
+      fetch(`${baseUrl}/completions?dir_part=${encodeURIComponent(parsed.dirPart)}&file_part=${encodeURIComponent(parsed.filePart)}`)
+        .then(r => r.json())
+        .then((data: string[]) => { if (!cancelled) setCompletions(data) })
+        .catch(() => { if (!cancelled) setCompletions([]) })
+    }, 200)
+    return () => { cancelled = true; clearTimeout(timer) }
   }, [input, baseUrl])
 
   const applyCompletion = useCallback((completion: string) => {
@@ -826,10 +843,7 @@ const ChatPane = memo(function ChatPane({
             <TextInput
               style={s.input}
               value={input}
-              onChangeText={text => {
-                if (text.includes('\n')) { sendMessageRef.current(); return }
-                setInput(text)
-              }}
+              onChangeText={setInput}
               onSubmitEditing={() => sendMessageRef.current()}
               placeholder="message…"
               placeholderTextColor={C.textMuted}
@@ -858,9 +872,11 @@ const ChatPane = memo(function ChatPane({
         )}
 
         {(status === 'connecting' || status === 'error') && (
-          <View style={s.reconnectOverlay} pointerEvents="none">
-            <ActivityIndicator color="#fff" size="large" />
-            <Text style={s.reconnectOverlayText}>{status === 'error' ? 'Connection error' : 'Reconnecting'}</Text>
+          <View style={[s.reconnectBanner, { backgroundColor: status === 'error' ? '#fee2e2' : '#fffbeb', borderBottomColor: status === 'error' ? '#fecaca' : '#fef3c7' }]} pointerEvents="none">
+            {status === 'connecting' && <ActivityIndicator color={C.yellow} size="small" style={{ marginRight: 6 }} />}
+            <Text style={[s.reconnectText, { color: status === 'error' ? C.red : C.yellow }]}>
+              {status === 'error' ? 'Connection error' : 'Connecting…'}
+            </Text>
           </View>
         )}
       </View>
@@ -1409,10 +1425,8 @@ const s = StyleSheet.create({
   messageList:       { flex: 1 },
   messageListContent: { paddingVertical: 16 },
   emptyState:        { textAlign: 'center', color: C.textMuted, fontSize: 14, marginTop: 80, fontFamily: ARIMO },
-  reconnectBanner:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 7, backgroundColor: '#fffbeb', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#fef3c7' },
-  reconnectText:     { color: C.yellow, fontSize: 12, fontWeight: '500', fontFamily: ARIMO },
-  reconnectOverlay:      { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center', gap: 14 },
-  reconnectOverlayText:  { color: '#fff', fontSize: 15, fontWeight: '600', fontFamily: ARIMO, letterSpacing: 0.3 },
+  reconnectBanner:   { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, zIndex: 10 },
+  reconnectText:     { fontSize: 12, fontWeight: '600', fontFamily: ARIMO },
 
   // Scroll-to-bottom button
   scrollBtnWrap:     { position: 'absolute', left: 0, right: 0, alignItems: 'center', pointerEvents: 'box-none' },
@@ -1431,6 +1445,7 @@ const s = StyleSheet.create({
   questionMark:      { color: C.yellow, fontWeight: '700', fontSize: 15, marginBottom: 2, fontFamily: ARIMO },
   costLabel:         { fontSize: 11, color: C.textMuted, marginTop: 4, marginLeft: 2, fontFamily: ARIMO },
   toolLine:          { fontSize: 14, color: C.textMuted, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', marginLeft: 2 },
+  toolChevron:       { fontSize: 16, color: C.textMuted, marginLeft: 6, fontWeight: '300' },
   toolOutputBlock:   { marginTop: 6, marginLeft: 14, borderLeftWidth: 2, borderLeftColor: C.border, paddingLeft: 10 },
   toolOutputText:    { fontSize: 12, color: C.textSecondary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', lineHeight: 18 },
   interruptedLine:   { fontSize: 18, lineHeight: 26, color: C.textMuted, fontFamily: ARIMO, fontStyle: 'italic' },
@@ -1441,7 +1456,7 @@ const s = StyleSheet.create({
   completionText: { fontSize: 14, color: C.textPrimary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   inputFloat:   { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 12, paddingBottom: 12 },
   input:        { backgroundColor: C.bg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 24, paddingHorizontal: 20, paddingVertical: 16, color: C.textPrimary, fontSize: 18, lineHeight: 26, minHeight: 48, maxHeight: 140, fontFamily: ARIMO, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
-  inputStopBtn: { backgroundColor: C.bg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 24, paddingHorizontal: 20, paddingVertical: 16, height: 80, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
+  inputStopBtn: { backgroundColor: C.bg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 24, paddingHorizontal: 20, paddingVertical: 16, minHeight: 56, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
   stopBtnText:  { fontSize: 14, color: C.red, fontWeight: '600', fontFamily: ARIMO },
 
   // Settings header button + dropdown
