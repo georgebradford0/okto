@@ -85,28 +85,28 @@ pub async fn add(
         env,
     });
 
+    println!("→ writing config to '{container}'");
     write_config(&pod, &configs).await?;
 
-    // Wait for the hot-reload watcher (polls every 2s) to pick up the change
-    // and attempt to connect, then check pod logs for the result.
-    print!("Waiting for MCP server '{name}' to connect...");
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    println!("→ waiting for hot-reload watcher (~2s)...");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    let logs = k8s::exec_in_pod(&pod, &[
-        "sh", "-c",
-        &format!("kubectl logs -n {} $(hostname) --since=10s 2>/dev/null || cat /proc/1/fd/1 2>/dev/null || true", k8s::NAMESPACE),
-    ]).await.unwrap_or_default();
+    println!("→ spawning MCP server process...");
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-    // Fall back to kubectl logs from the CLI side.
-    let logs = if logs.trim().is_empty() {
-        tokio::process::Command::new("kubectl")
-            .args(["logs", "-n", k8s::NAMESPACE, &pod, "--since=10s"])
-            .output().await
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default()
-    } else {
-        logs
-    };
+    println!("→ checking pod logs...");
+    let logs = tokio::process::Command::new("kubectl")
+        .args(["logs", "-n", k8s::NAMESPACE, &pod, "--since=15s"])
+        .output().await
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    // Print any [mcp] lines relevant to this server so the user can see what happened.
+    for line in logs.lines() {
+        if line.contains("[mcp]") && (line.contains(&format!("'{name}'")) || line.contains("hot-reload")) {
+            println!("  {line}");
+        }
+    }
 
     let connected_marker  = format!("[mcp] '{name}' connected");
     let spawn_fail_marker = format!("[mcp] failed to spawn '{name}'");
@@ -114,9 +114,8 @@ pub async fn add(
     let no_tools_marker   = format!("[mcp] warning: server '{name}' advertised no tools");
 
     if logs.contains(&connected_marker) {
-        println!(" connected.");
+        println!("✓ MCP server '{name}' connected successfully.");
     } else if logs.contains(&spawn_fail_marker) {
-        // Roll back the config entry so the user isn't left with a broken server.
         configs.retain(|c| c.name != name);
         write_config(&pod, &configs).await?;
         anyhow::bail!("MCP server '{name}' failed to spawn — command not found or not executable. Entry removed.");
@@ -125,9 +124,9 @@ pub async fn add(
         write_config(&pod, &configs).await?;
         anyhow::bail!("MCP server '{name}' process started but MCP handshake failed. Entry removed.");
     } else if logs.contains(&no_tools_marker) {
-        println!(" connected (warning: no tools advertised).");
+        println!("⚠ MCP server '{name}' connected but advertised no tools.");
     } else {
-        println!("\n  Could not confirm connection from logs — check with: claudulhu logs rulyeh");
+        println!("? Could not confirm result from logs — run `claudulhu logs {container}` to investigate.");
     }
 
     Ok(())
