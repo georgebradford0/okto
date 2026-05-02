@@ -44,6 +44,9 @@ enum Command {
         yes: bool,
     },
 
+    /// Update the claudulhu CLI to the latest release
+    Update,
+
     /// Manage MCP tools in a container
     Mcp {
         #[command(subcommand)]
@@ -138,6 +141,52 @@ enum McpAction {
     },
 }
 
+async fn update() -> Result<()> {
+    use std::env::consts::{ARCH, OS};
+    use tokio::process::Command;
+
+    let artifact = match (OS, ARCH) {
+        ("linux",  "x86_64")  => "claudulhu-linux-x86_64",
+        ("linux",  "aarch64") => "claudulhu-linux-aarch64",
+        ("macos",  "x86_64")  => "claudulhu-macos-x86_64",
+        ("macos",  "aarch64") => "claudulhu-macos-aarch64",
+        _ => anyhow::bail!("unsupported platform: {OS}/{ARCH}"),
+    };
+
+    let url = format!(
+        "https://github.com/georgebradford0/claudulhu/releases/latest/download/{artifact}"
+    );
+
+    println!("Downloading latest {artifact}...");
+    let status = Command::new("curl")
+        .args(["-fsSL", &url, "-o", "/tmp/claudulhu-update"])
+        .status()
+        .await?;
+    anyhow::ensure!(status.success(), "download failed");
+
+    // Determine current binary path.
+    let current = std::env::current_exe()?;
+    let dest = current.to_str().unwrap_or("/usr/local/bin/claudulhu");
+
+    Command::new("chmod").args(["+x", "/tmp/claudulhu-update"]).status().await?;
+
+    // Try direct move, fall back to sudo.
+    let mv = Command::new("mv")
+        .args(["/tmp/claudulhu-update", dest])
+        .status()
+        .await?;
+    if !mv.success() {
+        let status = Command::new("sudo")
+            .args(["mv", "/tmp/claudulhu-update", dest])
+            .status()
+            .await?;
+        anyhow::ensure!(status.success(), "failed to install updated binary");
+    }
+
+    println!("Updated to latest release.");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -205,6 +254,7 @@ async fn main() -> Result<()> {
             ContainersAction::Delete { name, yes } => containers::delete(&name, yes).await?,
             ContainersAction::Restart { names } => containers::restart(&names).await?,
         },
+        Command::Update => update().await?,
         Command::Mcp { action } => match action {
             McpAction::List { container } => mcp::list(&container).await?,
             McpAction::Add { container, name, command, args, env } => {
