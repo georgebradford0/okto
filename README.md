@@ -102,11 +102,6 @@ claudulhu logs -f rulyeh  # follow
 MCP servers extend what rulyeh and child containers can do. Both `npx` and `uvx` are pre-installed in the image. Add servers with the CLI — arguments for the command go after `--`:
 
 ```sh
-# npx-based server
-claudulhu mcp add --name github --command npx \
-  --env GITHUB_PERSONAL_ACCESS_TOKEN=ghp_... \
-  -- -y @modelcontextprotocol/server-github
-
 # uvx-based server
 claudulhu mcp add --name aws-ec2 --command uvx \
   --env AWS_ACCESS_KEY_ID=... --env AWS_SECRET_ACCESS_KEY=... --env AWS_REGION=us-east-1 \
