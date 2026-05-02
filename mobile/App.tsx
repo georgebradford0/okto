@@ -58,7 +58,6 @@ interface Message {
 const ts = () => new Date().toISOString().replace('T', ' ').slice(0, 23)
 const log  = (...args: unknown[]) => console.log( `[${ts()}]`, ...args)
 const logE = (...args: unknown[]) => console.error(`[${ts()}] ERROR`, ...args)
-const logW = (...args: unknown[]) => console.warn( `[${ts()}] WARN`, ...args)
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -82,8 +81,6 @@ function parseQrData(raw: string): NoiseConnectionInfo | null {
   log(`[qr] parse failed: unexpected format`)
   return null
 }
-
-const connKeyFor = (c: NoiseConnectionInfo) => `${c.host}:${c.port}:${c.pk.slice(0, 8)}`
 
 // ── Dev connection ─────────────────────────────────────────────────────────────
 // Fixed dev keypair baked into the server when CLAUDULHU_DEV=1.
@@ -429,7 +426,9 @@ const MessageBubble = memo(function MessageBubble({
             </View>
             {toolExpanded && message.output != null && (
               <View style={s.toolOutputBlock}>
-                <Text style={s.toolOutputText} selectable>{message.output}</Text>
+                <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+                  <Text style={s.toolOutputText} selectable>{message.output}</Text>
+                </ScrollView>
               </View>
             )}
           </View>
@@ -545,6 +544,7 @@ const ChatPane = memo(function ChatPane({
   const [showScrollBtn,  setShowScrollBtn]  = useState(false)
   const [inputAreaH,     setInputAreaH]     = useState(0)
   const [streamingMsgId, setStreamingMsgId] = useState<string | null>(null)
+  const [stopSent,       setStopSent]       = useState(false)
 
   const sendMessageRef    = useRef<() => void>(() => {})
   const wsRef             = useRef<WebSocket | null>(null)
@@ -827,6 +827,15 @@ const ChatPane = memo(function ChatPane({
   clearRef.current = clearConversation
 
   const isPending = status === 'streaming'
+  useEffect(() => { if (!isPending) setStopSent(false) }, [isPending])
+
+  const renderMessageItem = useCallback(({ item, index }: { item: Message; index: number }) => (
+    <MessageBubble
+      message={item}
+      prevRole={index > 0 ? messages[index - 1].role : undefined}
+      isLive={item.id === streamingMsgId}
+    />
+  ), [messages, streamingMsgId])
 
   return (
     <View style={s.pane}>
@@ -835,14 +844,12 @@ const ChatPane = memo(function ChatPane({
           ref={listRef}
           data={messages}
           keyExtractor={m => m.id}
-          renderItem={({ item, index }) => (
-            <MessageBubble
-              message={item}
-              prevRole={index > 0 ? messages[index - 1].role : undefined}
-              isLive={item.id === streamingMsgId}
-            />
-          )}
-          contentContainerStyle={[s.messageListContent, { paddingBottom: inputAreaH + 8 }]}
+          renderItem={renderMessageItem}
+          contentContainerStyle={[
+            s.messageListContent,
+            { paddingBottom: inputAreaH + 8 },
+            (status === 'connecting' || status === 'error') && { paddingTop: 34 },
+          ]}
           style={s.messageList}
           ListEmptyComponent={
             <View style={s.emptyStateWrap}>
@@ -888,8 +895,10 @@ const ChatPane = memo(function ChatPane({
         <View style={s.inputFloat} onLayout={e => setInputAreaH(e.nativeEvent.layout.height)}>
           {isPending ? (
             <TouchableOpacity
-              style={s.inputStopBtn}
+              style={[s.inputStopBtn, stopSent && { opacity: 0.4 }]}
+              disabled={stopSent}
               onPress={() => {
+                setStopSent(true)
                 const ws = wsRef.current
                 if (ws) {
                   ws.send(JSON.stringify({ type: 'interrupt' }))
@@ -1508,10 +1517,10 @@ const s = StyleSheet.create({
   userBubble:          { backgroundColor: C.surface, borderRadius: 18, borderBottomRightRadius: 4, paddingHorizontal: 14, paddingVertical: 10, maxWidth: '80%' },
   textBlock:           { color: C.textPrimary, fontSize: 18, lineHeight: 26, fontWeight: '400', fontFamily: ARIMO },
   assistantTextBlock:  { color: C.textPrimary, fontSize: 16, lineHeight: 24, fontWeight: '400', fontFamily: ARIMO },
-  inlineCode:        { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 13, color: C.textPrimary, backgroundColor: C.surface, paddingHorizontal: 3, borderRadius: 3 },
+  inlineCode:        { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 13, color: C.textPrimary, backgroundColor: C.surface, paddingHorizontal: 3, paddingVertical: 1, borderRadius: 3 },
   codeBlock:         { backgroundColor: C.surface, borderRadius: 6, padding: 10, marginVertical: 4 },
   codeBlockText:     { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 12, color: C.textPrimary, lineHeight: 18 },
-  cursor:            { color: C.accent, fontSize: 14, fontFamily: ARIMO },
+  cursor:            { color: C.textMuted, fontSize: 14, fontFamily: ARIMO },
   streamCursor:      { color: C.accent, fontSize: 16, marginTop: 2 },
   pendingPill:       { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: C.surface, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8, alignSelf: 'flex-start' },
   questionMark:      { color: C.yellow, fontWeight: '700', fontSize: 15, marginBottom: 2, fontFamily: ARIMO },
@@ -1547,8 +1556,8 @@ const s = StyleSheet.create({
   settingsMenuActionText:   { fontSize: 14, color: C.textSecondary, fontFamily: ARIMO },
   settingsMenuLogoutText:   { fontSize: 15, color: C.red, fontFamily: ARIMO },
   containerMenuItem:        { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
-  containerMenuItemName:    { fontSize: 20, fontWeight: '600', color: C.textPrimary, fontFamily: ARIMO },
-  containerMenuItemUrl:     { fontSize: 16, color: C.textMuted, fontFamily: ARIMO, marginTop: 1 },
-  containerMenuItemStatus:  { fontSize: 16, color: C.textMuted, fontFamily: ARIMO },
+  containerMenuItemName:    { fontSize: 17, fontWeight: '600', color: C.textPrimary, fontFamily: ARIMO },
+  containerMenuItemUrl:     { fontSize: 13, color: C.textMuted, fontFamily: ARIMO, marginTop: 1 },
+  containerMenuItemStatus:  { fontSize: 13, color: C.textMuted, fontFamily: ARIMO },
 
 })
