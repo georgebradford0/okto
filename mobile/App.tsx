@@ -1,24 +1,25 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
-import React, { useCallback, useEffect, memo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Animated,
   AppState,
   FlatList,
   NativeModules,
+  PermissionsAndroid,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native'
 import { KeyboardProvider, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller'
 import Reanimated, { useAnimatedStyle } from 'react-native-reanimated'
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Camera, useCameraDevice, useCodeScanner } from 'react-native-vision-camera'
-import { PermissionsAndroid } from 'react-native'
 import NoiseConnection from './src/NativeNoiseConnection'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -57,7 +58,6 @@ interface Message {
 const ts = () => new Date().toISOString().replace('T', ' ').slice(0, 23)
 const log  = (...args: unknown[]) => console.log( `[${ts()}]`, ...args)
 const logE = (...args: unknown[]) => console.error(`[${ts()}] ERROR`, ...args)
-const logW = (...args: unknown[]) => console.warn( `[${ts()}] WARN`, ...args)
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -81,8 +81,6 @@ function parseQrData(raw: string): NoiseConnectionInfo | null {
   log(`[qr] parse failed: unexpected format`)
   return null
 }
-
-const connKeyFor = (c: NoiseConnectionInfo) => `${c.host}:${c.port}:${c.pk.slice(0, 8)}`
 
 // ── Dev connection ─────────────────────────────────────────────────────────────
 // Fixed dev keypair baked into the server when CLAUDULHU_DEV=1.
@@ -194,7 +192,9 @@ function renderText(text: string, baseStyle: object) {
       }).replace(/^\n/, '')
       elements.push(
         <View key={keyCounter++} style={s.codeBlock}>
-          <Text style={s.codeBlockText} selectable>{inner}</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            <Text style={s.codeBlockText} selectable>{inner}</Text>
+          </ScrollView>
         </View>
       )
       return
@@ -315,6 +315,21 @@ function renderText(text: string, baseStyle: object) {
 
 
 
+// ── BlinkingCursor ────────────────────────────────────────────────────────────
+
+function BlinkingCursor() {
+  const opacity = useRef(new Animated.Value(1)).current
+  useEffect(() => {
+    const anim = Animated.loop(Animated.sequence([
+      Animated.timing(opacity, { toValue: 0, duration: 500, useNativeDriver: true }),
+      Animated.timing(opacity, { toValue: 1, duration: 500, useNativeDriver: true }),
+    ]))
+    anim.start()
+    return () => anim.stop()
+  }, [])
+  return <Animated.Text style={[s.streamCursor, { opacity }]}>▍</Animated.Text>
+}
+
 // ── PendingEllipsis ───────────────────────────────────────────────────────────
 
 function PendingEllipsis() {
@@ -333,7 +348,7 @@ function PendingEllipsis() {
   }, [])
   return (
     <View style={s.messageWrap}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+      <View style={s.pendingPill}>
         {dots.map((dot, i) => (
           <Animated.Text key={i} style={[s.cursor, { opacity: dot }]}>●</Animated.Text>
         ))}
@@ -363,51 +378,85 @@ function containerDisplayName(name: string): string {
 
 // ── MessageBubble ─────────────────────────────────────────────────────────────
 
-const MessageBubble = memo(function MessageBubble({ message }: { message: Message }) {
+const MessageBubble = memo(function MessageBubble({
+  message, prevRole, isLive,
+}: {
+  message:   Message
+  prevRole?: Message['role']
+  isLive?:   boolean
+}) {
   const [toolExpanded, setToolExpanded] = useState(false)
+  const fadeAnim = useRef(new Animated.Value(0)).current
+  const baseTextStyle = message.role === 'user' ? s.textBlock : s.assistantTextBlock
+  const renderedText = useMemo(() => renderText(message.text, baseTextStyle), [message.text, message.role])
 
-  if (message.role === 'session') {
-    return null
-  }
+  useEffect(() => {
+    Animated.timing(fadeAnim, { toValue: 1, duration: 180, useNativeDriver: true }).start()
+  }, [])
+
+  if (message.role === 'session') return null
+
+  // Add extra breathing room at turn boundaries (user↔assistant).
+  const visiblePrev = prevRole === 'session' ? undefined : prevRole
+  const turnBoundary = visiblePrev !== undefined &&
+    (message.role === 'user') !== (visiblePrev === 'user')
+  const extraTopMargin = turnBoundary ? 12 : 0
+
   if (message.role === 'interrupted') {
     return (
-      <View style={[s.messageWrap, { marginBottom: 3, paddingLeft: 28 }]}>
-        <Text style={s.interruptedLine} selectable>■ interrupted</Text>
-      </View>
+      <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
+        <View style={[s.messageWrap, { marginBottom: 3, paddingLeft: 28 }]}>
+          <Text style={s.interruptedLine} selectable>■ interrupted</Text>
+        </View>
+      </Animated.View>
     )
   }
   if (message.role === 'tool') {
     return (
-      <TouchableOpacity
-        style={[s.messageWrap, { marginBottom: 3 }]}
-        onPress={() => setToolExpanded(v => !v)}
-        activeOpacity={0.7}
-      >
-        <Text style={s.toolLine} selectable numberOfLines={toolExpanded ? undefined : 1} ellipsizeMode="tail">{message.text}</Text>
-        {toolExpanded && message.output != null && (
-          <View style={s.toolOutputBlock}>
-            <Text style={s.toolOutputText} selectable>{message.output}</Text>
+      <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
+        <TouchableOpacity
+          style={[s.messageWrap, { marginBottom: 3 }]}
+          onPress={() => setToolExpanded(v => !v)}
+          activeOpacity={0.7}
+        >
+          <View style={s.toolAccent}>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <Text style={[s.toolLine, { flex: 1 }]} selectable numberOfLines={toolExpanded ? undefined : 1} ellipsizeMode="tail">{message.text}</Text>
+              <Text style={[s.toolChevron, { transform: [{ rotate: toolExpanded ? '90deg' : '0deg' }] }]}>›</Text>
+            </View>
+            {toolExpanded && message.output != null && (
+              <View style={s.toolOutputBlock}>
+                <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+                  <Text style={s.toolOutputText} selectable>{message.output}</Text>
+                </ScrollView>
+              </View>
+            )}
           </View>
-        )}
-      </TouchableOpacity>
+        </TouchableOpacity>
+      </Animated.View>
     )
   }
   if (message.role === 'user') {
     return (
-      <View style={[s.messageWrap, s.messageWrapRight]}>
-        <View style={s.userBubble}>
-          {renderText(message.text, s.textBlock)}
+      <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
+        <View style={[s.messageWrap, s.messageWrapRight]}>
+          <View style={s.userBubble}>
+            {renderedText}
+          </View>
         </View>
-      </View>
+      </Animated.View>
     )
   }
   return (
-    <View style={s.messageWrap}>
-      {renderText(message.text, s.textBlock)}
-      {message.cost != null && (
-        <Text style={s.costLabel}>{formatCost(message.cost)}</Text>
-      )}
-    </View>
+    <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
+      <View style={s.messageWrap}>
+        {renderedText}
+        {isLive && <BlinkingCursor />}
+        {message.cost != null && (
+          <Text style={s.costLabel}>{formatCost(message.cost)}</Text>
+        )}
+      </View>
+    </Animated.View>
   )
 })
 
@@ -429,6 +478,8 @@ function CreatureAnim() {
 // ── QrScanner ─────────────────────────────────────────────────────────────────
 
 function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void; onCancel: () => void }) {
+  const { width, height } = useWindowDimensions()
+  const reticleSize = Math.round(Math.min(width, height) * 0.6)
   const device      = useCameraDevice('back')
   const scannedRef  = useRef(false)
   const codeScanner = useCodeScanner({
@@ -454,7 +505,7 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
         <View style={s.scannerTopBar}>
           <Text style={s.scannerTitle}>Scan QR code</Text>
         </View>
-        <View style={s.scannerReticle}>
+        <View style={[s.scannerReticle, { width: reticleSize, height: reticleSize }]}>
           <View style={[s.scannerCorner, s.cornerTL]} />
           <View style={[s.scannerCorner, s.cornerTR]} />
           <View style={[s.scannerCorner, s.cornerBL]} />
@@ -485,13 +536,15 @@ const ChatPane = memo(function ChatPane({
     height: Math.max(insets.bottom, -keyboardHeight.value),
   }))
 
-  const [messages,      setMessages]      = useState<Message[]>([])
-  const [status,        setStatus]        = useState<ConnStatus>('connecting')
-  const [input,         setInput]         = useState(initialDraft ?? '')
+  const [messages,       setMessages]       = useState<Message[]>([])
+  const [status,         setStatus]         = useState<ConnStatus>('connecting')
+  const [input,          setInput]          = useState(initialDraft ?? '')
   const draftKey = `draft:${baseUrl}`
-  const [completions,   setCompletions]   = useState<string[]>([])
-  const [showScrollBtn, setShowScrollBtn] = useState(false)
-  const [inputAreaH,    setInputAreaH]    = useState(0)
+  const [completions,    setCompletions]    = useState<string[]>([])
+  const [showScrollBtn,  setShowScrollBtn]  = useState(false)
+  const [inputAreaH,     setInputAreaH]     = useState(0)
+  const [streamingMsgId, setStreamingMsgId] = useState<string | null>(null)
+  const [stopSent,       setStopSent]       = useState(false)
 
   const sendMessageRef    = useRef<() => void>(() => {})
   const wsRef             = useRef<WebSocket | null>(null)
@@ -500,6 +553,7 @@ const ChatPane = memo(function ChatPane({
   const contentHeightRef  = useRef(0)
   const listHeightRef     = useRef(0)
   const lastToolIdRef     = useRef<string | null>(null)
+  const historyAbortRef   = useRef<AbortController | null>(null)
 
   const updateStatus = useCallback((s: ConnStatus) => {
     setStatus(s)
@@ -510,9 +564,11 @@ const ChatPane = memo(function ChatPane({
   const handleStreamEvent = useCallback((
     raw: string,
     opts: {
-      streamingIdRef: { current: string }
+      streamingIdRef:    { current: string }
       hasAssistantMsgRef: { current: boolean }
-      onDone: () => void
+      onDone:            () => void
+      onFirstChunk?:     (id: string) => void
+      onStreamEnd?:      () => void
     },
   ) => {
     let event: { type: string; text?: string; tool?: string; input?: unknown; cost_usd?: number; message?: string; line?: string; tool_use_id?: string; output?: string }
@@ -522,6 +578,7 @@ const ChatPane = memo(function ChatPane({
       const chunk = event.text
       if (!opts.hasAssistantMsgRef.current) {
         opts.hasAssistantMsgRef.current = true
+        opts.onFirstChunk?.(opts.streamingIdRef.current)
         setMessages(prev => [...prev, { id: opts.streamingIdRef.current, role: 'assistant' as const, text: chunk }])
       } else {
         setMessages(prev => prev.map(m => m.id === opts.streamingIdRef.current ? { ...m, text: m.text + chunk } : m))
@@ -555,16 +612,19 @@ const ChatPane = memo(function ChatPane({
       log(`[chat] stream done cost_usd=${event.cost_usd}`)
       lastToolIdRef.current = null
       wsRef.current = null
+      opts.onStreamEnd?.()
       opts.onDone()
     } else if (event.type === 'interrupted') {
       log(`[chat] stream interrupted cost_usd=${event.cost_usd}`)
       lastToolIdRef.current = null
       wsRef.current = null
+      opts.onStreamEnd?.()
       opts.onDone()
     } else if (event.type === 'error') {
       logE(`[chat] stream error: ${event.message}`)
       lastToolIdRef.current = null
       wsRef.current = null
+      opts.onStreamEnd?.()
       setMessages(prev => [...prev, { id: uid(), role: 'assistant' as const, text: `\u2717 ${event.message ?? 'error'}` }])
       updateStatus('ready')
     }
@@ -592,12 +652,15 @@ const ChatPane = memo(function ChatPane({
       handleStreamEvent(e.data, {
         streamingIdRef,
         hasAssistantMsgRef,
-        onDone: () => loadHistoryRef.current(),
+        onDone:       () => loadHistoryRef.current(),
+        onFirstChunk: (id) => setStreamingMsgId(id),
+        onStreamEnd:  () => setStreamingMsgId(null),
       })
     }
     ws.onerror = (e) => {
       logE(`[chat] reattachStream ws error after ${Date.now() - wsStart}ms: ${JSON.stringify(e)}`)
       wsRef.current = null
+      setStreamingMsgId(null)
       updateStatus('error')
     }
     ws.onclose = (e) => {
@@ -610,8 +673,11 @@ const ChatPane = memo(function ChatPane({
   const loadHistoryRef = useRef<() => void>(() => {})
 
   const loadHistory = useCallback(() => {
+    historyAbortRef.current?.abort()
+    const controller = new AbortController()
+    historyAbortRef.current = controller
     log(`[chat] loadHistory GET ${baseUrl}/history`)
-    fetch(`${baseUrl}/history`)
+    fetch(`${baseUrl}/history`, { signal: controller.signal })
       .then(r => { log(`[chat] loadHistory HTTP ${r.status}`); return r.json() })
       .then((data: { messages: Array<{ role: string; text: string; cost_usd?: number; output?: string }>; is_streaming?: boolean }) => {
         log(`[chat] history loaded ${data.messages.length} messages is_streaming=${data.is_streaming}`)
@@ -634,6 +700,7 @@ const ChatPane = memo(function ChatPane({
         }, 50)
       })
       .catch(e => {
+        if ((e as Error).name === 'AbortError') return
         logE(`[chat] loadHistory failed: ${String(e)}`)
         updateStatus('error')
       })
@@ -659,6 +726,7 @@ const ChatPane = memo(function ChatPane({
   useEffect(() => {
     updateStatus('connecting')
     loadHistory()
+    return () => { historyAbortRef.current?.abort() }
   }, [baseUrl])
 
   // Re-fetch history when app foregrounds (tunnel may have reconnected).
@@ -684,11 +752,13 @@ const ChatPane = memo(function ChatPane({
     const parsed = parseAtQuery(input)
     if (!parsed) { setCompletions([]); return }
     let cancelled = false
-    fetch(`${baseUrl}/completions?dir_part=${encodeURIComponent(parsed.dirPart)}&file_part=${encodeURIComponent(parsed.filePart)}`)
-      .then(r => r.json())
-      .then((data: string[]) => { if (!cancelled) setCompletions(data) })
-      .catch(() => { if (!cancelled) setCompletions([]) })
-    return () => { cancelled = true }
+    const timer = setTimeout(() => {
+      fetch(`${baseUrl}/completions?dir_part=${encodeURIComponent(parsed.dirPart)}&file_part=${encodeURIComponent(parsed.filePart)}`)
+        .then(r => r.json())
+        .then((data: string[]) => { if (!cancelled) setCompletions(data) })
+        .catch(() => { if (!cancelled) setCompletions([]) })
+    }, 200)
+    return () => { cancelled = true; clearTimeout(timer) }
   }, [input, baseUrl])
 
   const applyCompletion = useCallback((completion: string) => {
@@ -730,12 +800,15 @@ const ChatPane = memo(function ChatPane({
       handleStreamEvent(e.data, {
         streamingIdRef,
         hasAssistantMsgRef,
-        onDone: () => loadHistoryRef.current(),
+        onDone:       () => loadHistoryRef.current(),
+        onFirstChunk: (id) => setStreamingMsgId(id),
+        onStreamEnd:  () => setStreamingMsgId(null),
       })
     }
     ws.onerror = (e) => {
       logE(`[chat] ws error after ${Date.now() - wsSendStart}ms: ${JSON.stringify(e)}`)
       wsRef.current = null
+      setStreamingMsgId(null)
       setMessages(prev => [...prev, { id: uid(), role: 'assistant' as const, text: '\u2717 network error' }])
       updateStatus('error')
     }
@@ -747,13 +820,22 @@ const ChatPane = memo(function ChatPane({
   sendMessageRef.current = sendMessage
 
   const clearConversation = useCallback(() => {
-    fetch(`${baseUrl}/clear`, { method: 'POST' }).catch(() => {})
-    setMessages([])
-    updateStatus('ready')
+    fetch(`${baseUrl}/clear`, { method: 'POST' })
+      .then(() => { setMessages([]); updateStatus('ready') })
+      .catch(() => loadHistoryRef.current())
   }, [baseUrl])
   clearRef.current = clearConversation
 
   const isPending = status === 'streaming'
+  useEffect(() => { if (!isPending) setStopSent(false) }, [isPending])
+
+  const renderMessageItem = useCallback(({ item, index }: { item: Message; index: number }) => (
+    <MessageBubble
+      message={item}
+      prevRole={index > 0 ? messages[index - 1].role : undefined}
+      isLive={item.id === streamingMsgId}
+    />
+  ), [messages, streamingMsgId])
 
   return (
     <View style={s.pane}>
@@ -762,10 +844,19 @@ const ChatPane = memo(function ChatPane({
           ref={listRef}
           data={messages}
           keyExtractor={m => m.id}
-          renderItem={({ item }) => <MessageBubble message={item} />}
-          contentContainerStyle={[s.messageListContent, { paddingBottom: inputAreaH + 8 }]}
+          renderItem={renderMessageItem}
+          contentContainerStyle={[
+            s.messageListContent,
+            { paddingBottom: inputAreaH + 8 },
+            (status === 'connecting' || status === 'error') && { paddingTop: 34 },
+          ]}
           style={s.messageList}
-          ListEmptyComponent={<Text style={s.emptyState}>say something</Text>}
+          ListEmptyComponent={
+            <View style={s.emptyStateWrap}>
+              <Text style={s.emptyStateName}>claudulhu</Text>
+              <Text style={s.emptyState}>say something</Text>
+            </View>
+          }
           onContentSizeChange={(_, h) => {
             contentHeightRef.current = h
             if (isAtBottomRef.current) {
@@ -804,8 +895,10 @@ const ChatPane = memo(function ChatPane({
         <View style={s.inputFloat} onLayout={e => setInputAreaH(e.nativeEvent.layout.height)}>
           {isPending ? (
             <TouchableOpacity
-              style={s.inputStopBtn}
+              style={[s.inputStopBtn, stopSent && { opacity: 0.4 }]}
+              disabled={stopSent}
               onPress={() => {
+                setStopSent(true)
                 const ws = wsRef.current
                 if (ws) {
                   ws.send(JSON.stringify({ type: 'interrupt' }))
@@ -826,10 +919,7 @@ const ChatPane = memo(function ChatPane({
             <TextInput
               style={s.input}
               value={input}
-              onChangeText={text => {
-                if (text.includes('\n')) { sendMessageRef.current(); return }
-                setInput(text)
-              }}
+              onChangeText={setInput}
               onSubmitEditing={() => sendMessageRef.current()}
               placeholder="message…"
               placeholderTextColor={C.textMuted}
@@ -858,9 +948,11 @@ const ChatPane = memo(function ChatPane({
         )}
 
         {(status === 'connecting' || status === 'error') && (
-          <View style={s.reconnectOverlay} pointerEvents="none">
-            <ActivityIndicator color="#fff" size="large" />
-            <Text style={s.reconnectOverlayText}>{status === 'error' ? 'Connection error' : 'Reconnecting'}</Text>
+          <View style={[s.reconnectBanner, { backgroundColor: status === 'error' ? '#fee2e2' : '#fffbeb', borderBottomColor: status === 'error' ? '#fecaca' : '#fef3c7' }]} pointerEvents="none">
+            {status === 'connecting' && <ActivityIndicator color={C.yellow} size="small" style={{ marginRight: 6 }} />}
+            <Text style={[s.reconnectText, { color: status === 'error' ? C.red : C.yellow }]}>
+              {status === 'error' ? 'Connection error' : 'Connecting…'}
+            </Text>
           </View>
         )}
       </View>
@@ -1408,11 +1500,11 @@ const s = StyleSheet.create({
   pane:              { flex: 1, backgroundColor: C.bg },
   messageList:       { flex: 1 },
   messageListContent: { paddingVertical: 16 },
-  emptyState:        { textAlign: 'center', color: C.textMuted, fontSize: 14, marginTop: 80, fontFamily: ARIMO },
-  reconnectBanner:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 7, backgroundColor: '#fffbeb', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#fef3c7' },
-  reconnectText:     { color: C.yellow, fontSize: 12, fontWeight: '500', fontFamily: ARIMO },
-  reconnectOverlay:      { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center', gap: 14 },
-  reconnectOverlayText:  { color: '#fff', fontSize: 15, fontWeight: '600', fontFamily: ARIMO, letterSpacing: 0.3 },
+  emptyStateWrap:    { alignItems: 'center', marginTop: 80, gap: 6 },
+  emptyStateName:    { fontSize: 22, fontWeight: '700', color: C.textMuted, letterSpacing: 2, fontFamily: ARIMO },
+  emptyState:        { textAlign: 'center', color: C.textMuted, fontSize: 14, fontFamily: ARIMO },
+  reconnectBanner:   { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, zIndex: 10 },
+  reconnectText:     { fontSize: 12, fontWeight: '600', fontFamily: ARIMO },
 
   // Scroll-to-bottom button
   scrollBtnWrap:     { position: 'absolute', left: 0, right: 0, alignItems: 'center', pointerEvents: 'box-none' },
@@ -1422,18 +1514,23 @@ const s = StyleSheet.create({
   // Messages
   messageWrap:      { paddingHorizontal: 14, marginBottom: 14 },
   messageWrapRight: { alignItems: 'flex-end' },
-  userBubble:       { backgroundColor: C.surface, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 10, maxWidth: '80%' },
-  textBlock:        { color: C.textPrimary, fontSize: 18, lineHeight: 26, fontWeight: '400', fontFamily: ARIMO },
-  inlineCode:        { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 13, color: C.textPrimary, backgroundColor: C.surface, paddingHorizontal: 3, borderRadius: 3 },
+  userBubble:          { backgroundColor: C.surface, borderRadius: 18, borderBottomRightRadius: 4, paddingHorizontal: 14, paddingVertical: 10, maxWidth: '80%' },
+  textBlock:           { color: C.textPrimary, fontSize: 18, lineHeight: 26, fontWeight: '400', fontFamily: ARIMO },
+  assistantTextBlock:  { color: C.textPrimary, fontSize: 16, lineHeight: 24, fontWeight: '400', fontFamily: ARIMO },
+  inlineCode:        { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 13, color: C.textPrimary, backgroundColor: C.surface, paddingHorizontal: 3, paddingVertical: 1, borderRadius: 3 },
   codeBlock:         { backgroundColor: C.surface, borderRadius: 6, padding: 10, marginVertical: 4 },
   codeBlockText:     { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 12, color: C.textPrimary, lineHeight: 18 },
-  cursor:            { color: C.accent, fontSize: 14, fontFamily: ARIMO },
+  cursor:            { color: C.textMuted, fontSize: 14, fontFamily: ARIMO },
+  streamCursor:      { color: C.accent, fontSize: 16, marginTop: 2 },
+  pendingPill:       { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: C.surface, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8, alignSelf: 'flex-start' },
   questionMark:      { color: C.yellow, fontWeight: '700', fontSize: 15, marginBottom: 2, fontFamily: ARIMO },
   costLabel:         { fontSize: 11, color: C.textMuted, marginTop: 4, marginLeft: 2, fontFamily: ARIMO },
-  toolLine:          { fontSize: 14, color: C.textMuted, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', marginLeft: 2 },
-  toolOutputBlock:   { marginTop: 6, marginLeft: 14, borderLeftWidth: 2, borderLeftColor: C.border, paddingLeft: 10 },
+  toolAccent:        { borderLeftWidth: 2, borderLeftColor: C.border, paddingLeft: 8 },
+  toolLine:          { fontSize: 14, color: C.textMuted, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  toolChevron:       { fontSize: 16, color: C.textMuted, marginLeft: 6, fontWeight: '300' },
+  toolOutputBlock:   { marginTop: 6, borderLeftWidth: 2, borderLeftColor: C.border, paddingLeft: 10 },
   toolOutputText:    { fontSize: 12, color: C.textSecondary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', lineHeight: 18 },
-  interruptedLine:   { fontSize: 18, lineHeight: 26, color: C.textMuted, fontFamily: ARIMO, fontStyle: 'italic' },
+  interruptedLine:   { fontSize: 16, lineHeight: 24, color: C.textMuted, fontFamily: ARIMO, fontStyle: 'italic' },
 
   // Input bar
   completionList: { position: 'absolute', left: 0, right: 0, maxHeight: 180, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, backgroundColor: C.bg, zIndex: 10, elevation: 10 },
@@ -1441,7 +1538,7 @@ const s = StyleSheet.create({
   completionText: { fontSize: 14, color: C.textPrimary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   inputFloat:   { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 12, paddingBottom: 12 },
   input:        { backgroundColor: C.bg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 24, paddingHorizontal: 20, paddingVertical: 16, color: C.textPrimary, fontSize: 18, lineHeight: 26, minHeight: 48, maxHeight: 140, fontFamily: ARIMO, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
-  inputStopBtn: { backgroundColor: C.bg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 24, paddingHorizontal: 20, paddingVertical: 16, height: 80, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
+  inputStopBtn: { backgroundColor: C.bg, borderWidth: 1, borderColor: C.inputBorder, borderRadius: 24, paddingHorizontal: 20, paddingVertical: 16, minHeight: 56, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
   stopBtnText:  { fontSize: 14, color: C.red, fontWeight: '600', fontFamily: ARIMO },
 
   // Settings header button + dropdown
@@ -1457,10 +1554,10 @@ const s = StyleSheet.create({
   settingsMenuDivider:      { height: StyleSheet.hairlineWidth, backgroundColor: C.border },
   settingsMenuAction:       { paddingHorizontal: 14, paddingVertical: 13 },
   settingsMenuActionText:   { fontSize: 14, color: C.textSecondary, fontFamily: ARIMO },
-  settingsMenuLogoutText:   { fontSize: 20, color: C.red, fontFamily: ARIMO },
+  settingsMenuLogoutText:   { fontSize: 15, color: C.red, fontFamily: ARIMO },
   containerMenuItem:        { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
-  containerMenuItemName:    { fontSize: 20, fontWeight: '600', color: C.textPrimary, fontFamily: ARIMO },
-  containerMenuItemUrl:     { fontSize: 16, color: C.textMuted, fontFamily: ARIMO, marginTop: 1 },
-  containerMenuItemStatus:  { fontSize: 16, color: C.textMuted, fontFamily: ARIMO },
+  containerMenuItemName:    { fontSize: 17, fontWeight: '600', color: C.textPrimary, fontFamily: ARIMO },
+  containerMenuItemUrl:     { fontSize: 13, color: C.textMuted, fontFamily: ARIMO, marginTop: 1 },
+  containerMenuItemStatus:  { fontSize: 13, color: C.textMuted, fontFamily: ARIMO },
 
 })
