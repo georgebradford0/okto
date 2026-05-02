@@ -50,8 +50,8 @@ pub async fn list(container: &str) -> Result<()> {
             format!(" {}", c.args.join(" "))
         };
         println!("{}: {}{}", c.name, c.command, args);
-        for (k, v) in &c.env {
-            println!("    {k}={v}");
+        for k in c.env.keys() {
+            println!("    {k}");
         }
     }
     Ok(())
