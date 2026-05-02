@@ -3,7 +3,7 @@ use claudulhu_k8s_ops::k8s;
 use data_encoding::BASE32_NOPAD;
 use tokio::process::Command;
 
-pub async fn run(api_key: &str, gh_token: Option<&str>, noise_port: u16, public_port: Option<u16>) -> Result<()> {
+pub async fn run(api_key: &str, gh_token: Option<&str>, noise_port: u16, public_port: u16) -> Result<()> {
     ensure_kubernetes().await?;
 
     let (noise_private_key_hex, pubkey_b32) = generate_keypair()?;
@@ -22,6 +22,12 @@ pub async fn run(api_key: &str, gh_token: Option<&str>, noise_port: u16, public_
     k8s::upsert_rulyeh_deployment(&client, noise_port).await?;
     println!("→ services");
     k8s::ensure_rulyeh_services(&client, noise_port).await?;
+
+    if public_port != noise_port {
+        println!("→ socat proxy ({public_port} → {noise_port})");
+        ensure_socat_proxy(public_port, noise_port).await?;
+    }
+
     // Restart so the pod loads the new keypair from the secret before we print the QR.
     println!("→ restarting rulyeh to apply new keypair...");
     k8s::rollout_restart_deployment(&client, "rulyeh").await?;
@@ -29,10 +35,9 @@ pub async fn run(api_key: &str, gh_token: Option<&str>, noise_port: u16, public_
     k8s::wait_for_deployment_ready(&client, "rulyeh", 180).await?;
 
     let ip = k8s::get_public_ip_via_pod(&client, "rulyeh").await?;
-    let qr_port = public_port.unwrap_or(noise_port);
-    let qr_data = format!("2:{ip}:{qr_port}:{pubkey_b32}");
+    let qr_data = format!("2:{ip}:{public_port}:{pubkey_b32}");
 
-    println!("\nrulyeh is live at {ip}:{noise_port} (QR advertises port {qr_port})");
+    println!("\nrulyeh is live at {ip} (Noise NodePort {noise_port}, QR port {public_port})");
     println!("QR data: {qr_data}\n");
 
     let code = qrcode::QrCode::new(&qr_data).context("generate QR code")?;
@@ -55,6 +60,33 @@ fn generate_keypair() -> Result<(String, String)> {
     let mut combined = keypair.private.clone();
     combined.extend_from_slice(&keypair.public);
     Ok((hex::encode(&combined), BASE32_NOPAD.encode(&keypair.public)))
+}
+
+#[cfg(target_os = "linux")]
+async fn ensure_socat_proxy(public_port: u16, noise_port: u16) -> Result<()> {
+    // Install socat if missing.
+    let has_socat = Command::new("which").arg("socat").output().await
+        .map(|o| o.status.success()).unwrap_or(false);
+    if !has_socat {
+        run_sh("apt-get install -y socat").await?;
+    }
+
+    let unit = format!(
+        "[Unit]\nDescription=Noise TCP proxy {public_port} -> {noise_port}\nAfter=network.target\n\n\
+         [Service]\nExecStart=/usr/bin/socat TCP-LISTEN:{public_port},fork,reuseaddr TCP:127.0.0.1:{noise_port}\n\
+         Restart=always\nRestartSec=3\n\n\
+         [Install]\nWantedBy=multi-user.target\n"
+    );
+    tokio::fs::write("/etc/systemd/system/noise-proxy.service", unit).await
+        .context("write noise-proxy.service")?;
+    run_sh("systemctl daemon-reload && systemctl enable --now noise-proxy").await?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn ensure_socat_proxy(_public_port: u16, _noise_port: u16) -> Result<()> {
+    println!("  (skipping socat setup — not Linux; proxy must be configured manually)");
+    Ok(())
 }
 
 async fn ensure_kubernetes() -> Result<()> {

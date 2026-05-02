@@ -30,11 +30,11 @@ enum Command {
         #[arg(long, default_value_t = 30900)]
         noise_port: u16,
 
-        /// Port advertised in the QR code (default: same as --noise-port).
-        /// Use this when a proxy (e.g. socat/nginx) forwards a carrier-friendly
-        /// port like 8443 to the NodePort.
-        #[arg(long)]
-        public_port: Option<u16>,
+        /// Port advertised in the QR code (default: 8443).
+        /// A socat proxy is automatically configured to forward this port to
+        /// the NodePort. Set to the same value as --noise-port to skip the proxy.
+        #[arg(long, default_value_t = 8443)]
+        public_port: u16,
     },
 
     /// Manage child containers
