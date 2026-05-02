@@ -53,6 +53,16 @@ enum Command {
     /// Update image to latest and restart all pods (rulyeh + all child containers)
     Restart,
 
+    /// Show logs for a container (all containers if no name given)
+    Logs {
+        /// Deployment name (e.g. rulyeh, my-repo). Omit for all.
+        name: Option<String>,
+
+        /// Follow log output
+        #[arg(short, long)]
+        follow: bool,
+    },
+
     /// Print the CLI version
     Version,
 
@@ -253,6 +263,43 @@ async fn main() -> Result<()> {
                 println!("Nothing restarted.");
             } else {
                 println!("Updated and restarted: {}", updated.join(", "));
+            }
+        }
+        Command::Logs { name, follow } => {
+            use claudulhu_k8s_ops::k8s;
+            let client = k8s::build_client().await?;
+
+            // Build list of deployment names to show logs for.
+            let names: Vec<String> = if let Some(n) = name {
+                vec![n]
+            } else {
+                let mut list = k8s::list_managed_deployments(&client).await?
+                    .into_iter().map(|c| c.name).collect::<Vec<_>>();
+                list.push("rulyeh".to_string());
+                list
+            };
+
+            let multi = names.len() > 1;
+            for deployment in &names {
+                let pod_name = match k8s::get_running_pod(&client, deployment).await {
+                    Ok(p)  => p,
+                    Err(e) => { eprintln!("[{deployment}] {e}"); continue; }
+                };
+
+                if multi { println!("\n=== {deployment} ==="); }
+
+                let mut args = vec!["logs", "-n", k8s::NAMESPACE, &pod_name];
+                if follow { args.push("-f"); }
+
+                let status = tokio::process::Command::new("kubectl")
+                    .args(&args)
+                    .status().await?;
+                if !status.success() {
+                    eprintln!("[{deployment}] kubectl logs exited with {status}");
+                }
+
+                // Can't follow multiple pods simultaneously; warn and move on.
+                if follow && multi { break; }
             }
         }
         Command::Version => println!("{}", env!("CARGO_PKG_VERSION")),
