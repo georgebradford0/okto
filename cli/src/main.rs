@@ -29,6 +29,12 @@ enum Command {
         /// NodePort to expose rulyeh's Noise endpoint (default: 30900)
         #[arg(long, default_value_t = 30900)]
         noise_port: u16,
+
+        /// Port advertised in the QR code (default: same as --noise-port).
+        /// Use this when a proxy (e.g. socat/nginx) forwards a carrier-friendly
+        /// port like 8443 to the NodePort.
+        #[arg(long)]
+        public_port: Option<u16>,
     },
 
     /// Manage child containers
@@ -194,8 +200,8 @@ async fn update() -> Result<()> {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Init { api_key, gh_token, noise_port } => {
-            init::run(&api_key, gh_token.as_deref(), noise_port).await?;
+        Command::Init { api_key, gh_token, noise_port, public_port } => {
+            init::run(&api_key, gh_token.as_deref(), noise_port, public_port).await?;
         }
         Command::Selfdestruct { yes } => {
             if !yes {

@@ -259,7 +259,9 @@ private func makeServerSocket() -> (fd: Int32, port: Int) {
     return (fd, Int(CFSwapInt16BigToHost(out.sin_port)))
 }
 
-private func connectSocket(host: String, port: Int) -> Int32 {
+/// TCP connect with a wall-clock timeout via non-blocking connect + select().
+/// Returns a connected, blocking-mode fd, or -1 on failure/timeout.
+private func connectSocket(host: String, port: Int, timeoutSecs: Int = 15) -> Int32 {
     let fd = Darwin.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
     guard fd >= 0 else { return -1 }
     var yes: Int32 = 1
@@ -270,12 +272,41 @@ private func connectSocket(host: String, port: Int) -> Int32 {
     addr.sin_port   = CFSwapInt16HostToBig(UInt16(port))
     guard inet_pton(AF_INET, host, &addr.sin_addr) == 1 else { Darwin.close(fd); return -1 }
 
-    let ok = withUnsafePointer(to: &addr) {
+    // Set non-blocking for the connect call so we can apply our own timeout.
+    let flags = fcntl(fd, F_GETFL, 0)
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+
+    let result = withUnsafePointer(to: &addr) {
         $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
             Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
         }
     }
-    guard ok == 0 else { Darwin.close(fd); return -1 }
+
+    if result == 0 {
+        // Immediate connect (e.g. loopback) — restore blocking and return.
+        fcntl(fd, F_SETFL, flags)
+        return fd
+    }
+    guard errno == EINPROGRESS else { Darwin.close(fd); return -1 }
+
+    // Wait for writability (connection complete) with timeout.
+    var writeFds = fd_set(); var errFds = fd_set()
+    withUnsafeMutablePointer(to: &writeFds) { __darwin_fd_set(fd, $0) }
+    withUnsafeMutablePointer(to: &errFds)   { __darwin_fd_set(fd, $0) }
+    var tv = timeval(tv_sec: timeoutSecs, tv_usec: 0)
+    let n = withUnsafeMutablePointer(to: &writeFds) { wPtr in
+        withUnsafeMutablePointer(to: &errFds) { ePtr in
+            select(fd + 1, nil, wPtr, ePtr, &tv)
+        }
+    }
+    guard n > 0 else { Darwin.close(fd); return -1 }  // timeout or select error
+
+    // Check whether connect succeeded.
+    var optErr: Int32 = 0; var optLen = socklen_t(MemoryLayout<Int32>.size)
+    getsockopt(fd, SOL_SOCKET, SO_ERROR, &optErr, &optLen)
+    guard optErr == 0 else { Darwin.close(fd); return -1 }
+
+    fcntl(fd, F_SETFL, flags)  // restore blocking mode
     return fd
 }
 
@@ -318,6 +349,20 @@ final class NoiseConnection: NSObject {
                     reject("NOISE_ERROR", "serverPubKey must be a 52-char base32 Curve25519 key", nil)
                     return
                 }
+                // Probe: verify the remote host is actually reachable before resolving.
+                // connectSocket uses a non-blocking connect with a 15s timeout, so if
+                // a carrier firewall silently drops the packets this rejects visibly in
+                // JS (via the .catch handler) instead of hanging indefinitely.
+                print("[noise-proxy] probing \(host):\(Int(port))…")
+                let probeFd = connectSocket(host: host, port: Int(port))
+                guard probeFd >= 0 else {
+                    reject("NOISE_CONNECT_ERROR", "Cannot reach \(host):\(Int(port)) — check firewall / cellular data (errno \(errno))", nil)
+                    return
+                }
+                // Probe succeeded; close this fd — the accept loop will open real connections.
+                Darwin.close(probeFd)
+                print("[noise-proxy] probe OK, host is reachable")
+
                 let (fd, localPort) = makeServerSocket()
                 guard fd >= 0, localPort > 0 else { throw NoiseError.ioError }
 
@@ -328,8 +373,6 @@ final class NoiseConnection: NSObject {
                 self.stateLock.unlock()
 
                 // Close the old listen socket (if any) after installing the new one.
-                // This unblocks the previous acceptLoop's Darwin.accept() call, causing
-                // it to exit cleanly, without needing a separate disconnect() call first.
                 if oldFd >= 0 { Darwin.close(oldFd) }
 
                 DispatchQueue.global(qos: .utility).async { [weak self] in self?.acceptLoop(fd: fd, host: host, port: Int(port), serverPub: pk) }
@@ -379,17 +422,23 @@ final class NoiseConnection: NSObject {
         }
 
         proxyFdsLock.lock(); proxyFds.insert(localFd); proxyFds.insert(remoteFd); proxyFdsLock.unlock()
-        // Close fds only if disconnect() hasn't already done so. disconnect() removes fds from
-        // proxyFds before closing them, so if remove() returns nil the fd was already closed and
-        // we must not close it again — the OS may have recycled the number for the new server socket.
-        defer {
-            proxyFdsLock.lock()
-            let ownLocal  = proxyFds.remove(localFd)  != nil
-            let ownRemote = proxyFds.remove(remoteFd) != nil
-            proxyFdsLock.unlock()
+
+        // Close both fds, but only if disconnect() hasn't already done so.
+        // disconnect() removes fds from proxyFds before closing them, so if
+        // remove() returns nil the fd was already closed — don't close again
+        // or the OS may have recycled that number for a new server socket.
+        // Called by each proxy direction thread when it exits so the other
+        // thread gets unblocked immediately (no g.wait() deadlock).
+        let closeBoth = { [weak self] in
+            guard let self else { return }
+            self.proxyFdsLock.lock()
+            let ownLocal  = self.proxyFds.remove(localFd)  != nil
+            let ownRemote = self.proxyFds.remove(remoteFd) != nil
+            self.proxyFdsLock.unlock()
             if ownLocal  { Darwin.close(localFd) }
             if ownRemote { Darwin.close(remoteFd) }
         }
+
         print("[noise-proxy] TCP connected to \(host):\(port); starting handshake…")
 
         do {
@@ -400,7 +449,7 @@ final class NoiseConnection: NSObject {
             // local → encrypt → remote
             g.enter()
             DispatchQueue.global(qos: .utility).async {
-                defer { g.leave() }
+                defer { g.leave(); closeBoth() }
                 var buf = Data(count: 65000)
                 while true {
                     let n = buf.withUnsafeMutableBytes {
@@ -415,7 +464,7 @@ final class NoiseConnection: NSObject {
             // remote → decrypt → local
             g.enter()
             DispatchQueue.global(qos: .utility).async {
-                defer { g.leave() }
+                defer { g.leave(); closeBoth() }
                 while true {
                     guard let enc = try? fdReadFrame(remoteFd),
                           let dec = try? noise.decrypt(enc),
@@ -426,6 +475,7 @@ final class NoiseConnection: NSObject {
             g.wait()
         } catch {
             print("[noise-proxy] handshake/proxy error: \(error)")
+            closeBoth()
         }
     }
 }

@@ -3,7 +3,7 @@ use claudulhu_k8s_ops::k8s;
 use data_encoding::BASE32_NOPAD;
 use tokio::process::Command;
 
-pub async fn run(api_key: &str, gh_token: Option<&str>, noise_port: u16) -> Result<()> {
+pub async fn run(api_key: &str, gh_token: Option<&str>, noise_port: u16, public_port: Option<u16>) -> Result<()> {
     ensure_kubernetes().await?;
 
     let (noise_private_key_hex, pubkey_b32) = generate_keypair()?;
@@ -29,9 +29,10 @@ pub async fn run(api_key: &str, gh_token: Option<&str>, noise_port: u16) -> Resu
     k8s::wait_for_deployment_ready(&client, "rulyeh", 180).await?;
 
     let ip = k8s::get_public_ip_via_pod(&client, "rulyeh").await?;
-    let qr_data = format!("2:{ip}:{noise_port}:{pubkey_b32}");
+    let qr_port = public_port.unwrap_or(noise_port);
+    let qr_data = format!("2:{ip}:{qr_port}:{pubkey_b32}");
 
-    println!("\nrulyeh is live at {ip}:{noise_port}");
+    println!("\nrulyeh is live at {ip}:{noise_port} (QR advertises port {qr_port})");
     println!("QR data: {qr_data}\n");
 
     let code = qrcode::QrCode::new(&qr_data).context("generate QR code")?;
