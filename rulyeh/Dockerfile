@@ -41,11 +41,15 @@ RUN apt-get update && apt-get install -y ca-certificates curl git gnupg && \
     chmod go+r /etc/apt/keyrings/githubcli.gpg && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli.gpg] https://cli.github.com/packages stable main" \
       > /etc/apt/sources.list.d/github-cli.list && \
-    apt-get update && apt-get install -y \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y \
     awscli \
     gh \
+    nodejs \
     qrencode \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* && \
+    # uvx (via uv)
+    curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
 
 COPY --from=builder /build/target/release/claudulhu-rulyeh /usr/local/bin/claudulhu-rulyeh
 COPY --from=builder /build/target/release/claudulhu-server /usr/local/bin/claudulhu-server
