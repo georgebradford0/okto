@@ -69,12 +69,16 @@ const formatCost = (usd: number) =>
 
 function parseQrData(raw: string): NoiseConnectionInfo | null {
   const parts = raw.split(':')
+  log(`[qr] raw=${raw}`)
+  log(`[qr] parts count=${parts.length} v=${parts[0]}`)
   if (parts[0] === '2' && parts.length === 4) {
     const [, host, portStr, pk] = parts
     const port = parseInt(portStr, 10)
-    if (!host || isNaN(port) || !pk) return null
+    log(`[qr] parsed host=${host} port=${port} pk=${pk}`)
+    if (!host || isNaN(port) || !pk) { log('[qr] parse failed: missing field'); return null }
     return { v: 2, host, port, pk }
   }
+  log(`[qr] parse failed: unexpected format`)
   return null
 }
 
@@ -576,11 +580,12 @@ const ChatPane = memo(function ChatPane({
     const hasAssistantMsgRef  = { current: false }
     const wsUrl = baseUrl.replace(/^http/, 'ws') + '/stream'
     log(`[chat] reattachStream opening ${wsUrl}`)
+    const wsStart = Date.now()
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
     updateStatus('streaming')
     ws.onopen = () => {
-      log('[chat] reattachStream ws open, sending watch')
+      log(`[chat] reattachStream ws open after ${Date.now() - wsStart}ms, sending watch`)
       ws.send(JSON.stringify({ type: 'watch' }))
     }
     ws.onmessage = (e) => {
@@ -591,12 +596,12 @@ const ChatPane = memo(function ChatPane({
       })
     }
     ws.onerror = (e) => {
-      logE(`[chat] reattachStream ws error: ${JSON.stringify(e)}`)
+      logE(`[chat] reattachStream ws error after ${Date.now() - wsStart}ms: ${JSON.stringify(e)}`)
       wsRef.current = null
       updateStatus('error')
     }
     ws.onclose = (e) => {
-      log(`[chat] reattachStream ws closed code=${e.code} reason=${e.reason}`)
+      log(`[chat] reattachStream ws closed after ${Date.now() - wsStart}ms code=${e.code} reason=${e.reason}`)
     }
   }, [baseUrl, handleStreamEvent, updateStatus])
 
@@ -607,7 +612,7 @@ const ChatPane = memo(function ChatPane({
   const loadHistory = useCallback(() => {
     log(`[chat] loadHistory GET ${baseUrl}/history`)
     fetch(`${baseUrl}/history`)
-      .then(r => r.json())
+      .then(r => { log(`[chat] loadHistory HTTP ${r.status}`); return r.json() })
       .then((data: { messages: Array<{ role: string; text: string; cost_usd?: number; output?: string }>; is_streaming?: boolean }) => {
         log(`[chat] history loaded ${data.messages.length} messages is_streaming=${data.is_streaming}`)
         const msgs: Message[] = data.messages.map((m, i) => ({
@@ -714,10 +719,11 @@ const ChatPane = memo(function ChatPane({
 
     const wsUrl = baseUrl.replace(/^http/, 'ws') + '/stream'
     log(`[chat] opening ws ${wsUrl}`)
+    const wsSendStart = Date.now()
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
     ws.onopen = () => {
-      log('[chat] ws open, sending message')
+      log(`[chat] ws open after ${Date.now() - wsSendStart}ms, sending message`)
       ws.send(JSON.stringify({ text }))
     }
     ws.onmessage = (e) => {
@@ -728,13 +734,13 @@ const ChatPane = memo(function ChatPane({
       })
     }
     ws.onerror = (e) => {
-      logE(`[chat] ws error: ${JSON.stringify(e)}`)
+      logE(`[chat] ws error after ${Date.now() - wsSendStart}ms: ${JSON.stringify(e)}`)
       wsRef.current = null
       setMessages(prev => [...prev, { id: uid(), role: 'assistant' as const, text: '\u2717 network error' }])
       updateStatus('error')
     }
     ws.onclose = (e) => {
-      log(`[chat] ws closed code=${e.code} reason=${e.reason}`)
+      log(`[chat] ws closed after ${Date.now() - wsSendStart}ms code=${e.code} reason=${e.reason}`)
     }
   }, [input, status, baseUrl, handleStreamEvent, updateStatus])
 
@@ -1018,19 +1024,22 @@ function AppInner() {
     }
 
     let live = true
-    log(`[noise] connecting to ${target.host}:${target.port} pk=${target.pk.slice(0, 8)}…`)
+    log(`[noise] full pk=${target.pk}`)
+    log(`[noise] calling disconnect() before connect`)
     NoiseConnection.disconnect()
+    log(`[noise] calling connect() host=${target.host} port=${target.port}`)
+    const connectStart = Date.now()
     NoiseConnection.connect(target.host, target.port, target.pk)
       .then(port => {
-        if (!live) return
-        log(`[noise] tunnel ready on local port ${port}`)
+        log(`[noise] connect() resolved in ${Date.now() - connectStart}ms → local port ${port}`)
+        if (!live) { log('[noise] connect resolved but effect already cleaned up — discarding'); return }
         setTunnelPort(port)
       })
       .catch(e => {
+        logE(`[noise] connect() rejected in ${Date.now() - connectStart}ms: ${e?.message ?? String(e)}`)
         if (!live) return
-        logE(`[noise] connect failed: ${e?.message ?? String(e)}`)
         if (activeChild) {
-          setActiveChild(null) // fall back to master; re-triggers this effect
+          setActiveChild(null)
         } else {
           setTunnelError(e?.message ?? String(e))
         }
@@ -1038,7 +1047,7 @@ function AppInner() {
 
     return () => {
       live = false
-      log('[noise] disconnecting')
+      log('[noise] effect cleanup: calling disconnect()')
       NoiseConnection?.disconnect()
     }
   }, [conn, activeChild, reconnectKey])
@@ -1055,7 +1064,7 @@ function AppInner() {
   const fetchContainers = useCallback(() => {
     if (!masterBaseUrl) return
     fetch(`${masterBaseUrl}/containers`)
-      .then(r => r.json())
+      .then(r => { log(`[app] fetchContainers HTTP ${r.status}`); return r.json() })
       .then((data: { containers: ContainerInfo[] }) => {
         log(`[app] fetchContainers: ${data.containers.length} container(s)`)
         data.containers.forEach(c => {
