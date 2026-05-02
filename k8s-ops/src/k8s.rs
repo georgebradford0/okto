@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::Context;
 use k8s_openapi::api::{
     apps::v1::Deployment,
-    core::v1::{Namespace, Node, PersistentVolumeClaim, Pod, Secret, Service, ServiceAccount},
+    core::v1::{Namespace, PersistentVolumeClaim, Pod, Secret, Service, ServiceAccount},
     rbac::v1::{ClusterRole, ClusterRoleBinding},
 };
 use kube::{
@@ -592,25 +592,27 @@ pub async fn get_running_pod(client: &Client, app_name: &str) -> anyhow::Result<
         .ok_or_else(|| anyhow::anyhow!("no running pod found for app={app_name}"))
 }
 
-pub async fn get_node_external_ip(client: &Client) -> anyhow::Result<String> {
-    let nodes: Api<Node> = Api::all(client.clone());
-    let list = nodes.list(&ListParams::default()).await.context("list nodes")?;
-    let mut fallback = None;
-    for node in list {
-        if let Some(addrs) = node.status.and_then(|s| s.addresses) {
-            for addr in &addrs {
-                if addr.type_ == "ExternalIP" && !addr.address.is_empty() {
-                    return Ok(addr.address.clone());
-                }
-            }
-            for addr in &addrs {
-                if addr.type_ == "InternalIP" && !addr.address.is_empty() {
-                    fallback = Some(addr.address.clone());
-                }
-            }
-        }
-    }
-    fallback.ok_or_else(|| anyhow::anyhow!("could not determine node IP"))
+/// Resolve the public IP of the k8s node by running `curl ipify.org` inside a
+/// pod.  This works correctly on cloud VMs (AWS, GCP, …) where the node's
+/// ExternalIP is not registered in the k8s API — the pod's egress IP is the
+/// node's public IP, while the CLI's own egress IP is the operator's laptop.
+pub async fn get_public_ip_via_pod(client: &Client, deployment: &str) -> anyhow::Result<String> {
+    let pods: Api<Pod> = Api::namespaced(client.clone(), NAMESPACE);
+    let lp = ListParams::default().labels(&format!("app={deployment}"));
+    let list = pods.list(&lp).await.context("list pods")?;
+    let pod = list.items.into_iter()
+        .find(|p| {
+            p.status.as_ref()
+                .and_then(|s| s.phase.as_deref())
+                == Some("Running")
+        })
+        .ok_or_else(|| anyhow::anyhow!("no Running pod found for deployment/{deployment}"))?;
+    let pod_name = pod.metadata.name
+        .ok_or_else(|| anyhow::anyhow!("pod has no name"))?;
+    let ip = exec_in_pod(&pod_name, &["curl", "-fsSL", "--max-time", "10", "https://api.ipify.org"])
+        .await
+        .context("curl ipify.org inside pod")?;
+    Ok(ip.trim().to_string())
 }
 
 /// Read a single key from a K8s Secret in the claudulhu namespace.

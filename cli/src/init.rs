@@ -28,7 +28,7 @@ pub async fn run(api_key: &str, gh_token: Option<&str>, noise_port: u16) -> Resu
     println!("→ waiting for rulyeh to be ready...");
     k8s::wait_for_deployment_ready(&client, "rulyeh", 180).await?;
 
-    let ip = k8s::get_node_external_ip(&client).await?;
+    let ip = k8s::get_public_ip_via_pod(&client, "rulyeh").await?;
     let qr_data = format!("2:{ip}:{noise_port}:{pubkey_b32}");
 
     println!("\nrulyeh is live at {ip}:{noise_port}");
