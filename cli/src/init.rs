@@ -123,14 +123,14 @@ async fn install_kubectl() -> Result<()> {
 #[cfg(target_os = "linux")]
 async fn install_k3s() -> Result<()> {
     println!("No Kubernetes cluster found, installing k3s...");
-    run_sh("curl -sfL https://get.k3s.io | sh -").await?;
+    // --write-kubeconfig-mode=644 makes the kubeconfig readable by non-root users.
+    run_sh("curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC='--write-kubeconfig-mode=644' sh -").await?;
 
-    // k3s writes its kubeconfig to /etc/rancher/k3s/k3s.yaml
     let kubeconfig = "/etc/rancher/k3s/k3s.yaml";
     std::env::set_var("KUBECONFIG", kubeconfig);
 
     println!("Waiting for k3s to be ready...");
-    for i in 0..30 {
+    for i in 0..60 {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         if cluster_reachable().await {
             println!("k3s is ready.");
@@ -141,7 +141,7 @@ async fn install_k3s() -> Result<()> {
             println!("  Still waiting... ({}s)", (i + 1) * 3);
         }
     }
-    anyhow::bail!("k3s installed but cluster did not become reachable within 90s")
+    anyhow::bail!("k3s installed but cluster did not become reachable within 180s")
 }
 
 #[cfg(not(target_os = "linux"))]
