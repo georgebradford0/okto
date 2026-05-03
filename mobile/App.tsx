@@ -873,7 +873,7 @@ const ChatPane = memo(function ChatPane({
           contentContainerStyle={[
             s.messageListContent,
             { paddingBottom: inputAreaH + 8 },
-            (status === 'connecting' || status === 'error') && { paddingTop: 34 },
+            status === 'error' && { paddingTop: 34 },
           ]}
           style={s.messageList}
           ListEmptyComponent={
@@ -979,12 +979,9 @@ const ChatPane = memo(function ChatPane({
           </View>
         )}
 
-        {(status === 'connecting' || status === 'error') && (
-          <View style={[s.reconnectBanner, { backgroundColor: status === 'error' ? '#fee2e2' : '#fffbeb', borderBottomColor: status === 'error' ? '#fecaca' : '#fef3c7' }]} pointerEvents="none">
-            {status === 'connecting' && <ActivityIndicator color={C.yellow} size="small" style={{ marginRight: 6 }} />}
-            <Text style={[s.reconnectText, { color: status === 'error' ? C.red : C.yellow }]}>
-              {status === 'error' ? 'Connection error' : 'Connecting…'}
-            </Text>
+        {status === 'error' && (
+          <View style={[s.reconnectBanner, { backgroundColor: '#fee2e2', borderBottomColor: '#fecaca' }]} pointerEvents="none">
+            <Text style={[s.reconnectText, { color: C.red }]}>Connection error</Text>
           </View>
         )}
       </View>
@@ -1044,14 +1041,11 @@ function ChildChatScreen({ child, tunnelPort, tunnelError, onClose, initialDraft
             onDraftChange={onDraftChange}
             silentReconnect={silentReconnect}
           />
-        ) : (
+        ) : tunnelError ? (
           <View style={s.setupCenter}>
-            {tunnelError
-              ? <Text style={[s.setupError, { color: C.red }]}>{tunnelError}</Text>
-              : <ActivityIndicator color={C.accent} size="small" />
-            }
+            <Text style={[s.setupError, { color: C.red }]}>{tunnelError}</Text>
           </View>
-        )}
+        ) : null}
       </View>
     </SafeAreaView>
   )
@@ -1308,17 +1302,14 @@ function AppInner() {
     return <QrScanner onScanned={handleQrScanned} onCancel={() => setScanning(false)} />
   }
 
-  // ── Connecting screen ───────────────────────────────────────────────────────
-  if (conn && !tunnelPort) {
+  // ── Connection error screen ──────────────────────────────────────────────────
+  if (conn && !tunnelPort && tunnelError) {
     return (
       <SafeAreaView style={s.setupSafe} edges={['top', 'bottom']}>
         <View style={s.setupCenter}>
           <AppIcon />
           <Text style={s.setupTitle}>claudulhu</Text>
-          {tunnelError
-            ? <Text style={s.setupError}>{tunnelError}</Text>
-            : <ActivityIndicator color={C.accent} size="small" style={{ marginTop: 8 }} />
-          }
+          <Text style={s.setupError}>{tunnelError}</Text>
           <TouchableOpacity style={s.setupBtn} onPress={() => setConn(null)}>
             <Text style={s.setupBtnText}>back</Text>
           </TouchableOpacity>
