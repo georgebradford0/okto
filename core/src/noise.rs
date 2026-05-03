@@ -133,7 +133,7 @@ pub async fn handle_noise_connection(
             if local_write.write_all(&dec[..dec_n]).await.is_err() { break; }
         }
     });
-    tokio::select! { _ = task_a => {} _ = task_b => {} }
+    tokio::select! { _ = task_a => { task_b.abort(); } _ = task_b => { task_a.abort(); } }
     Ok(())
 }
 
