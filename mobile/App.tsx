@@ -112,7 +112,8 @@ const DEV_CONN: NoiseConnectionInfo = {
 
 // ── Fonts ──────────────────────────────────────────────────────────────────────
 
-const ARIMO = 'Arimo'
+const ARIMO  = 'Arimo'
+const NUNITO = 'Nunito'
 
 // ── Colours ────────────────────────────────────────────────────────────────────
 
@@ -461,19 +462,10 @@ const MessageBubble = memo(function MessageBubble({
   )
 })
 
-// ── CreatureAnim ──────────────────────────────────────────────────────────────
+// ── AppIcon ───────────────────────────────────────────────────────────────────
 
-function CreatureAnim() {
-  const slideX = useRef(new Animated.Value(-300)).current
-  useEffect(() => {
-    Animated.timing(slideX, { toValue: 0, duration: 700, useNativeDriver: true }).start()
-  }, [])
-  return (
-    <Animated.Image
-      source={require('./assets/creature.png')}
-      style={[s.creatureImg, { transform: [{ translateX: slideX }] }]}
-    />
-  )
+function AppIcon() {
+  return <Image source={require('./assets/icon.png')} style={s.creatureImg} />
 }
 
 // ── QrScanner ─────────────────────────────────────────────────────────────────
@@ -1278,11 +1270,11 @@ function AppInner() {
     return (
       <SafeAreaView style={s.setupSafe} edges={['top', 'bottom']}>
         <View style={s.setupCenter}>
-          <CreatureAnim />
+          <AppIcon />
           <Text style={s.setupTitle}>claudulhu</Text>
           {tunnelError
             ? <Text style={s.setupError}>{tunnelError}</Text>
-            : <ActivityIndicator color="#fff" size="small" style={{ marginTop: 8 }} />
+            : <ActivityIndicator color={C.accent} size="small" style={{ marginTop: 8 }} />
           }
           <TouchableOpacity style={s.setupBtn} onPress={() => setConn(null)}>
             <Text style={s.setupBtnText}>back</Text>
@@ -1297,9 +1289,8 @@ function AppInner() {
     return (
       <SafeAreaView style={s.setupSafe} edges={['top', 'bottom']}>
         <View style={s.setupCenter}>
-          <CreatureAnim />
+          <AppIcon />
           <Text style={s.setupTitle}>claudulhu</Text>
-          <Text style={s.setupDesc}>Scan your master container QR code to connect</Text>
           <TouchableOpacity style={s.setupBtn} onPress={requestCameraAndScan}>
             <Text style={s.setupBtnText}>Scan QR code</Text>
           </TouchableOpacity>
@@ -1468,14 +1459,14 @@ export default function App() {
 
 const s = StyleSheet.create({
   // Setup / connecting / picker
-  setupSafe:    { flex: 1, backgroundColor: '#EB4F0B' },
+  setupSafe:    { flex: 1, backgroundColor: '#F7F7F8' },
   setupCenter:  { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 40, gap: 16 },
-  setupTitle:   { fontSize: 26, fontWeight: '700', color: '#fff', letterSpacing: 2, fontFamily: ARIMO },
-  setupDesc:    { fontSize: 15, color: 'rgba(255,255,255,0.85)', textAlign: 'center', lineHeight: 22, fontFamily: ARIMO },
-  setupStatus:  { fontSize: 15, color: 'rgba(255,255,255,0.7)', textAlign: 'center', fontFamily: ARIMO },
-  setupError:   { fontSize: 14, color: '#ffe0d6', textAlign: 'center', lineHeight: 20, fontFamily: ARIMO },
-  setupBtn:     { backgroundColor: '#fff', borderRadius: 12, paddingVertical: 14, paddingHorizontal: 32, alignItems: 'center', marginTop: 8 },
-  setupBtnText: { color: '#EB4F0B', fontWeight: '700', fontSize: 16, fontFamily: ARIMO },
+  setupTitle:   { fontSize: 26, fontWeight: '700', color: C.textPrimary, letterSpacing: 2, fontFamily: NUNITO },
+  setupDesc:    { fontSize: 15, color: C.textSecondary, textAlign: 'center', lineHeight: 22, fontFamily: ARIMO },
+  setupStatus:  { fontSize: 15, color: C.textSecondary, textAlign: 'center', fontFamily: ARIMO },
+  setupError:   { fontSize: 14, color: C.red, textAlign: 'center', lineHeight: 20, fontFamily: ARIMO },
+  setupBtn:     { backgroundColor: '#D16E50', borderRadius: 12, paddingVertical: 14, paddingHorizontal: 32, alignItems: 'center', marginTop: 8 },
+  setupBtnText: { color: '#F7F7F8', fontWeight: '700', fontSize: 16, fontFamily: NUNITO },
 
   // QR scanner
   creatureImg:       { width: 120, height: 120, borderRadius: 26, marginBottom: 12 },
