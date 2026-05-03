@@ -1089,6 +1089,7 @@ function AppInner() {
   const [containers,          setContainers]          = useState<ContainerInfo[]>([])
   const [activeChild,         setActiveChild]         = useState<ContainerInfo | null>(null)
   const [showSidebar,    setShowSidebar]    = useState(false)
+  const sidebarAnim = useRef(new Animated.Value(0)).current
   const [startingContainerId, setStartingContainerId] = useState<string | null>(null)
   const [startingError,       setStartingError]       = useState<string | null>(null)
   const startingContainerIdRef = useRef<string | null>(null)
@@ -1261,7 +1262,7 @@ function AppInner() {
   }, [])
 
   const handleLogout = useCallback(async () => {
-    setShowSettingsMenu(false)
+    setShowSidebar(false)
     await AsyncStorage.clear().catch(() => {})
     NoiseConnection?.disconnect()
     setConn(null)
@@ -1296,6 +1297,19 @@ function AppInner() {
         setStartingError(String(e))
       })
   }, [masterBaseUrl])
+
+  const openSidebar = useCallback(() => {
+    fetchContainers()
+    sidebarAnim.setValue(0)
+    setShowSidebar(true)
+    Animated.timing(sidebarAnim, { toValue: 1, duration: 240, useNativeDriver: true }).start()
+  }, [fetchContainers, sidebarAnim])
+
+  const closeSidebar = useCallback(() => {
+    Animated.timing(sidebarAnim, { toValue: 0, duration: 200, useNativeDriver: true }).start(({ finished }) => {
+      if (finished) setShowSidebar(false)
+    })
+  }, [sidebarAnim])
 
   // ── QR scanner overlay ──────────────────────────────────────────────────────
   if (scanning) {
@@ -1355,7 +1369,7 @@ function AppInner() {
           <View style={s.headerLeft}>
             <TouchableOpacity
               style={s.hamburgerBtn}
-              onPress={() => { fetchContainers(); setShowSidebar(true) }}
+              onPress={openSidebar}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
               <Text style={s.hamburgerBtnText}>≡</Text>
@@ -1412,12 +1426,17 @@ function AppInner() {
         )}
         {showSidebar && (
           <>
-            <TouchableOpacity
-              style={[StyleSheet.absoluteFillObject, s.sidebarBackdrop]}
-              activeOpacity={1}
-              onPress={() => setShowSidebar(false)}
-            />
-            <View style={s.sidebar}>
+            <Animated.View
+              style={[StyleSheet.absoluteFillObject, s.sidebarBackdrop, { opacity: sidebarAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] }) }]}
+              pointerEvents="box-none"
+            >
+              <TouchableOpacity
+                style={StyleSheet.absoluteFillObject}
+                activeOpacity={1}
+                onPress={closeSidebar}
+              />
+            </Animated.View>
+            <Animated.View style={[s.sidebar, { transform: [{ translateX: sidebarAnim.interpolate({ inputRange: [0, 1], outputRange: [-280, 0] }) }] }]}>
               <View style={s.sidebarSection}>
                 <Text style={s.settingsMenuSectionTitle}>repos</Text>
               </View>
@@ -1437,7 +1456,7 @@ function AppInner() {
                     key={c.id}
                     style={s.containerMenuItem}
                     onPress={() => {
-                      setShowSidebar(false)
+                      closeSidebar()
                       if (c.status === 'running') {
                         setTunnelPort(null)
                         setActiveChild(c)
@@ -1460,7 +1479,7 @@ function AppInner() {
               <TouchableOpacity style={s.sidebarExitBtn} onPress={handleLogout}>
                 <Text style={s.settingsMenuLogoutText}>exit</Text>
               </TouchableOpacity>
-            </View>
+            </Animated.View>
           </>
         )}
       </View>
