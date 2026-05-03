@@ -464,8 +464,25 @@ const MessageBubble = memo(function MessageBubble({
 
 // ── AppIcon ───────────────────────────────────────────────────────────────────
 
-function AppIcon() {
-  return <Image source={require('./assets/icon.png')} style={s.creatureImg} />
+function AppIcon({ pulse = false }: { pulse?: boolean }) {
+  const scale = useRef(new Animated.Value(1)).current
+  useEffect(() => {
+    if (!pulse) return
+    const anim = Animated.loop(
+      Animated.sequence([
+        Animated.timing(scale, { toValue: 1.06, duration: 900, useNativeDriver: true }),
+        Animated.timing(scale, { toValue: 1,    duration: 900, useNativeDriver: true }),
+      ])
+    )
+    anim.start()
+    return () => anim.stop()
+  }, [pulse, scale])
+  return (
+    <Animated.Image
+      source={require('./assets/icon.png')}
+      style={[s.creatureImg, { transform: [{ scale }] }]}
+    />
+  )
 }
 
 // ── QrScanner ─────────────────────────────────────────────────────────────────
@@ -855,7 +872,6 @@ const ChatPane = memo(function ChatPane({
           style={s.messageList}
           ListEmptyComponent={
             <View style={s.emptyStateWrap}>
-              <Text style={s.emptyStateName}>claudulhu</Text>
               <Text style={s.emptyState}>you can just do things anon</Text>
             </View>
           }
@@ -1289,10 +1305,8 @@ function AppInner() {
     return (
       <SafeAreaView style={s.setupSafe} edges={['top', 'bottom']}>
         <View style={s.setupCenter}>
-          <AppIcon />
-          <Text style={s.setupTitle}>claudulhu</Text>
-          <TouchableOpacity style={s.setupBtn} onPress={requestCameraAndScan}>
-            <Text style={s.setupBtnText}>Scan QR code</Text>
+          <TouchableOpacity onPress={requestCameraAndScan}>
+            <AppIcon pulse />
           </TouchableOpacity>
         </View>
       </SafeAreaView>
