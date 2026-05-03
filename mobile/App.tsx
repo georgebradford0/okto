@@ -856,7 +856,7 @@ const ChatPane = memo(function ChatPane({
           ListEmptyComponent={
             <View style={s.emptyStateWrap}>
               <Text style={s.emptyStateName}>claudulhu</Text>
-              <Text style={s.emptyState}>say something</Text>
+              <Text style={s.emptyState}>you can just do things anon</Text>
             </View>
           }
           onContentSizeChange={(_, h) => {
