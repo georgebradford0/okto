@@ -174,6 +174,36 @@ enum McpAction {
     },
 }
 
+fn remove_completions() {
+    let home = match std::env::var("HOME") {
+        Ok(h) => std::path::PathBuf::from(h),
+        Err(_) => return,
+    };
+
+    let files = [
+        home.join(".local/share/bash-completion/completions/claudulhu"),
+        home.join(".zfunc/_claudulhu"),
+        home.join(".config/fish/completions/claudulhu.fish"),
+    ];
+    for path in &files {
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    // Remove the `. .../claudulhu` source line added to ~/.bashrc.
+    let bashrc = home.join(".bashrc");
+    if let Ok(content) = std::fs::read_to_string(&bashrc) {
+        let cleaned = content
+            .lines()
+            .filter(|l| !l.contains("claudulhu"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cleaned = if content.ends_with('\n') { cleaned + "\n" } else { cleaned };
+        let _ = std::fs::write(&bashrc, cleaned);
+    }
+}
+
 async fn update() -> Result<()> {
     use std::env::consts::{ARCH, OS};
     use tokio::process::Command;
@@ -239,6 +269,7 @@ async fn main() -> Result<()> {
                     return Ok(());
                 }
             }
+            remove_completions();
             use std::io::Write;
             use std::time::Instant;
             use claudulhu_k8s_ops::k8s;
