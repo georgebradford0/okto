@@ -103,6 +103,12 @@ fn messages_to_history(messages: &[ApiMessage], last_cost_usd: Option<f64>) -> V
             "interrupted" => {
                 result.push(HistMsg { role: "interrupted".to_string(), text: "interrupted".to_string(), cost_usd: None, output: None });
             }
+            "error" => {
+                let text: String = m.content.iter()
+                    .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
+                    .collect();
+                result.push(HistMsg { role: "error".to_string(), text, cost_usd: None, output: None });
+            }
             "assistant" => {
                 let text: String = m.content.iter()
                     .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
@@ -274,7 +280,16 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
     let api_key = match resolve_api_key() {
         Some(k) => k,
         None => {
-            let msg = serde_json::json!({"type":"error","message":"no API key configured"}).to_string();
+            let errmsg = "no API key configured".to_string();
+            {
+                let mut msgs = state.messages.lock().unwrap();
+                msgs.push(ApiMessage {
+                    role:    "error".to_string(),
+                    content: vec![ContentBlock::Text { text: errmsg.clone() }],
+                });
+                save_messages(&msgs);
+            }
+            let msg = serde_json::json!({"type":"error","message": errmsg}).to_string();
             ws_tx.send(WsMessage::Text(msg)).await.ok();
             return;
         }
@@ -291,7 +306,7 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
     }
 
     let messages: Vec<ApiMessage> = state.messages.lock().unwrap().iter()
-        .filter(|m| m.role != "interrupted")
+        .filter(|m| m.role != "interrupted" && m.role != "error")
         .cloned()
         .collect();
     let system   = state.system.clone();
@@ -353,8 +368,13 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
                 }
             }
             Err(e) => {
-                msgs_arc.lock().unwrap().pop();
-                save_messages(&msgs_arc.lock().unwrap());
+                let mut msgs = msgs_arc.lock().unwrap();
+                msgs.push(ApiMessage {
+                    role:    "error".to_string(),
+                    content: vec![ContentBlock::Text { text: e.clone() }],
+                });
+                save_messages(&msgs);
+                drop(msgs);
                 done_tx.send(ChatEvent::Error { message: e }).await.ok();
             }
         }
@@ -671,7 +691,7 @@ async fn main() {
                     save_messages(&msgs);
                 }
                 let messages: Vec<ApiMessage> = state_sp.messages.lock().unwrap().iter()
-                    .filter(|m| m.role != "interrupted")
+                    .filter(|m| m.role != "interrupted" && m.role != "error")
                     .cloned()
                     .collect();
                 let extra_tools = build_tools_with_mcp(&state_sp.mcp_pool, &make_extra_tools()).await;
@@ -694,8 +714,12 @@ async fn main() {
                         info!("[server] STARTUP_PROMPT complete cost=${cost_usd:.4}");
                     }
                     Err(e) => {
-                        state_sp.messages.lock().unwrap().pop();
-                        save_messages(&state_sp.messages.lock().unwrap());
+                        let mut msgs = state_sp.messages.lock().unwrap();
+                        msgs.push(ApiMessage {
+                            role:    "error".to_string(),
+                            content: vec![ContentBlock::Text { text: e.clone() }],
+                        });
+                        save_messages(&msgs);
                         error!("[server] STARTUP_PROMPT error: {e}");
                     }
                 }

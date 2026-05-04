@@ -47,7 +47,7 @@ interface ContainerInfo {
 
 interface Message {
   id:         string
-  role:       'user' | 'assistant' | 'tool' | 'session' | 'interrupted'
+  role:       'user' | 'assistant' | 'tool' | 'session' | 'interrupted' | 'error'
   text:       string
   cost?:      number
   toolUseId?: string
@@ -415,6 +415,15 @@ const MessageBubble = memo(function MessageBubble({
     (message.role === 'user') !== (visiblePrev === 'user')
   const extraTopMargin = turnBoundary ? 12 : 0
 
+  if (message.role === 'error') {
+    return (
+      <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
+        <View style={[s.messageWrap, { marginBottom: 3, paddingLeft: 28 }]}>
+          <Text style={s.errorLine} selectable>⚠ {message.text}</Text>
+        </View>
+      </Animated.View>
+    )
+  }
   if (message.role === 'interrupted') {
     return (
       <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
@@ -672,7 +681,7 @@ const ChatPane = memo(function ChatPane({
       lastToolIdRef.current = null
       wsRef.current = null
       opts.onStreamEnd?.()
-      setMessages(prev => appendMsg(prev, { id: uid(), role: 'assistant' as const, text: `\u2717 ${event.message ?? 'error'}` }))
+      setMessages(prev => appendMsg(prev, { id: uid(), role: 'error' as const, text: event.message ?? 'error' }))
       updateStatus('ready')
     }
   }, [updateStatus])
@@ -857,7 +866,7 @@ const ChatPane = memo(function ChatPane({
       wsRef.current = null
       setStreamingMsgId(null)
       if (!closingRef.current) {
-        setMessages(prev => appendMsg(prev, { id: uid(), role: 'assistant' as const, text: '\u2717 network error' }))
+        setMessages(prev => appendMsg(prev, { id: uid(), role: 'error' as const, text: 'network error' }))
         updateStatus('error')
       }
       closingRef.current = false
@@ -1644,6 +1653,7 @@ const s = StyleSheet.create({
   toolOutputBlock:   { marginTop: 6, borderLeftWidth: 2, borderLeftColor: C.border, paddingLeft: 10 },
   toolOutputText:    { fontSize: 12, color: C.textSecondary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', lineHeight: 18 },
   interruptedLine:   { fontSize: 16, lineHeight: 24, color: C.textMuted, fontFamily: ARIMO, fontStyle: 'italic' },
+  errorLine:         { fontSize: 15, lineHeight: 22, color: C.red, fontFamily: ARIMO, fontStyle: 'italic' },
 
   // Input bar
   completionList: { position: 'absolute', left: 0, right: 0, maxHeight: 180, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, backgroundColor: C.bg, zIndex: 10, elevation: 10 },
