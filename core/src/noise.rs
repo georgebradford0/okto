@@ -150,7 +150,12 @@ pub async fn run_noise_proxy(static_private: Vec<u8>, noise_port: u16, http_port
         let priv_clone = static_private.clone();
         tokio::spawn(async move {
             if let Err(e) = handle_noise_connection(stream, priv_clone, http_port).await {
-                eprintln!("[noise] error from {peer}: {e}");
+                let msg = e.to_string();
+                if msg.contains("early eof") || msg.contains("unexpected eof") {
+                    // Dropped probe/reconnect attempt before handshake — not an error.
+                } else {
+                    eprintln!("[noise] error from {peer}: {e}");
+                }
             }
         });
     }
