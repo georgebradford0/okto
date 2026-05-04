@@ -502,11 +502,11 @@ fn create_container_tool() -> AnthropicTool {
                 },
                 "startup_script": {
                     "type": "string",
-                    "description": "Optional shell script run inside the child before the server starts."
+                    "description": "Optional shell script run inside the child before the server starts. Never include sensitive data such as API keys or tokens — these are stored as plaintext in the Kubernetes Deployment spec."
                 },
                 "startup_prompt": {
                     "type": "string",
-                    "description": "Optional initial prompt sent to the child's agentic loop once ready."
+                    "description": "Optional initial prompt sent to the child's agentic loop once ready. Never include sensitive data such as API keys or tokens — these are stored as plaintext in the Kubernetes Deployment spec."
                 }
             },
             "required": []
