@@ -1,105 +1,38 @@
 # claudulhu
 
-An agentic coding assistant. Rulyeh manages a fleet of per-repo coding assistant containers and exposes the client-facing interface. Clients connect via an encrypted Noise tunnel.
+`claudulhu` is a mobile agent management system which manages a fleet of Claude agents using Kubernetes.  It was originally designed to be specifically for coding but can be used to deploy any type of agent.  
 
 ## Architecture
 
-| Component | Role |
-|---|---|
-| **Rulyeh** | Master node — manages child containers, exposes the Noise WebSocket interface |
-| **Child** | One per repo — handles the agentic coding loop for a single Git repository |
-
-Both roles use the same image: `ghcr.io/georgebradford0/rulyeh:latest`
-
----
+The system consists of the mobile client which connects to a Kubernetes cluster using the Noise Protocol.  Using the mobile client, a user can deploy new pods in the cluster from a main chat which connects to the Kubernetes control plane and interact with them through dedicated chats.  
 
 ## Install the CLI
-
+The CLI is a Rust command line client `claudulhu` that is used for setting up the Kubernetes cluster and is mostly a thin wrapper around it, along with support for adding MCPs.
 ```sh
 curl -fsSL https://raw.githubusercontent.com/georgebradford0/claudulhu/main/scripts/get-cli.sh | sh
 ```
 
----
-
 ## Setup
-
-### 1. Open firewall ports
-
-In your cloud provider's firewall / security group, allow **inbound TCP** on:
-
-| Port | Used by |
-|------|---------|
-| 30900 | rulyeh Noise tunnel (mobile connects here) |
-| 30100–30199 | Child container Noise tunnels |
-
-### 2. Bootstrap rulyeh
-
+`init` must be run on a host with static IP.  It assumes there are `ANTHROPIC_API_KEY` and `GH_TOKEN` vars present in the environment.  If not they can be passed with fields `--api-key` and `--gh-token`.  Port 8443 is used by default as it is not blocked by mobile providers but can be changed with field `--public-port`.
 ```sh
-claudulhu init --api-key sk-ant-... --gh-token ghp_...
+claudulhu init
 ```
+The `init` will install k3s if no cluster is reachable, create `claudulhu` namespace and RBAC, generate Noise keypair, download `rulyeh` image and run it.   When `rulyeh` is ready, a QR code will be printed to the screen.
 
-This single command:
-- Installs k3s if no cluster is reachable (Linux only)
-- Creates the `claudulhu` namespace and RBAC
-- Generates and stores the Noise keypair
-- Deploys rulyeh and waits for it to be ready
-- Prints the QR code to scan with the mobile app
+The QR code contains host, port and Noise pubkey.  Please be aware, anyone who has the QR data can connect to the cluster.
 
-Options:
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--api-key` | `$ANTHROPIC_API_KEY` | Anthropic API key |
-| `--gh-token` | `$GH_TOKEN` | GitHub token (optional) |
-| `--noise-port` | `30900` | NodePort for the Noise tunnel |
-
----
-
-## Creating child containers
-
-### Via chat
-
-Once connected in the app, ask rulyeh:
-
-> "Create a container for https://github.com/user/repo"
-
-Rulyeh creates a Kubernetes Deployment, two PVCs (`/data` and `/workspace`), a ClusterIP Service, and a NodePort Service — NodePorts are assigned from **30100–30199**.
-
-### Via CLI
-
-```sh
-claudulhu containers create --git-url https://github.com/user/repo
-claudulhu containers list
-claudulhu containers stop   <name>
-claudulhu containers start  <name>
-claudulhu containers delete <name>
+`mobile` directory contains a React Native app, which is currently only available in production for iOS -here- (TODO: publish iOS app and post link).   At the moment, Android users must build it
 ```
-
----
-
-## Operations
-
-### Restart and update
-
-Pull the latest image and restart all pods (rulyeh + all child containers):
-
-```sh
-claudulhu restart
+// TODO generate instructions for building React Native android app.
 ```
+Open the mobile app and press the pulsing icon and scan QR printed by `claudulhu init`.  It will establish a connection and open the main `rulyeh` chat.
 
-### Logs
-
-```sh
-claudulhu logs            # all pods
-claudulhu logs rulyeh     # rulyeh only
-claudulhu logs -f rulyeh  # follow
+## MCP Support
+MCP servers can be setup at initialization by passing an MCP JSON file to `init`.  
 ```
-
----
-
-## MCP tools
-
-MCP servers extend what rulyeh and child containers can do. Both `npx` and `uvx` are pre-installed in the image. Add servers with the CLI — arguments for the command go after `--`:
+claudulhu init --mcp-config <path_to_mcp_json_file>
+```
+They can also be added at runtime in any container (including the `rulyeh` container) and are hot reloaded. Below are some examples for 'uvx', 'npx' and 'uv run' (when package doesn't support 'uvx').  
 
 ```sh
 # uvx-based server
@@ -121,48 +54,12 @@ claudulhu mcp list
 claudulhu mcp remove --name github
 ```
 
-`mcp add` waits for the server to connect and reports the result. On failure the entry is automatically removed. The server config is stored in `/data/mcp.json` inside the container and hot-reloaded within a few seconds — you can also ask rulyeh to add MCP servers directly from chat.
+`mcp add` waits for the server to connect and reports the result. On failure the entry is automatically removed. The server config is stored in `/data/mcp.json` inside the container and hot-reloaded within a few seconds — you can also ask rulyeh to add MCP servers directly from chat, though I've found the cli is usually easier because Claude sometimes hallucinates package names for MCP servers.  Best practice is to ask to do a web search to verify package names before adding.
 
----
+## Startup Scripts
+New pods are created via a built-in tool `create_container` in the `rulyeh` main chat.  `create_container` can take arguments for startup scripts and startup prompts. The startup script runs before the server starts (good for git config, package installs, etc.). The startup prompt is a first message sent to the agent once the server is ready, which will run an agnetic loop to completion (or max turns).  These scripts are usually generated by the `rulyeh` main chat when user directs agent to create a new container.  Be aware that these are stored as env vars in the deployment spec for the pod so they should not contain sensitive data.  The tool description explains this but it's good practice never to direct the agent to include them (your request may override the tool description).
 
-## Environment variables
 
-### Rulyeh
-
-| Variable | Required | Description |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key |
-| `GH_TOKEN` | No* | GitHub token — passed to every child |
-| `PUBLIC_HOST` | No | Public IP/hostname for the QR code. Auto-detected if not set. |
-| `NOISE_PORT` | No | Noise endpoint port (default: `9000`) |
-
-*Required in practice for any GitHub repo work.
-
-### Child containers
-
-| Variable | Required | Description |
-|---|---|---|
-| `GIT_URL` | Yes | Repository to clone |
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key |
-| `GH_TOKEN` | No | GitHub token (required for private repos and PR creation) |
-| `PUBLIC_HOST` | No | Public IP/hostname for the QR code. Auto-detected if not set. |
-| `NOISE_PORT` | No | Noise endpoint port (default: `9000`) |
-| `GIT_USER_NAME` / `GIT_USER_EMAIL` | No | Git commit author identity |
-| `STARTUP_SCRIPT` | No | Shell script run before the server starts |
-| `STARTUP_PROMPT` | No | Initial prompt sent to the agentic loop on startup |
-
----
-
-## Git authentication
-
-**HTTPS** (`https://github.com/user/repo`)
-- Authenticated via `GH_TOKEN` — used for both clone and push
-
-**SSH** (`git@github.com:user/repo.git`)
-- Authenticated via SSH key mounted at `/root/.ssh/id_rsa`
-- `GH_TOKEN` is ignored when using SSH URLs
-
----
 
 ## PR/MR creation
 
