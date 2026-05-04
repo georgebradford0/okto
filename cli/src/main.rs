@@ -172,6 +172,16 @@ enum McpAction {
         /// Name of the MCP server to remove
         name: String,
     },
+
+    /// Add multiple MCP servers from a JSON file
+    Import {
+        /// Container name (default: rulyeh)
+        #[arg(long, default_value = "rulyeh")]
+        container: String,
+
+        /// Path to a JSON file containing an array of MCP server objects
+        file: std::path::PathBuf,
+    },
 }
 
 fn remove_completions() {
@@ -355,6 +365,7 @@ async fn main() -> Result<()> {
                 mcp::add(&container, &name, &command, &args, &env).await?;
             }
             McpAction::Remove { container, name } => mcp::remove(&container, &name).await?,
+            McpAction::Import { container, file } => mcp::import_from_file(&container, &file).await?,
         },
     }
     Ok(())

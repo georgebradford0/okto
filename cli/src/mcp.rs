@@ -135,6 +135,35 @@ pub async fn add(
     Ok(())
 }
 
+pub async fn import_from_file(container: &str, path: &std::path::Path) -> Result<()> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read '{}'", path.display()))?;
+    let entries: Vec<McpServerConfig> = serde_json::from_str(&text)
+        .context("failed to parse JSON — expected an array of MCP server objects")?;
+
+    if entries.is_empty() {
+        println!("No entries found in '{}'.", path.display());
+        return Ok(());
+    }
+
+    println!("Importing {} MCP server(s) into '{container}'...", entries.len());
+    let mut failed = 0usize;
+    for entry in &entries {
+        let env_pairs: Vec<String> = entry.env.iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        if let Err(e) = add(container, &entry.name, &entry.command, &entry.args, &env_pairs).await {
+            eprintln!("✗ '{}': {e}", entry.name);
+            failed += 1;
+        }
+    }
+
+    if failed > 0 {
+        anyhow::bail!("{failed} of {} server(s) failed to import", entries.len());
+    }
+    Ok(())
+}
+
 pub async fn remove(container: &str, name: &str) -> Result<()> {
     let pod = get_pod(container).await?;
     let mut configs = read_config(&pod).await?;
