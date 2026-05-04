@@ -4,7 +4,7 @@
 
 ## Architecture
 
-The system consists of the mobile client which connects to a Kubernetes cluster using the Noise Protocol.  Using the mobile client, a user can deploy new pods in the cluster from a main chat which connects to the Kubernetes control plane and interact with them through dedicated chats.  
+The system consists of a mobile client which connects to a Kubernetes cluster using the Noise Protocol.  Using the mobile client, a user can deploy new pods in the cluster from a main chat which connects to the Kubernetes control plane and interact with them through dedicated chats.  
 
 ## Install the CLI
 The CLI is a Rust command line client `claudulhu` that is used for setting up the Kubernetes cluster and is mostly a thin wrapper around it, along with support for adding MCPs.
