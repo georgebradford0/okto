@@ -74,6 +74,13 @@ enum Command {
     /// Update the claudulhu CLI to the latest release
     Update,
 
+    /// Remove the claudulhu binary and shell completions from this machine
+    Uninstall {
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+    },
+
     /// Generate shell tab-completion script
     Completions {
         /// Shell to generate completions for
@@ -260,6 +267,38 @@ async fn update() -> Result<()> {
     Ok(())
 }
 
+async fn uninstall(yes: bool) -> Result<()> {
+    let current = std::env::current_exe()?;
+
+    if !yes {
+        use std::io::Write;
+        print!("Remove {}? [y/N] ", current.display());
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if input.trim().to_lowercase() != "y" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    remove_completions();
+
+    // Try direct removal, fall back to sudo.
+    let path = current.to_str().unwrap_or("");
+    let removed = std::fs::remove_file(&current);
+    if removed.is_err() {
+        let status = tokio::process::Command::new("sudo")
+            .args(["rm", "-f", path])
+            .status()
+            .await?;
+        anyhow::ensure!(status.success(), "failed to remove {path}");
+    }
+
+    println!("Removed {}.", path);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -356,6 +395,7 @@ async fn main() -> Result<()> {
         }
         Command::Version => println!("{}", env!("CARGO_PKG_VERSION")),
         Command::Update => update().await?,
+        Command::Uninstall { yes } => uninstall(yes).await?,
         Command::Completions { shell } => {
             generate(shell, &mut Cli::command(), "claudulhu", &mut std::io::stdout());
         }
