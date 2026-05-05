@@ -475,10 +475,10 @@ async fn update_config_handler(Json(patch): Json<Config>) -> StatusCode {
 
 // ── Parent messaging tools ─────────────────────────────────────────────────────
 
-fn message_rulyeh_tool() -> AnthropicTool {
+fn message_lair_tool() -> AnthropicTool {
     AnthropicTool {
-        name: "message_rulyeh".to_string(),
-        description: "Send a message to the parent (rulyeh) container's agent and wait for its \
+        name: "message_lair".to_string(),
+        description: "Send a message to the parent (lair) container's agent and wait for its \
                        response. Use this to request secrets, configuration, or other information \
                        held by the parent. The parent will respond with a text reply."
             .to_string(),
@@ -496,9 +496,9 @@ fn message_rulyeh_tool() -> AnthropicTool {
 }
 
 fn make_extra_tools() -> Vec<AnthropicTool> {
-    // Only add the tool if RULYEH_URL is configured.
-    if std::env::var("RULYEH_URL").is_ok() {
-        vec![message_rulyeh_tool()]
+    // Only add the tool if LAIR_URL is configured.
+    if std::env::var("LAIR_URL").is_ok() {
+        vec![message_lair_tool()]
     } else {
         vec![]
     }
@@ -508,7 +508,7 @@ fn make_extra_executor() -> Option<Arc<dyn Fn(String, serde_json::Value)
     -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
     + Send + Sync>>
 {
-    let rulyeh_url = match std::env::var("RULYEH_URL") {
+    let lair_url = match std::env::var("LAIR_URL") {
         Ok(u) => u,
         Err(_) => return None,
     };
@@ -516,12 +516,12 @@ fn make_extra_executor() -> Option<Arc<dyn Fn(String, serde_json::Value)
         .timeout(std::time::Duration::from_secs(300))
         .pool_idle_timeout(std::time::Duration::from_secs(30))
         .build()
-        .expect("failed to build message_rulyeh HTTP client");
+        .expect("failed to build message_lair HTTP client");
     Some(Arc::new(move |name: String, input: serde_json::Value| {
-        let rulyeh_url = rulyeh_url.clone();
+        let lair_url = lair_url.clone();
         let client = client.clone();
         Box::pin(async move {
-            if name != "message_rulyeh" {
+            if name != "message_lair" {
                 return format!("unknown tool: {name}");
             }
             let text = match input.get("text").and_then(|v| v.as_str()) {
@@ -529,8 +529,8 @@ fn make_extra_executor() -> Option<Arc<dyn Fn(String, serde_json::Value)
                 None => return "error: missing 'text' field".to_string(),
             };
             let preview: String = text.chars().take(120).collect();
-            let url = format!("{}/message", rulyeh_url.trim_end_matches('/'));
-            info!("[server/message_rulyeh] → POST {url} ({} chars): {preview}", text.len());
+            let url = format!("{}/message", lair_url.trim_end_matches('/'));
+            info!("[server/message_lair] → POST {url} ({} chars): {preview}", text.len());
             let start = Instant::now();
             match client
                 .post(&url)
@@ -541,7 +541,7 @@ fn make_extra_executor() -> Option<Arc<dyn Fn(String, serde_json::Value)
                 Ok(resp) => {
                     let status = resp.status();
                     let elapsed = start.elapsed().as_millis();
-                    info!("[server/message_rulyeh] ← HTTP {status} in {elapsed}ms");
+                    info!("[server/message_lair] ← HTTP {status} in {elapsed}ms");
                     match resp.json::<serde_json::Value>().await {
                         Ok(body) => {
                             let result = body
@@ -550,18 +550,18 @@ fn make_extra_executor() -> Option<Arc<dyn Fn(String, serde_json::Value)
                                 .unwrap_or("(no response text)")
                                 .to_string();
                             let rpreview: String = result.chars().take(120).collect();
-                            info!("[server/message_rulyeh] response ({} chars): {rpreview}", result.len());
+                            info!("[server/message_lair] response ({} chars): {rpreview}", result.len());
                             result
                         }
                         Err(e) => {
-                            error!("[server/message_rulyeh] parse error: {e}");
+                            error!("[server/message_lair] parse error: {e}");
                             format!("error parsing parent response: {e}")
                         }
                     }
                 }
                 Err(e) => {
                     let elapsed = start.elapsed().as_millis();
-                    error!("[server/message_rulyeh] request failed in {elapsed}ms: {e}");
+                    error!("[server/message_lair] request failed in {elapsed}ms: {e}");
                     format!("error contacting parent: {e}")
                 }
             }
@@ -622,13 +622,13 @@ async fn main() {
 
     let noise_port: u16 = std::env::var("NOISE_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(9000);
     let http_port:  u16 = 8000;
-    let rulyeh_url = std::env::var("RULYEH_URL").unwrap_or_default();
+    let lair_url = std::env::var("LAIR_URL").unwrap_or_default();
 
     info!("[server] noise_pubkey={} noise_port={noise_port} http_port={http_port}", to_base32(&static_public));
-    if rulyeh_url.is_empty() {
-        info!("[server] RULYEH_URL not set — message_rulyeh tool disabled");
+    if lair_url.is_empty() {
+        info!("[server] LAIR_URL not set — message_lair tool disabled");
     } else {
-        info!("[server] RULYEH_URL={rulyeh_url} — message_rulyeh tool enabled");
+        info!("[server] LAIR_URL={lair_url} — message_lair tool enabled");
     }
 
     tokio::spawn(run_noise_proxy(static_private, noise_port, http_port));

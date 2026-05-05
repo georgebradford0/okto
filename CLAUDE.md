@@ -14,7 +14,7 @@ There is one image used for both parent and child containers:
 
 | Image | Used by |
 |-------|---------|
-| `ghcr.io/georgebradford0/rulyeh` | rulyeh (parent) and all child containers |
+| `ghcr.io/georgebradford0/lair` | lair (parent) and all child containers |
 
 Child Deployments use the same image with `command: ["/usr/local/bin/docker-entrypoint-server.sh"]` set in the pod spec. Each child gets its own Deployment, two PVCs (`{name}-data`, `{name}-workspace`), a ClusterIP Service (port 8000), and a NodePort Service (port 9000, assigned from range 30100–30199).
 
@@ -25,9 +25,9 @@ docker buildx build \
   --builder multiplatform \
   --platform linux/amd64,linux/arm64 \
   --push \
-  -f rulyeh/Dockerfile \
-  -t ghcr.io/georgebradford0/rulyeh:X.Y.Z \
-  -t ghcr.io/georgebradford0/rulyeh:latest \
+  -f lair/Dockerfile \
+  -t ghcr.io/georgebradford0/lair:X.Y.Z \
+  -t ghcr.io/georgebradford0/lair:latest \
   .
 ```
 
@@ -43,7 +43,7 @@ Octo is an agentic coding assistant: a server runs an AI loop against a git repo
 |-----------|----------|------|
 | `core/` | Rust | Shared library: agentic loop, Claude API streaming, git/worktree ops, config |
 | `server/` | Rust + Axum | Child container: Noise handshake → WebSocket → runs agentic loop against a single git repo |
-| `rulyeh/` | Rust + Axum | Parent container: orchestrates child Kubernetes Deployments; mobile connects here first |
+| `lair/` | Rust + Axum | Parent container: orchestrates child Kubernetes Deployments; mobile connects here first |
 | `mobile/` | React Native (TS) | iOS/Android client: QR scan → native Noise tunnel → WebSocket UI |
 
 ### Transport
@@ -57,9 +57,9 @@ All client↔server communication is encrypted with **Noise_XX_25519_ChaChaPoly_
 
 Server listens on port 9000 (`NOISE_PORT`). The Curve25519 keypair is persisted in `/data`.
 
-### rulyeh (parent container)
+### lair (parent container)
 
-`rulyeh` is the parent orchestration node. The mobile client connects to it first via the QR-scanned Noise tunnel. It:
+`lair` is the parent orchestration node. The mobile client connects to it first via the QR-scanned Noise tunnel. It:
 
 - Polls Kubernetes (every 10 s) for Deployments in the `octo` namespace labelled `octo.managed=1`
 - Caches each child's Noise public key in `/data/pubkey_registry.json`
@@ -67,9 +67,9 @@ Server listens on port 9000 (`NOISE_PORT`). The Curve25519 keypair is persisted 
 - Accepts `start_container` commands from the client, which scale the child Deployment to 1 replica and trigger an immediate re-poll
 - Runs its own agentic loop (via `core`) so the user can ask it to create/manage child containers
 
-Image: `ghcr.io/georgebradford0/rulyeh`
+Image: `ghcr.io/georgebradford0/lair`
 
-#### rulyeh environment variables
+#### lair environment variables
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
@@ -88,7 +88,7 @@ Image: `ghcr.io/georgebradford0/rulyeh`
 | `PUBLIC_HOST` | no | Advertised host in QR (auto-detected if unset) |
 | `NOISE_PORT` | no | Listening port (default: 9000) |
 | `GIT_USER_NAME` / `GIT_USER_EMAIL` | no | Commit author identity |
-| `RULYEH_URL` | no | HTTP URL of the parent rulyeh container (e.g. `http://rulyeh:8000`); when set, enables the `message_rulyeh` tool so the child can ask rulyeh for information or secrets |
+| `LAIR_URL` | no | HTTP URL of the parent lair container (e.g. `http://lair:8000`); when set, enables the `message_lair` tool so the child can ask lair for information or secrets |
 
 ### CI/CD workflows (all manual dispatch)
 

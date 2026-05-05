@@ -386,7 +386,7 @@ function parseAtQuery(text: string): { atIndex: number; dirPart: string; filePar
 // ── Container display name ─────────────────────────────────────────────────────
 
 function containerDisplayName(name: string): string {
-  return name.replace(/^rulyeh-/, '')
+  return name.replace(/^lair-/, '')
 }
 
 // ── MessageBubble ─────────────────────────────────────────────────────────────
@@ -1262,7 +1262,7 @@ function AppInner() {
     return () => sub.remove()
   }, [])
 
-  // Fetch container list from rulyeh.
+  // Fetch container list from lair.
   const fetchContainers = useCallback(() => {
     if (!masterBaseUrl) return
     fetch(`${masterBaseUrl}/containers`)

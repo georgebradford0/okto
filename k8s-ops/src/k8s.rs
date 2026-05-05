@@ -14,13 +14,13 @@ use serde_json::json;
 use tracing::{error, info};
 
 pub const NAMESPACE:         &str = "octo";
-pub const RULYEH_NOISE_PORT: u16  = 30900;
+pub const LAIR_NOISE_PORT: u16  = 30900;
 
 const NODEPORT_MIN:  u16  = 30100;
 const NODEPORT_MAX:  u16  = 30199;
-const IMAGE:         &str = "ghcr.io/georgebradford0/rulyeh:latest";
+const IMAGE:         &str = "ghcr.io/georgebradford0/lair:latest";
 const ENTRYPOINT:    &str = "/usr/local/bin/docker-entrypoint-server.sh";
-const RULYEH_NAME:   &str = "rulyeh";
+const LAIR_NAME:   &str = "lair";
 
 // ── Existing child-management types and functions ─────────────────────────────
 
@@ -114,7 +114,7 @@ pub struct CreateChildParams<'a> {
     pub api_key:           &'a str,
     pub gh_token:          Option<&'a str>,
     pub pub_host:          &'a str,
-    pub rulyeh_url:        &'a str,
+    pub lair_url:        &'a str,
     pub startup_script:    Option<&'a str>,
     pub startup_prompt:    Option<&'a str>,
     /// Hex-encoded 64-byte keypair (32 private + 32 public) to inject into the child.
@@ -171,7 +171,7 @@ async fn create_deployment(client: &Client, p: &CreateChildParams<'_>) -> anyhow
         json!({"name": "NOISE_PORT",         "value": "9000"}),
         json!({"name": "PUBLIC_PORT",        "value": p.noise_port.to_string()}),
         json!({"name": "PUBLIC_HOST",        "value": p.pub_host}),
-        json!({"name": "RULYEH_URL",         "value": p.rulyeh_url}),
+        json!({"name": "LAIR_URL",         "value": p.lair_url}),
         json!({"name": "NOISE_PRIVATE_KEY",  "value": p.noise_private_key}),
     ];
     if let Some(url) = p.git_url {
@@ -326,7 +326,7 @@ pub async fn restart_deployments(client: &Client, names: &[&str]) -> anyhow::Res
             .await
             .context("list managed deployments")?;
         let mut t: Vec<String> = list.iter().filter_map(|d| d.metadata.name.clone()).collect();
-        t.push("rulyeh".to_string());
+        t.push("lair".to_string());
         t
     } else {
         names.iter().map(|s| s.to_string()).collect()
@@ -343,7 +343,7 @@ pub async fn restart_deployments(client: &Client, names: &[&str]) -> anyhow::Res
 }
 
 /// Patch the image to `IMAGE` and bump `restartedAt` on every managed deployment
-/// plus rulyeh itself.  Since `imagePullPolicy: Always` is set on all pods, this
+/// plus lair itself.  Since `imagePullPolicy: Always` is set on all pods, this
 /// forces each one to pull the latest image on the next start.
 /// Returns the names of deployments that were successfully patched.
 pub async fn update_and_restart_all(client: &Client) -> anyhow::Result<Vec<String>> {
@@ -375,7 +375,7 @@ pub async fn update_and_restart_all(client: &Client) -> anyhow::Result<Vec<Strin
         format!("{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{s:02}Z")
     };
 
-    // Collect: all managed children + rulyeh.
+    // Collect: all managed children + lair.
     let mut targets: Vec<(String, &str)> = deployments
         .list(&ListParams::default().labels("octo.managed=1"))
         .await
@@ -384,7 +384,7 @@ pub async fn update_and_restart_all(client: &Client) -> anyhow::Result<Vec<Strin
         .filter_map(|d| d.metadata.name.clone())
         .map(|n| (n, "octo"))
         .collect();
-    targets.push((RULYEH_NAME.to_string(), RULYEH_NAME));
+    targets.push((LAIR_NAME.to_string(), LAIR_NAME));
 
     let mut updated = Vec::new();
     for (name, container_name) in &targets {
@@ -456,16 +456,16 @@ pub async fn ensure_rbac(client: &Client) -> anyhow::Result<()> {
     let sa: ServiceAccount = serde_json::from_value(json!({
         "apiVersion": "v1",
         "kind": "ServiceAccount",
-        "metadata": {"name": RULYEH_NAME, "namespace": NAMESPACE}
+        "metadata": {"name": LAIR_NAME, "namespace": NAMESPACE}
     }))?;
-    sa_api.patch(RULYEH_NAME, &PatchParams::apply("octo").force(), &Patch::Apply(sa))
+    sa_api.patch(LAIR_NAME, &PatchParams::apply("octo").force(), &Patch::Apply(sa))
         .await.context("ensure ServiceAccount")?;
 
     let cr_api: Api<ClusterRole> = Api::all(client.clone());
     let cr: ClusterRole = serde_json::from_value(json!({
         "apiVersion": "rbac.authorization.k8s.io/v1",
         "kind": "ClusterRole",
-        "metadata": {"name": RULYEH_NAME},
+        "metadata": {"name": LAIR_NAME},
         "rules": [
             {"apiGroups": ["apps"], "resources": ["deployments"],
              "verbs": ["get","list","watch","create","patch","delete"]},
@@ -476,31 +476,31 @@ pub async fn ensure_rbac(client: &Client) -> anyhow::Result<()> {
              "verbs": ["get","list","watch","patch","delete"]}
         ]
     }))?;
-    cr_api.patch(RULYEH_NAME, &PatchParams::apply("octo").force(), &Patch::Apply(cr))
+    cr_api.patch(LAIR_NAME, &PatchParams::apply("octo").force(), &Patch::Apply(cr))
         .await.context("ensure ClusterRole")?;
 
     let crb_api: Api<ClusterRoleBinding> = Api::all(client.clone());
     let crb: ClusterRoleBinding = serde_json::from_value(json!({
         "apiVersion": "rbac.authorization.k8s.io/v1",
         "kind": "ClusterRoleBinding",
-        "metadata": {"name": RULYEH_NAME},
+        "metadata": {"name": LAIR_NAME},
         "roleRef": {
             "apiGroup": "rbac.authorization.k8s.io",
             "kind": "ClusterRole",
-            "name": RULYEH_NAME
+            "name": LAIR_NAME
         },
-        "subjects": [{"kind": "ServiceAccount", "name": RULYEH_NAME, "namespace": NAMESPACE}]
+        "subjects": [{"kind": "ServiceAccount", "name": LAIR_NAME, "namespace": NAMESPACE}]
     }))?;
-    crb_api.patch(RULYEH_NAME, &PatchParams::apply("octo").force(), &Patch::Apply(crb))
+    crb_api.patch(LAIR_NAME, &PatchParams::apply("octo").force(), &Patch::Apply(crb))
         .await.context("ensure ClusterRoleBinding")?;
 
     Ok(())
 }
 
-/// Create or update the rulyeh-secrets Secret.
+/// Create or update the lair-secrets Secret.
 /// `noise_private_key_hex` is the hex-encoded 64-byte (private ++ public) keypair.
 /// `mcp_config_json`, if provided, is stored as `MCP_CONFIG_JSON` and written to
-/// `/data/mcp.json` by rulyeh on first startup (skipped if the file already exists).
+/// `/data/mcp.json` by lair on first startup (skipped if the file already exists).
 pub async fn upsert_secret(
     client: &Client,
     api_key: &str,
@@ -522,51 +522,51 @@ pub async fn upsert_secret(
     let secret: Secret = serde_json::from_value(json!({
         "apiVersion": "v1",
         "kind": "Secret",
-        "metadata": {"name": "rulyeh-secrets", "namespace": NAMESPACE},
+        "metadata": {"name": "lair-secrets", "namespace": NAMESPACE},
         "stringData": string_data
     }))?;
-    secrets.patch("rulyeh-secrets", &PatchParams::apply("octo").force(), &Patch::Apply(secret))
+    secrets.patch("lair-secrets", &PatchParams::apply("octo").force(), &Patch::Apply(secret))
         .await.context("upsert secret")?;
     Ok(())
 }
 
-pub async fn ensure_rulyeh_pvc(client: &Client) -> anyhow::Result<()> {
+pub async fn ensure_lair_pvc(client: &Client) -> anyhow::Result<()> {
     let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), NAMESPACE);
-    if pvcs.get("rulyeh-data").await.is_ok() {
+    if pvcs.get("lair-data").await.is_ok() {
         return Ok(());
     }
     let pvc: PersistentVolumeClaim = serde_json::from_value(json!({
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
-        "metadata": {"name": "rulyeh-data", "namespace": NAMESPACE},
+        "metadata": {"name": "lair-data", "namespace": NAMESPACE},
         "spec": {
             "accessModes": ["ReadWriteOnce"],
             "resources": {"requests": {"storage": "5Gi"}}
         }
     }))?;
-    pvcs.create(&PostParams::default(), &pvc).await.context("create rulyeh PVC")?;
+    pvcs.create(&PostParams::default(), &pvc).await.context("create lair PVC")?;
     Ok(())
 }
 
-pub async fn upsert_rulyeh_deployment(client: &Client, public_port: u16) -> anyhow::Result<()> {
+pub async fn upsert_lair_deployment(client: &Client, public_port: u16) -> anyhow::Result<()> {
     let deployments: Api<Deployment> = Api::namespaced(client.clone(), NAMESPACE);
     let deployment: Deployment = serde_json::from_value(json!({
         "apiVersion": "apps/v1",
         "kind": "Deployment",
         "metadata": {
-            "name": RULYEH_NAME,
+            "name": LAIR_NAME,
             "namespace": NAMESPACE,
-            "labels": {"app": RULYEH_NAME}
+            "labels": {"app": LAIR_NAME}
         },
         "spec": {
             "replicas": 1,
-            "selector": {"matchLabels": {"app": RULYEH_NAME}},
+            "selector": {"matchLabels": {"app": LAIR_NAME}},
             "template": {
-                "metadata": {"labels": {"app": RULYEH_NAME}},
+                "metadata": {"labels": {"app": LAIR_NAME}},
                 "spec": {
-                    "serviceAccountName": RULYEH_NAME,
+                    "serviceAccountName": LAIR_NAME,
                     "containers": [{
-                        "name": RULYEH_NAME,
+                        "name": LAIR_NAME,
                         "image": IMAGE,
                         "imagePullPolicy": "Always",
                         "env": [
@@ -576,39 +576,39 @@ pub async fn upsert_rulyeh_deployment(client: &Client, public_port: u16) -> anyh
                             {"name": "NOISE_KEY_FILE",        "value": "/data/noise_key.bin"},
                             {"name": "OCTO_SKIP_SHELL_ENV", "value": "1"}
                         ],
-                        "envFrom": [{"secretRef": {"name": "rulyeh-secrets"}}],
+                        "envFrom": [{"secretRef": {"name": "lair-secrets"}}],
                         "ports": [
                             {"containerPort": 8000, "name": "http"},
                             {"containerPort": 9000, "name": "noise"}
                         ],
                         "volumeMounts": [{"name": "data", "mountPath": "/data"}]
                     }],
-                    "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": "rulyeh-data"}}]
+                    "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": "lair-data"}}]
                 }
             }
         }
     }))?;
-    deployments.patch(RULYEH_NAME, &PatchParams::apply("octo").force(), &Patch::Apply(deployment))
-        .await.context("upsert rulyeh deployment")?;
+    deployments.patch(LAIR_NAME, &PatchParams::apply("octo").force(), &Patch::Apply(deployment))
+        .await.context("upsert lair deployment")?;
     Ok(())
 }
 
-pub async fn ensure_rulyeh_services(client: &Client, noise_port: u16) -> anyhow::Result<()> {
+pub async fn ensure_lair_services(client: &Client, noise_port: u16) -> anyhow::Result<()> {
     let services: Api<Service> = Api::namespaced(client.clone(), NAMESPACE);
 
     let svc: Service = serde_json::from_value(json!({
         "apiVersion": "v1",
         "kind": "Service",
-        "metadata": {"name": RULYEH_NAME, "namespace": NAMESPACE},
+        "metadata": {"name": LAIR_NAME, "namespace": NAMESPACE},
         "spec": {
-            "selector": {"app": RULYEH_NAME},
+            "selector": {"app": LAIR_NAME},
             "ports": [{"port": 8000, "targetPort": 8000, "name": "http"}]
         }
     }))?;
-    services.patch(RULYEH_NAME, &PatchParams::apply("octo").force(), &Patch::Apply(svc))
-        .await.context("ensure rulyeh ClusterIP service")?;
+    services.patch(LAIR_NAME, &PatchParams::apply("octo").force(), &Patch::Apply(svc))
+        .await.context("ensure lair ClusterIP service")?;
 
-    let np_name = format!("{RULYEH_NAME}-noise");
+    let np_name = format!("{LAIR_NAME}-noise");
     // NodePort value is immutable after creation; skip if the service already exists.
     if services.get(&np_name).await.is_err() {
         let np_svc: Service = serde_json::from_value(json!({
@@ -617,7 +617,7 @@ pub async fn ensure_rulyeh_services(client: &Client, noise_port: u16) -> anyhow:
             "metadata": {"name": np_name, "namespace": NAMESPACE},
             "spec": {
                 "type": "NodePort",
-                "selector": {"app": RULYEH_NAME},
+                "selector": {"app": LAIR_NAME},
                 "ports": [{
                     "port": 9000, "targetPort": 9000,
                     "nodePort": noise_port as i64,
@@ -626,7 +626,7 @@ pub async fn ensure_rulyeh_services(client: &Client, noise_port: u16) -> anyhow:
             }
         }))?;
         services.create(&PostParams::default(), &np_svc)
-            .await.context("create rulyeh NodePort service")?;
+            .await.context("create lair NodePort service")?;
     }
 
     Ok(())

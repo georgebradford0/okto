@@ -1,7 +1,7 @@
-# Connection Architecture: Mobile → Rulyeh
+# Connection Architecture: Mobile → Lair
 
 This document traces every step of establishing a connection from the mobile app to a
-rulyeh server, including the Noise handshake, the local proxy model, and all the
+lair server, including the Noise handshake, the local proxy model, and all the
 React Native state that drives it.
 
 ---
@@ -29,7 +29,7 @@ Mobile (React Native)
 │    → Noise_XX handshake
 │    → bidirectional encrypted proxy
 │       ↕ (all traffic encrypted)
-└── rulyeh server (port 9000)
+└── lair server (port 9000)
       → run_noise_proxy
       → handle_noise_connection
       → TCP connect to 127.0.0.1:8000 (axum HTTP)
@@ -48,7 +48,7 @@ App JS ←→ WebSocket ←→ iOS TCP (127.0.0.1:tunnelPort)
                            ↓ accept
                        proxyConnection
                            ↓ TCP connect + Noise handshake
-                       host:9000 (rulyeh noise proxy)
+                       host:9000 (lair noise proxy)
                            ↓ decrypt
                        127.0.0.1:8000 (axum)
 ```
@@ -95,7 +95,7 @@ goes in it; if `PUBLIC_HOST` is unset, the server detects its outbound IP via a 
 socket to 8.8.8.8:
 
 ```rust
-// rulyeh/src/main.rs
+// lair/src/main.rs
 let public_host = std::env::var("PUBLIC_HOST")
     .ok()
     .filter(|s| !s.is_empty())
@@ -111,7 +111,7 @@ let public_host = std::env::var("PUBLIC_HOST")
 
 ## 3. Server Startup: Noise Proxy and HTTP
 
-`rulyeh/src/main.rs` starts two things:
+`lair/src/main.rs` starts two things:
 
 ```rust
 // Noise proxy on port 9000
@@ -614,7 +614,7 @@ app shows the connecting spinner. Once set, `ChatPane` mounts with
 Once `tunnelPort` is set, all HTTP traffic goes through the local proxy:
 
 ```
-App JS                  Local proxy (Swift)        rulyeh (axum port 8000)
+App JS                  Local proxy (Swift)        lair (axum port 8000)
   │                          │                           │
   │  GET /history            │                           │
   ├─────────────────────────►│  encrypt → frame → send   │
@@ -645,8 +645,8 @@ if (data.is_streaming) {
 }
 ```
 
-**Note**: rulyeh's history response does not include `is_streaming`. That field is only
-returned by the child server. When connected to rulyeh, `loadHistory()` will always
+**Note**: lair's history response does not include `is_streaming`. That field is only
+returned by the child server. When connected to lair, `loadHistory()` will always
 take the `else` branch and set status to `ready`, never calling `reattachStream()`.
 
 ### `GET /stream` (WebSocket)
@@ -786,7 +786,7 @@ is baked into the iOS simulator path in `App.tsx`.
 
 Child containers inherit the parent's keypair via the `NOISE_PRIVATE_KEY` env var
 (hex-encoded 64-byte combined key), so all children share the same Noise identity as
-rulyeh.
+lair.
 
 ---
 
@@ -797,12 +797,12 @@ rulyeh.
 `reattachStream()` sends `{ "type": "watch" }` to `/stream`, but `handle_stream` only
 accepts `{ "text": "..." }` as the first message. Any other JSON causes it to return
 immediately, silently closing the WebSocket. The `reattachStream()` path is therefore
-broken for rulyeh. (It may work on child servers if they have a different
+broken for lair. (It may work on child servers if they have a different
 `handle_stream` implementation.)
 
-### `is_streaming` not returned by rulyeh `/history`
+### `is_streaming` not returned by lair `/history`
 
-`history_handler` in rulyeh returns `{ messages }` with no `is_streaming` field.
+`history_handler` in lair returns `{ messages }` with no `is_streaming` field.
 `loadHistory()` will therefore never call `reattachStream()` even if the agent loop is
 actively running. The screen won't show streaming output for a loop that started
 before the app connected.

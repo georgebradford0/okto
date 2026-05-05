@@ -1,4 +1,4 @@
-name: Rulyeh Docker Build
+name: Lair Docker Build
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
       - name: Read version from Cargo.toml
         id: version
         run: |
-          VERSION=$(grep '^version' rulyeh/Cargo.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+          VERSION=$(grep '^version' lair/Cargo.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')
           echo "value=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
@@ -39,9 +39,9 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: rulyeh/Dockerfile
+          file: lair/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/georgebradford0/rulyeh:${{ steps.version.outputs.value }}
-            ghcr.io/georgebradford0/rulyeh:latest
+            ghcr.io/georgebradford0/lair:${{ steps.version.outputs.value }}
+            ghcr.io/georgebradford0/lair:latest

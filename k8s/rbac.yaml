@@ -1,14 +1,14 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: rulyeh
+  name: lair
   namespace: octo
 ---
 # Namespace-scoped role for workload resources
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: rulyeh
+  name: lair
   namespace: octo
 rules:
   - apiGroups: ["apps"]
@@ -33,22 +33,22 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: rulyeh
+  name: lair
   namespace: octo
 subjects:
   - kind: ServiceAccount
-    name: rulyeh
+    name: lair
     namespace: octo
 roleRef:
   kind: Role
-  name: rulyeh
+  name: lair
   apiGroup: rbac.authorization.k8s.io
 ---
 # Cluster-scoped role for node management (remote EC2 provisioning)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: rulyeh-nodes
+  name: lair-nodes
 rules:
   - apiGroups: [""]
     resources: ["nodes"]
@@ -57,12 +57,12 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: rulyeh-nodes
+  name: lair-nodes
 subjects:
   - kind: ServiceAccount
-    name: rulyeh
+    name: lair
     namespace: octo
 roleRef:
   kind: ClusterRole
-  name: rulyeh-nodes
+  name: lair-nodes
   apiGroup: rbac.authorization.k8s.io

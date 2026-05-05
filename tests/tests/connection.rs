@@ -63,7 +63,7 @@ async fn noise_handshake_completes() {
     let mut server_ts = server_task.await.unwrap();
 
     // Verify the shared session works: client encrypts, server decrypts.
-    let plaintext = b"hello rulyeh";
+    let plaintext = b"hello lair";
     let mut ciphertext = vec![0u8; plaintext.len() + 64];
     let enc_len = client_ts.write_message(plaintext, &mut ciphertext).unwrap();
 

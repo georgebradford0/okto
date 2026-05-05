@@ -167,7 +167,7 @@ struct AppState {
     /// Hex-encoded 64-byte keypair (32 private + 32 public); injected into children.
     noise_private_key_hex: String,
     public_host:          String,
-    rulyeh_url:           String,
+    lair_url:           String,
     kube_client:          Client,
     mcp_pool:             McpPool,
     /// Cancellation token for the current streaming turn. Replaced at the start of each turn.
@@ -201,13 +201,13 @@ async fn message_handler(
     Json(body):   Json<PostMessage>,
 ) -> impl IntoResponse {
     let preview: String = body.text.chars().take(120).collect();
-    info!("[rulyeh/message_handler] received ({} chars): {preview}", body.text.len());
+    info!("[lair/message_handler] received ({} chars): {preview}", body.text.len());
     let start = Instant::now();
 
     let api_key = match resolve_api_key() {
         Some(k) => k,
         None    => {
-            error!("[rulyeh/message_handler] no API key configured");
+            error!("[lair/message_handler] no API key configured");
             return (StatusCode::INTERNAL_SERVER_ERROR,
                            Json(serde_json::json!({"error": "no API key configured"}))).into_response();
         }
@@ -219,17 +219,17 @@ async fn message_handler(
         content: vec![ContentBlock::Text { text: body.text }],
     }];
 
-    let extra_tools = build_tools_with_mcp(&state.mcp_pool, &rulyeh_extra_tools()).await;
-    let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), rulyeh_extra_executor(state.clone()));
+    let extra_tools = build_tools_with_mcp(&state.mcp_pool, &lair_extra_tools()).await;
+    let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), lair_extra_executor(state.clone()));
     match send_message(messages, build_ephemeral_system_prompt(), &model, &api_key, "/", None, CancellationToken::new(), &extra_tools, executor).await {
         Ok((text, cost_usd, _)) => {
             let elapsed = start.elapsed().as_millis();
-            info!("[rulyeh/message_handler] done in {elapsed}ms cost=${cost_usd:.4} response=({} chars)", text.len());
+            info!("[lair/message_handler] done in {elapsed}ms cost=${cost_usd:.4} response=({} chars)", text.len());
             (StatusCode::OK, Json(serde_json::json!({ "text": text, "cost_usd": cost_usd }))).into_response()
         }
         Err(e) => {
             let elapsed = start.elapsed().as_millis();
-            error!("[rulyeh/message_handler] error in {elapsed}ms: {e}");
+            error!("[lair/message_handler] error in {elapsed}ms: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e }))).into_response()
         }
     }
@@ -310,8 +310,8 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
         }
     });
 
-    let extra_tools = build_tools_with_mcp(&state.mcp_pool, &rulyeh_extra_tools()).await;
-    let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), rulyeh_extra_executor(Arc::clone(&state)));
+    let extra_tools = build_tools_with_mcp(&state.mcp_pool, &lair_extra_tools()).await;
+    let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), lair_extra_executor(Arc::clone(&state)));
     tokio::spawn(async move {
         match send_message(messages, &system, &model, &api_key, "/", Some(event_tx), cancel.clone(), &extra_tools, executor).await {
             Ok((_, cost_usd, mut updated)) => {
@@ -505,7 +505,7 @@ fn create_pod_tool() -> AnthropicTool {
                 },
                 "name": {
                     "type": "string",
-                    "description": "Optional name override. Defaults to rulyeh-<repo-name>, or rulyeh-workload if no git_url."
+                    "description": "Optional name override. Defaults to lair-<repo-name>, or lair-workload if no git_url."
                 },
                 "noise_port": {
                     "type": "integer",
@@ -547,7 +547,7 @@ fn terminate_pod_tool() -> AnthropicTool {
 fn restart_all_containers_tool() -> AnthropicTool {
     AnthropicTool {
         name: "restart_all_containers".to_string(),
-        description: "Rollout-restart all managed child Deployments and rulyeh itself so that \
+        description: "Rollout-restart all managed child Deployments and lair itself so that \
                        they pick up the latest image. Use this after pushing a new container image \
                        to apply the update across the cluster."
             .to_string(),
@@ -559,11 +559,11 @@ fn restart_all_containers_tool() -> AnthropicTool {
     }
 }
 
-fn rulyeh_extra_tools() -> Vec<AnthropicTool> {
+fn lair_extra_tools() -> Vec<AnthropicTool> {
     vec![message_child_tool(), create_pod_tool(), terminate_pod_tool(), restart_all_containers_tool()]
 }
 
-fn rulyeh_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_json::Value)
+fn lair_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_json::Value)
     -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
     + Send + Sync>>
 {
@@ -598,30 +598,30 @@ async fn exec_message_child(client: reqwest::Client, input: serde_json::Value) -
     };
     let preview: String = text.chars().take(120).collect();
     let url = format!("http://{}:8000/message", container_name);
-    info!("[rulyeh/message_child] → POST {url} ({} chars): {preview}", text.len());
+    info!("[lair/message_child] → POST {url} ({} chars): {preview}", text.len());
     let start = Instant::now();
     match client.post(&url).json(&serde_json::json!({ "text": text })).send().await {
         Ok(resp) => {
             let status  = resp.status();
             let elapsed = start.elapsed().as_millis();
-            info!("[rulyeh/message_child] ← HTTP {status} in {elapsed}ms from {container_name}");
+            info!("[lair/message_child] ← HTTP {status} in {elapsed}ms from {container_name}");
             match resp.json::<serde_json::Value>().await {
                 Ok(body) => {
                     let result = body.get("text").and_then(|v| v.as_str())
                         .unwrap_or("(no response text)").to_string();
                     let rpreview: String = result.chars().take(120).collect();
-                    info!("[rulyeh/message_child] response ({} chars): {rpreview}", result.len());
+                    info!("[lair/message_child] response ({} chars): {rpreview}", result.len());
                     result
                 }
                 Err(e) => {
-                    error!("[rulyeh/message_child] parse error from {container_name}: {e}");
+                    error!("[lair/message_child] parse error from {container_name}: {e}");
                     format!("error parsing child response: {e}")
                 }
             }
         }
         Err(e) => {
             let elapsed = start.elapsed().as_millis();
-            error!("[rulyeh/message_child] request to {container_name} failed in {elapsed}ms: {e}");
+            error!("[lair/message_child] request to {container_name} failed in {elapsed}ms: {e}");
             format!("error contacting child '{container_name}': {e}")
         }
     }
@@ -641,16 +641,16 @@ async fn exec_create_pod(state: Arc<AppState>, input: serde_json::Value) -> Stri
                         .unwrap_or("repo")
                         .trim_end_matches(".git")
                         .to_lowercase();
-                    format!("rulyeh-{slug}")
+                    format!("lair-{slug}")
                 }
-                None => format!("rulyeh-workload"),
+                None => format!("lair-workload"),
             }
         });
 
     let api_key             = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
     let gh_token            = std::env::var("GH_TOKEN").ok().filter(|s| !s.is_empty());
     let pub_host            = state.public_host.clone();
-    let rulyeh_url          = state.rulyeh_url.clone();
+    let lair_url          = state.lair_url.clone();
     let noise_private_key   = state.noise_private_key_hex.clone();
     let startup_script = input.get("startup_script").and_then(|v| v.as_str()).map(str::to_string);
     let startup_prompt = input.get("startup_prompt").and_then(|v| v.as_str()).map(str::to_string);
@@ -664,7 +664,7 @@ async fn exec_create_pod(state: Arc<AppState>, input: serde_json::Value) -> Stri
         },
     };
 
-    info!("[rulyeh/create_pod] creating {child_name} port={noise_port} git={}", git_url.as_deref().unwrap_or("(none)"));
+    info!("[lair/create_pod] creating {child_name} port={noise_port} git={}", git_url.as_deref().unwrap_or("(none)"));
 
     let params = k8s::CreateChildParams {
         name:              &child_name,
@@ -673,7 +673,7 @@ async fn exec_create_pod(state: Arc<AppState>, input: serde_json::Value) -> Stri
         api_key:           &api_key,
         gh_token:          gh_token.as_deref(),
         pub_host:          &pub_host,
-        rulyeh_url:        &rulyeh_url,
+        lair_url:        &lair_url,
         startup_script:    startup_script.as_deref(),
         startup_prompt:    startup_prompt.as_deref(),
         noise_private_key: &noise_private_key,
@@ -681,13 +681,13 @@ async fn exec_create_pod(state: Arc<AppState>, input: serde_json::Value) -> Stri
 
     match k8s::create_child_resources(&state.kube_client, &params).await {
         Ok(_) => {
-            info!("[rulyeh/create_pod] created {child_name}");
+            info!("[lair/create_pod] created {child_name}");
             tokio::time::sleep(Duration::from_secs(3)).await;
             state.poll_trigger.notify_one();
             format!("Created child '{child_name}' on NodePort {noise_port}.")
         }
         Err(e) => {
-            error!("[rulyeh/create_pod] failed: {e:#}");
+            error!("[lair/create_pod] failed: {e:#}");
             format!("error: {e:#}")
         }
     }
@@ -764,7 +764,7 @@ async fn main() {
     }
 
     let (static_private, static_public) = if is_dev {
-        warn!("[rulyeh] DEV MODE: using fixed dev keypair");
+        warn!("[lair] DEV MODE: using fixed dev keypair");
         (DEV_STATIC_PRIVATE.to_vec(), DEV_STATIC_PUBLIC.to_vec())
     } else if let Some(kp) = injected_keypair {
         kp
@@ -790,15 +790,15 @@ async fn main() {
                 .map(|a| a.ip().to_string())
                 .unwrap_or_else(|_| "127.0.0.1".to_string())
         });
-    let rulyeh_name = std::env::var("RULYEH_NAME").unwrap_or_else(|_| "rulyeh".to_string());
-    let rulyeh_url  = format!("http://{}:{}", rulyeh_name, http_port);
+    let lair_name = std::env::var("LAIR_NAME").unwrap_or_else(|_| "lair".to_string());
+    let lair_url  = format!("http://{}:{}", lair_name, http_port);
 
-    info!("[rulyeh] noise_pubkey={pubkey_b32} noise_port={noise_port} http_port={http_port} public_host={public_host}");
+    info!("[lair] noise_pubkey={pubkey_b32} noise_port={noise_port} http_port={http_port} public_host={public_host}");
 
     let kube_client = match k8s::build_client().await {
-        Ok(c) => { info!("[rulyeh] K8s client initialized"); c }
+        Ok(c) => { info!("[lair] K8s client initialized"); c }
         Err(e) => {
-            error!("[rulyeh] failed to initialize K8s client: {e}");
+            error!("[lair] failed to initialize K8s client: {e}");
             std::process::exit(1);
         }
     };
@@ -808,15 +808,15 @@ async fn main() {
     let dir = data_dir();
     fs::create_dir_all(&dir).ok();
     let messages = load_messages();
-    info!("[rulyeh] loaded {} message(s) from history", messages.len());
+    info!("[lair] loaded {} message(s) from history", messages.len());
 
     let mcp_json_path = dir.join("mcp.json");
     if !mcp_json_path.exists() {
         if let Ok(json) = std::env::var("MCP_CONFIG_JSON") {
             if let Err(e) = fs::write(&mcp_json_path, &json) {
-                warn!("[rulyeh] failed to seed mcp.json: {e}");
+                warn!("[lair] failed to seed mcp.json: {e}");
             } else {
-                info!("[rulyeh] seeded mcp.json from MCP_CONFIG_JSON secret");
+                info!("[lair] seeded mcp.json from MCP_CONFIG_JSON secret");
             }
         }
     }
@@ -833,7 +833,7 @@ async fn main() {
         pubkey_b32,
         noise_private_key_hex,
         public_host,
-        rulyeh_url,
+        lair_url,
         kube_client,
         mcp_pool,
         cancel:                Mutex::new(CancellationToken::new()),
@@ -861,7 +861,7 @@ async fn main() {
 
     let addr = format!("0.0.0.0:{http_port}");
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("failed to bind HTTP port");
-    info!("[rulyeh] HTTP listening on {addr} (Noise proxy on 0.0.0.0:{noise_port})");
+    info!("[lair] HTTP listening on {addr} (Noise proxy on 0.0.0.0:{noise_port})");
 
     axum::serve(listener, app).await.unwrap();
 }

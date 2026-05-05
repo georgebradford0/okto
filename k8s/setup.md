@@ -43,18 +43,18 @@ kubectl patch secret octo-secrets -n octo \
 | **Security Group** | Inbound: TCP 30100–30199 (Noise NodePorts), TCP 6443 (k3s join). Store ID in `AWS_SECURITY_GROUP_ID` env var |
 | **Subnet** | Store ID in `AWS_SUBNET_ID` env var |
 
-Set `K3S_CONTROL_PLANE_URL` to `https://<control-plane-ip>:6443` in the rulyeh Deployment.
+Set `K3S_CONTROL_PLANE_URL` to `https://<control-plane-ip>:6443` in the lair Deployment.
 
-## 6. Apply RBAC and deploy rulyeh
+## 6. Apply RBAC and deploy lair
 
 ```sh
 kubectl apply -f k8s/rbac.yaml
-kubectl apply -f k8s/rulyeh.yaml
+kubectl apply -f k8s/lair.yaml
 ```
 
 ## Verify
 
 ```sh
 kubectl get pods -n octo
-kubectl logs -n octo deploy/rulyeh
+kubectl logs -n octo deploy/lair
 ```

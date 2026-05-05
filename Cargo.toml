@@ -2,7 +2,7 @@
 members = [
     "core",
     "server",
-    "rulyeh",
+    "lair",
     "k8s-ops",
     "cli",
     "tests",

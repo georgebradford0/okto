@@ -1,11 +1,11 @@
 [package]
-name        = "octo-rulyeh"
+name        = "octo-lair"
 version     = "0.2.24"
 edition     = "2021"
 description = "octo master control node"
 
 [[bin]]
-name = "octo-rulyeh"
+name = "octo-lair"
 path = "src/main.rs"
 
 [dependencies]

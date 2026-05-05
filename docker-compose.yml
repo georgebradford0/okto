@@ -2,12 +2,12 @@ services:
   # ── Master control node ────────────────────────────────────────────────────
   # Single entry point for the mobile app.  Manages child repo containers via
   # the Docker socket.  Scan its QR code once; child containers appear in-app.
-  rulyeh:
-    container_name: rulyeh
-    image: ghcr.io/georgebradford0/rulyeh:latest
+  lair:
+    container_name: lair
+    image: ghcr.io/georgebradford0/lair:latest
     build:
       context: .
-      dockerfile: rulyeh/Dockerfile
+      dockerfile: lair/Dockerfile
     ports:
       - "${MASTER_PORT:-9000}:${MASTER_PORT:-9000}"
     environment:
@@ -20,7 +20,7 @@ services:
       - STARTUP_SCRIPT=${STARTUP_SCRIPT:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - octo-rulyeh-data:/data
+      - octo-lair-data:/data
     networks:
       - octo-net
 
@@ -30,7 +30,7 @@ services:
   octo:
     build:
       context: .
-      dockerfile: rulyeh/Dockerfile
+      dockerfile: lair/Dockerfile
     entrypoint: ["/usr/local/bin/docker-entrypoint-server.sh"]
     ports:
       - "${NOISE_PORT:-9100}:${NOISE_PORT:-9100}"
@@ -64,4 +64,4 @@ networks:
 volumes:
   workspace:
   octo-data:
-  octo-rulyeh-data:
+  octo-lair-data:

@@ -10,5 +10,5 @@ deploy/update_remote.sh
 .env
 down.sh
 scripts/restart-all.sh
-scripts/restart_rulyeh.sh
+scripts/restart_lair.sh
 .claude/

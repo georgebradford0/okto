@@ -21,7 +21,7 @@ pub async fn create(git_url: Option<&str>, name: Option<&str>, noise_port: Optio
 
     let child_name = name.map(str::to_string).unwrap_or_else(|| match git_url {
         Some(u) => format!(
-            "rulyeh-{}",
+            "lair-{}",
             u.trim_end_matches('/')
                 .split('/')
                 .last()
@@ -29,7 +29,7 @@ pub async fn create(git_url: Option<&str>, name: Option<&str>, noise_port: Optio
                 .trim_end_matches(".git")
                 .to_lowercase()
         ),
-        None => "rulyeh-workload".to_string(),
+        None => "lair-workload".to_string(),
     });
 
     let port = match noise_port {
@@ -40,7 +40,7 @@ pub async fn create(git_url: Option<&str>, name: Option<&str>, noise_port: Optio
     let api_key   = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
     let gh_token  = std::env::var("GH_TOKEN").ok().filter(|s| !s.is_empty());
     let pub_host  = std::env::var("PUBLIC_HOST").unwrap_or_default();
-    let noise_key = k8s::read_secret_value(&client, "rulyeh-secrets", "NOISE_PRIVATE_KEY")
+    let noise_key = k8s::read_secret_value(&client, "lair-secrets", "NOISE_PRIVATE_KEY")
         .await
         .unwrap_or_default();
 
@@ -51,7 +51,7 @@ pub async fn create(git_url: Option<&str>, name: Option<&str>, noise_port: Optio
         api_key:           &api_key,
         gh_token:          gh_token.as_deref(),
         pub_host:          &pub_host,
-        rulyeh_url:        "",
+        lair_url:        "",
         startup_script:    None,
         startup_prompt:    None,
         noise_private_key: &noise_key,

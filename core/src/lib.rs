@@ -1303,7 +1303,7 @@ pub async fn run_startup_prompt(
 
 // ── System Prompt ─────────────────────────────────────────────────────────────
 
-/// System prompt for the ephemeral loop that handles inbound message_rulyeh /
+/// System prompt for the ephemeral loop that handles inbound message_lair /
 /// message_child calls.  The loop runs to completion and its final text is
 /// returned as the HTTP response — so the model MUST always emit a text block
 /// in the last turn.
@@ -1332,9 +1332,9 @@ pub fn build_system_prompt(repo_path: &str, branch: Option<&str>, worktree_path:
         \n- Never use filler phrases like \"I'll now...\", \"Let me...\", \"I've completed...\", \"Sure!\" etc.\
         \n- Never pad responses.";
 
-    let parent_tool_note = if std::env::var("RULYEH_URL").is_ok() {
-        "\n\nYou have a message_rulyeh(text) tool available. Use it to send a message to the parent \
-         (rulyeh) container's agent and receive a response — for example to request secrets, \
+    let parent_tool_note = if std::env::var("LAIR_URL").is_ok() {
+        "\n\nYou have a message_lair(text) tool available. Use it to send a message to the parent \
+         (lair) container's agent and receive a response — for example to request secrets, \
          configuration, or to hand off a task."
     } else {
         ""

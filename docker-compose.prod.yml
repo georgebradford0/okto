@@ -1,4 +1,4 @@
 services:
-  rulyeh:
+  lair:
     build: !reset null
-    image: ghcr.io/georgebradford0/rulyeh:${RULYEH_VERSION:-latest}
+    image: ghcr.io/georgebradford0/lair:${LAIR_VERSION:-latest}

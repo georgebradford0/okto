@@ -17,7 +17,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Bootstrap rulyeh on a Kubernetes cluster
+    /// Bootstrap lair on a Kubernetes cluster
     Init {
         /// Anthropic API key
         #[arg(long, env = "ANTHROPIC_API_KEY")]
@@ -27,7 +27,7 @@ enum Command {
         #[arg(long, env = "GH_TOKEN")]
         gh_token: Option<String>,
 
-        /// NodePort to expose rulyeh's Noise endpoint (default: 30900)
+        /// NodePort to expose lair's Noise endpoint (default: 30900)
         #[arg(long, default_value_t = 30900)]
         noise_port: u16,
 
@@ -37,7 +37,7 @@ enum Command {
         #[arg(long, default_value_t = 8443)]
         public_port: u16,
 
-        /// Path to an mcp.json file to seed rulyeh's MCP tool list on first startup
+        /// Path to an mcp.json file to seed lair's MCP tool list on first startup
         #[arg(long)]
         mcp_config: Option<std::path::PathBuf>,
     },
@@ -55,19 +55,19 @@ enum Command {
         yes: bool,
     },
 
-    /// Reload containers (default: rulyeh only)
+    /// Reload containers (default: lair only)
     Reload {
         /// Specific child containers to reload (by name)
         #[arg(long, value_name = "NAME", num_args = 1..)]
         containers: Vec<String>,
-        /// Reload all containers (rulyeh + all managed children)
+        /// Reload all containers (lair + all managed children)
         #[arg(long, conflicts_with = "containers")]
         all: bool,
     },
 
     /// Show logs for a container (all containers if no name given)
     Logs {
-        /// Deployment name (e.g. rulyeh, my-repo). Omit for all.
+        /// Deployment name (e.g. lair, my-repo). Omit for all.
         name: Option<String>,
 
         /// Follow log output
@@ -144,15 +144,15 @@ enum ContainersAction {
 enum McpAction {
     /// List MCP servers configured in a container
     List {
-        /// Container name (default: rulyeh)
-        #[arg(long, default_value = "rulyeh")]
+        /// Container name (default: lair)
+        #[arg(long, default_value = "lair")]
         container: String,
     },
 
     /// Add an MCP server to a container
     Add {
-        /// Container name (default: rulyeh)
-        #[arg(long, default_value = "rulyeh")]
+        /// Container name (default: lair)
+        #[arg(long, default_value = "lair")]
         container: String,
 
         /// Logical name for the MCP server
@@ -174,8 +174,8 @@ enum McpAction {
 
     /// Remove an MCP server from a container
     Remove {
-        /// Container name (default: rulyeh)
-        #[arg(long, default_value = "rulyeh")]
+        /// Container name (default: lair)
+        #[arg(long, default_value = "lair")]
         container: String,
 
         /// Name of the MCP server to remove
@@ -184,8 +184,8 @@ enum McpAction {
 
     /// Add multiple MCP servers from a JSON file
     Import {
-        /// Container name (default: rulyeh)
-        #[arg(long, default_value = "rulyeh")]
+        /// Container name (default: lair)
+        #[arg(long, default_value = "lair")]
         container: String,
 
         /// Path to a JSON file containing an array of MCP server objects
@@ -374,7 +374,7 @@ async fn main() -> Result<()> {
                 let names: Vec<&str> = containers.iter().map(|s| s.as_str()).collect();
                 k8s::restart_deployments(&client, &names).await?
             } else {
-                k8s::restart_deployments(&client, &["rulyeh"]).await?
+                k8s::restart_deployments(&client, &["lair"]).await?
             };
             if updated.is_empty() {
                 println!("Nothing restarted.");
@@ -392,7 +392,7 @@ async fn main() -> Result<()> {
             } else {
                 let mut list = k8s::list_managed_deployments(&client).await?
                     .into_iter().map(|c| c.name).collect::<Vec<_>>();
-                list.push("rulyeh".to_string());
+                list.push("lair".to_string());
                 list
             };
 

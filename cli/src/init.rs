@@ -44,12 +44,12 @@ pub async fn run(api_key: &str, gh_token: Option<&str>, noise_port: u16, public_
     k8s::ensure_rbac(&client).await?;
     println!("Storing API keys and keypair in cluster secret...");
     k8s::upsert_secret(&client, api_key, gh_token, &noise_private_key_hex, mcp_config_json.as_deref()).await?;
-    println!("Provisioning rulyeh data volume...");
-    k8s::ensure_rulyeh_pvc(&client).await?;
-    println!("Applying rulyeh Deployment...");
-    k8s::upsert_rulyeh_deployment(&client, public_port).await?;
+    println!("Provisioning lair data volume...");
+    k8s::ensure_lair_pvc(&client).await?;
+    println!("Applying lair Deployment...");
+    k8s::upsert_lair_deployment(&client, public_port).await?;
     println!("Configuring ClusterIP and NodePort services...");
-    k8s::ensure_rulyeh_services(&client, noise_port).await?;
+    k8s::ensure_lair_services(&client, noise_port).await?;
 
     if public_port != noise_port {
         println!("Setting up socat proxy ({public_port} -> {noise_port})...");
@@ -57,15 +57,15 @@ pub async fn run(api_key: &str, gh_token: Option<&str>, noise_port: u16, public_
     }
 
     // Restart so the pod loads the new keypair from the secret before we print the QR.
-    println!("Restarting rulyeh to load new keypair...");
-    k8s::rollout_restart_deployment(&client, "rulyeh").await?;
-    println!("Waiting for rulyeh to be ready...");
-    k8s::wait_for_deployment_ready(&client, "rulyeh", 180).await?;
+    println!("Restarting lair to load new keypair...");
+    k8s::rollout_restart_deployment(&client, "lair").await?;
+    println!("Waiting for lair to be ready...");
+    k8s::wait_for_deployment_ready(&client, "lair", 180).await?;
 
-    let ip = k8s::get_public_ip_via_pod(&client, "rulyeh").await?;
+    let ip = k8s::get_public_ip_via_pod(&client, "lair").await?;
     let qr_data = format!("2:{ip}:{public_port}:{pubkey_b32}");
 
-    println!("\nrulyeh is live at {ip} (Noise NodePort {noise_port}, QR port {public_port})");
+    println!("\nlair is live at {ip} (Noise NodePort {noise_port}, QR port {public_port})");
     println!("QR data: {qr_data}\n");
 
     let code = qrcode::QrCode::new(&qr_data).context("generate QR code")?;

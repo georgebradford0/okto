@@ -2,7 +2,7 @@
 
 ## Overview
 
-Migrate rulyeh's container management from direct Docker CLI calls to Kubernetes, and add the ability to provision remote EC2 worker nodes that join the cluster on demand. Once a remote node joins, its child workload is a normal K8s Pod — discovery, pubkey exec, scaling, and messaging all work identically to local children.
+Migrate lair's container management from direct Docker CLI calls to Kubernetes, and add the ability to provision remote EC2 worker nodes that join the cluster on demand. Once a remote node joins, its child workload is a normal K8s Pod — discovery, pubkey exec, scaling, and messaging all work identically to local children.
 
 ---
 
@@ -10,7 +10,7 @@ Migrate rulyeh's container management from direct Docker CLI calls to Kubernetes
 
 - Self-hosted **k3s** cluster (single control-plane, any number of workers)
 - Single `octo` namespace for all workloads
-- rulyeh runs inside the cluster as a Pod with an in-cluster ServiceAccount
+- lair runs inside the cluster as a Pod with an in-cluster ServiceAccount
 - AWS is the only supported cloud provider for now (others added later)
 - No LoadBalancers — NodePort for all external Noise connections
 - Pure Rust `kube` crate for all K8s API calls (no `kubectl` subprocess)
@@ -40,7 +40,7 @@ kubectl create secret generic k3s-join-token \
   -n octo
 ```
 
-This is how rulyeh reads the join token at runtime — works whether rulyeh is on the control-plane node or not.
+This is how lair reads the join token at runtime — works whether lair is on the control-plane node or not.
 
 ### 4. Store API keys as a K8s Secret
 
@@ -59,16 +59,16 @@ kubectl create secret generic octo-secrets \
 | **Subnet** | The subnet to place new instances in. Store in `AWS_SUBNET_ID` |
 | **IAM instance profile** | Optional. Useful for SSM access without SSH keys |
 
-### 6. Apply RBAC and deploy rulyeh
+### 6. Apply RBAC and deploy lair
 
 ```sh
 kubectl apply -f k8s/rbac.yaml
-kubectl apply -f k8s/rulyeh.yaml
+kubectl apply -f k8s/lair.yaml
 ```
 
 ---
 
-## New environment variables for rulyeh
+## New environment variables for lair
 
 | Variable | Required | Purpose |
 |---|---|---|
@@ -88,22 +88,22 @@ kubectl apply -f k8s/rulyeh.yaml
 | File | Contents |
 |---|---|
 | `k8s/namespace.yaml` | `octo` Namespace |
-| `k8s/rbac.yaml` | ServiceAccount `rulyeh` + Role + RoleBinding |
+| `k8s/rbac.yaml` | ServiceAccount `lair` + Role + RoleBinding |
 | `k8s/secret.example.yaml` | Non-secret template showing expected keys (no real values) |
-| `k8s/rulyeh.yaml` | rulyeh Deployment + PVC (`/data`) + ClusterIP Service (port 8000) + NodePort Service (port 9000) |
+| `k8s/lair.yaml` | lair Deployment + PVC (`/data`) + ClusterIP Service (port 8000) + NodePort Service (port 9000) |
 | `k8s/setup.md` | Operator guide (mirrors this document, concise step-by-step) |
 
-### Dynamic resources (created by rulyeh at runtime per child)
+### Dynamic resources (created by lair at runtime per child)
 
-For a child named `rulyeh-myrepo`:
+For a child named `lair-myrepo`:
 
 | Resource | Name | Notes |
 |---|---|---|
-| PVC | `rulyeh-myrepo-data` | `ReadWriteOnce`, mounted at `/data` |
-| PVC | `rulyeh-myrepo-workspace` | `ReadWriteOnce`, mounted at `/workspace` |
-| Deployment | `rulyeh-myrepo` | 1 replica, labels `octo.managed=1` + `octo.git_url=<url>` |
-| Service (ClusterIP) | `rulyeh-myrepo` | Port 8000, internal HTTP for `message_child` and `RULYEH_URL` |
-| Service (NodePort) | `rulyeh-myrepo-noise` | Port 9000 → NodePort 301xx, external Noise connection |
+| PVC | `lair-myrepo-data` | `ReadWriteOnce`, mounted at `/data` |
+| PVC | `lair-myrepo-workspace` | `ReadWriteOnce`, mounted at `/workspace` |
+| Deployment | `lair-myrepo` | 1 replica, labels `octo.managed=1` + `octo.git_url=<url>` |
+| Service (ClusterIP) | `lair-myrepo` | Port 8000, internal HTTP for `message_child` and `LAIR_URL` |
+| Service (NodePort) | `lair-myrepo-noise` | Port 9000 → NodePort 301xx, external Noise connection |
 
 For remote children, the Deployment also gets a `nodeSelector` pinning it to the provisioned EC2 node.
 
@@ -111,7 +111,7 @@ For remote children, the Deployment also gets a `nodeSelector` pinning it to the
 
 ## RBAC — required verbs
 
-ServiceAccount `rulyeh` in namespace `octo`:
+ServiceAccount `lair` in namespace `octo`:
 
 | Resource | Verbs |
 |---|---|
@@ -131,7 +131,7 @@ ServiceAccount `rulyeh` in namespace `octo`:
 
 NodePort range: **30100–30199** (100 children max, same limit as the old Docker 9100–9199 range).
 
-rulyeh assigns NodePorts by listing existing `*-noise` Services in the namespace and finding the lowest free port in that range. The NodePort is stored in the Service spec and readable at any time.
+lair assigns NodePorts by listing existing `*-noise` Services in the namespace and finding the lowest free port in that range. The NodePort is stored in the Service spec and readable at any time.
 
 All child Noise traffic arrives at the K8s node's public IP on the assigned NodePort. Since children are always co-located on cluster nodes (not truly remote in terms of connectivity), this works the same as the old Docker port-publish model.
 
@@ -143,9 +143,9 @@ Triggered when `create_container` is called with `remote: true`.
 
 ### Steps
 
-1. **Read join token** — rulyeh reads the `k3s-join-token` Secret via the K8s API.
+1. **Read join token** — lair reads the `k3s-join-token` Secret via the K8s API.
 
-2. **Select AMI** — rulyeh calls:
+2. **Select AMI** — lair calls:
    ```sh
    aws ec2 describe-images \
      --owners 099720109477 \
@@ -156,7 +156,7 @@ Triggered when `create_container` is called with `remote: true`.
    ```
    This always selects the latest Ubuntu 24.04 LTS AMI for the configured region.
 
-3. **Launch instance** — rulyeh calls `aws ec2 run-instances` with:
+3. **Launch instance** — lair calls `aws ec2 run-instances` with:
    - `--image-id <ami>`
    - `--instance-type <user-specified>`
    - `--security-group-ids <AWS_SECURITY_GROUP_ID>`
@@ -174,13 +174,13 @@ Triggered when `create_container` is called with `remote: true`.
      K3S_TOKEN=<join-token> \
      sh -
    ```
-   The join token and control-plane URL are interpolated by rulyeh before sending. The instance joins the cluster as a worker node within ~60s.
+   The join token and control-plane URL are interpolated by lair before sending. The instance joins the cluster as a worker node within ~60s.
 
-5. **Poll for public IP** — rulyeh polls `aws ec2 describe-instances --instance-ids <id>` every 5s until state is `running` and a public IP is assigned (typically 20–40s).
+5. **Poll for public IP** — lair polls `aws ec2 describe-instances --instance-ids <id>` every 5s until state is `running` and a public IP is assigned (typically 20–40s).
 
-6. **Wait for node Ready** — rulyeh watches `Api::<Node>` until a node appears with label `octo.child-name=<name>` (set via k3s node label, added to user-data: `K3S_NODE_LABEL="octo.child-name=<name>"`) and its `Ready` condition is `True`. Timeout: 3 minutes.
+6. **Wait for node Ready** — lair watches `Api::<Node>` until a node appears with label `octo.child-name=<name>` (set via k3s node label, added to user-data: `K3S_NODE_LABEL="octo.child-name=<name>"`) and its `Ready` condition is `True`. Timeout: 3 minutes.
 
-7. **Label the node** — rulyeh patches the Node with:
+7. **Label the node** — lair patches the Node with:
    - `octo.ec2-instance-id=<instance-id>`
    - `octo.child-name=<child-name>`
 
@@ -199,7 +199,7 @@ Triggered when `create_container` is called with `remote: true`.
 | Parameter | Type | Required | Notes |
 |---|---|---|---|
 | `git_url` | string | yes | |
-| `name` | string | no | Defaults to `rulyeh-<repo-slug>` |
+| `name` | string | no | Defaults to `lair-<repo-slug>` |
 | `noise_port` | int | no | NodePort 30100–30199, auto-assigned if omitted |
 | `remote` | bool | no | Default `false`. If `true`, provisions an EC2 node first |
 | `instance_type` | string | if remote | e.g. `t3.medium`, `c5.xlarge` — user specifies in chat |
@@ -265,14 +265,14 @@ These are included in the existing `container_list` wire frame at no protocol co
 ## Rust code structure
 
 ```
-rulyeh/src/
+lair/src/
   main.rs     — AppState gains kube::Client; Docker tool executor replaced with k8s/aws calls
   k8s.rs      — all kube API operations (list, exec, create resources, scale, delete, watch node)
   aws.rs      — EC2 operations via aws CLI subprocess (run_instances, describe_instances,
                   describe_images, terminate_instances)
 ```
 
-### New dependencies in `rulyeh/Cargo.toml`
+### New dependencies in `lair/Cargo.toml`
 
 ```toml
 kube = { version = "0.99", features = ["runtime", "derive"] }
@@ -285,12 +285,12 @@ No new dependency for AWS — `aws` CLI is already in the image and credentials 
 
 ## Dockerfile changes
 
-In `rulyeh/Dockerfile` runtime stage:
+In `lair/Dockerfile` runtime stage:
 - **Remove** the `docker-ce-cli` apt package and the Docker apt repo setup
 - **Verify** `awscli` is installed (add `awscli` to the apt install block if not already present)
 - No `kubectl` binary needed
 
-In `rulyeh/docker-entrypoint.sh`:
+In `lair/docker-entrypoint.sh`:
 - **Remove** `docker network create octo-net` line
 - **Remove** `docker network connect octo-net "$(hostname)"` line
 - Everything else stays the same
@@ -315,13 +315,13 @@ In `rulyeh/docker-entrypoint.sh`:
 
 ## Implementation order
 
-1. Add `kube` + `k8s-openapi` to `rulyeh/Cargo.toml`
-2. Write `rulyeh/src/k8s.rs` — local child lifecycle (list, exec, create, scale, delete)
+1. Add `kube` + `k8s-openapi` to `lair/Cargo.toml`
+2. Write `lair/src/k8s.rs` — local child lifecycle (list, exec, create, scale, delete)
 3. Replace Docker tool executor in `main.rs` with `k8s.rs` calls
 4. Write K8s manifests (`k8s/`)
-5. Update `rulyeh/Dockerfile` (remove docker-ce-cli, add awscli)
-6. Update `rulyeh/docker-entrypoint.sh` (remove network setup)
-7. Write `rulyeh/src/aws.rs` — EC2 provisioning
+5. Update `lair/Dockerfile` (remove docker-ce-cli, add awscli)
+6. Update `lair/docker-entrypoint.sh` (remove network setup)
+7. Write `lair/src/aws.rs` — EC2 provisioning
 8. Extend `create_container` tool with `remote`/`instance_type` parameters
 9. Add `terminate_container` tool
-10. Update `CLAUDE.md` and `docs/rulyeh-architecture.md`
+10. Update `CLAUDE.md` and `docs/lair-architecture.md`
