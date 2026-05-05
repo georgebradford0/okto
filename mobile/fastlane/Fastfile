@@ -7,13 +7,13 @@ platform :ios do
       key_filepath: ENV["APP_STORE_CONNECT_API_KEY_PATH"],
     )
 
-    app = Spaceship::ConnectAPI::App.find("com.claudulhu")
+    app = Spaceship::ConnectAPI::App.find("com.octo")
     builds = Spaceship::ConnectAPI::Build.all(app_id: app.id)
     max_build_number = builds.map { |b| b.version.to_i }.max || 0
 
     increment_build_number(
       build_number: max_build_number + 1,
-      xcodeproj: "ios/claudulhu.xcodeproj",
+      xcodeproj: "ios/octo.xcodeproj",
     )
   end
 

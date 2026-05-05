@@ -95,7 +95,7 @@ function parseQrData(raw: string): NoiseConnectionInfo | null {
 }
 
 // ── Dev connection ─────────────────────────────────────────────────────────────
-// Fixed dev keypair baked into the server when CLAUDULHU_DEV=1.
+// Fixed dev keypair baked into the server when OCTO_DEV=1.
 // Public key (base32): 34577VOSZRDRTUB7XYTT6FS62Y4QYYVLQJCHP4XNDQA2763AU5YQ
 //
 // iOS Simulator shares the Mac's network stack — 127.0.0.1 reaches the host
@@ -1384,7 +1384,7 @@ function AppInner() {
       <SafeAreaView style={s.setupSafe} edges={['top', 'bottom']}>
         <View style={s.setupCenter}>
           <AppIcon />
-          <Text style={s.setupTitle}>claudulhu</Text>
+          <Text style={s.setupTitle}>octo</Text>
           <Text style={s.setupError}>{tunnelError}</Text>
           <TouchableOpacity style={s.setupBtn} onPress={() => setConn(null)}>
             <Text style={s.setupBtnText}>back</Text>

@@ -1,4 +1,4 @@
-package com.claudulhu;
+package com.octo;
 
 import com.facebook.react.TurboReactPackage;
 import com.facebook.react.bridge.NativeModule;

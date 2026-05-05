@@ -1,4 +1,4 @@
-package com.claudulhu
+package com.octo
 
 import android.app.Application
 import com.facebook.react.PackageList
