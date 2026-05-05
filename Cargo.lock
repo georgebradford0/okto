@@ -427,7 +427,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "claudulhu"
-version = "0.0.30"
+version = "0.0.32"
 dependencies = [
  "anyhow",
  "clap",
@@ -513,6 +513,16 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "claudulhu-tests"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "claudulhu-core",
+ "snow",
+ "tokio",
 ]
 
 [[package]]
