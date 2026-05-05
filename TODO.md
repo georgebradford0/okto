@@ -7,3 +7,4 @@
 - [ ] Make README.md professional for sharing with others
 - [ ] Setup push notifications on mobile to let user know when something is finished.
 - [ ] Add client pubkey allowlist on server/master — currently any client that knows the server pubkey+host+port can connect.
+- [ ] `reload --all` explicitly patches image to `latest` but `imagePullPolicy: Always` already handles this on restart — evaluate whether the explicit image patch in `update_and_restart_all` is still needed or can be removed.
