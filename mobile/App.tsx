@@ -328,20 +328,7 @@ function renderText(text: string, baseStyle: object) {
 
 
 
-// ── BlinkingCursor ────────────────────────────────────────────────────────────
 
-function BlinkingCursor() {
-  const opacity = useRef(new Animated.Value(1)).current
-  useEffect(() => {
-    const anim = Animated.loop(Animated.sequence([
-      Animated.timing(opacity, { toValue: 0, duration: 500, useNativeDriver: true }),
-      Animated.timing(opacity, { toValue: 1, duration: 500, useNativeDriver: true }),
-    ]))
-    anim.start()
-    return () => anim.stop()
-  }, [])
-  return <Animated.Text style={[s.streamCursor, { opacity }]}>▍</Animated.Text>
-}
 
 // ── PendingEllipsis ───────────────────────────────────────────────────────────
 
@@ -392,11 +379,10 @@ function containerDisplayName(name: string): string {
 // ── MessageBubble ─────────────────────────────────────────────────────────────
 
 const MessageBubble = memo(function MessageBubble({
-  message, prevRole, isLive,
+  message, prevRole,
 }: {
   message:   Message
   prevRole?: Message['role']
-  isLive?:   boolean
 }) {
   const [toolExpanded, setToolExpanded] = useState(false)
   const fadeAnim = useRef(new Animated.Value(0)).current
@@ -473,7 +459,6 @@ const MessageBubble = memo(function MessageBubble({
     <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
       <View style={s.messageWrap}>
         {renderedText}
-        {isLive && <BlinkingCursor />}
         {message.cost != null && (
           <Text style={s.costLabel}>{formatCost(message.cost)}</Text>
         )}
@@ -577,7 +562,6 @@ const ChatPane = memo(function ChatPane({
   const [completions,    setCompletions]    = useState<string[]>([])
   const [showScrollBtn,  setShowScrollBtn]  = useState(false)
   const [inputAreaH,     setInputAreaH]     = useState(0)
-  const [streamingMsgId, setStreamingMsgId] = useState<string | null>(null)
   const [stopSent,       setStopSent]       = useState(false)
   const stopAckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -617,8 +601,6 @@ const ChatPane = memo(function ChatPane({
       streamingIdRef:    { current: string }
       hasAssistantMsgRef: { current: boolean }
       onDone:            () => void
-      onFirstChunk?:     (id: string) => void
-      onStreamEnd?:      () => void
     },
   ) => {
     let event: { type: string; text?: string; tool?: string; input?: unknown; cost_usd?: number; message?: string; line?: string; tool_use_id?: string; output?: string }
@@ -628,7 +610,6 @@ const ChatPane = memo(function ChatPane({
       const chunk = event.text
       if (!opts.hasAssistantMsgRef.current) {
         opts.hasAssistantMsgRef.current = true
-        opts.onFirstChunk?.(opts.streamingIdRef.current)
         setMessages(prev => appendMsg(prev, { id: opts.streamingIdRef.current, role: 'assistant' as const, text: chunk }))
       } else {
         setMessages(prev => prev.map(m => m.id === opts.streamingIdRef.current ? { ...m, text: m.text + chunk } : m))
@@ -662,7 +643,6 @@ const ChatPane = memo(function ChatPane({
       log(`[chat] stream done cost_usd=${event.cost_usd}`)
       lastToolIdRef.current = null
       wsRef.current = null
-      opts.onStreamEnd?.()
       opts.onDone()
     } else if (event.type === 'interrupt_ack') {
       log('[chat] interrupt acknowledged by server')
@@ -674,13 +654,11 @@ const ChatPane = memo(function ChatPane({
       log(`[chat] stream interrupted cost_usd=${event.cost_usd}`)
       lastToolIdRef.current = null
       wsRef.current = null
-      opts.onStreamEnd?.()
       opts.onDone()
     } else if (event.type === 'error') {
       logE(`[chat] stream error: ${event.message}`)
       lastToolIdRef.current = null
       wsRef.current = null
-      opts.onStreamEnd?.()
       setMessages(prev => appendMsg(prev, { id: uid(), role: 'error' as const, text: event.message ?? 'error' }))
       updateStatus('ready')
     }
@@ -709,14 +687,11 @@ const ChatPane = memo(function ChatPane({
         streamingIdRef,
         hasAssistantMsgRef,
         onDone:       () => loadHistoryRef.current(),
-        onFirstChunk: (id) => setStreamingMsgId(id),
-        onStreamEnd:  () => setStreamingMsgId(null),
       })
     }
     ws.onerror = (e) => {
       logE(`[chat] reattachStream ws error after ${Date.now() - wsStart}ms: ${JSON.stringify(e)}`)
       wsRef.current = null
-      setStreamingMsgId(null)
       if (!closingRef.current && !reconnectingRef?.current) updateStatus('error')
       closingRef.current = false
     }
@@ -865,14 +840,11 @@ const ChatPane = memo(function ChatPane({
         streamingIdRef,
         hasAssistantMsgRef,
         onDone:       () => loadHistoryRef.current(),
-        onFirstChunk: (id) => setStreamingMsgId(id),
-        onStreamEnd:  () => setStreamingMsgId(null),
       })
     }
     ws.onerror = (e) => {
       logE(`[chat] ws error after ${Date.now() - wsSendStart}ms: ${JSON.stringify(e)}`)
       wsRef.current = null
-      setStreamingMsgId(null)
       if (!closingRef.current && !reconnectingRef?.current) {
         setMessages(prev => appendMsg(prev, { id: uid(), role: 'error' as const, text: 'network error' }))
         updateStatus('error')
@@ -909,9 +881,8 @@ const ChatPane = memo(function ChatPane({
     <MessageBubble
       message={item}
       prevRole={item.prevRole}
-      isLive={item.id === streamingMsgId}
     />
-  ), [streamingMsgId])
+  ), [])
 
   return (
     <View style={s.pane}>
@@ -1683,7 +1654,6 @@ const s = StyleSheet.create({
   codeBlock:         { backgroundColor: C.surface, borderRadius: 6, padding: 10, marginVertical: 4 },
   codeBlockText:     { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 12, color: C.textPrimary, lineHeight: 18 },
   cursor:            { color: C.textMuted, fontSize: 14, fontFamily: ARIMO },
-  streamCursor:      { color: C.accent, fontSize: 16, marginTop: 2 },
   pendingPill:       { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: C.surface, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8, alignSelf: 'flex-start' },
   questionMark:      { color: C.yellow, fontWeight: '700', fontSize: 15, marginBottom: 2, fontFamily: ARIMO },
   costLabel:         { fontSize: 11, color: C.textMuted, marginTop: 4, marginLeft: 2, fontFamily: ARIMO },
