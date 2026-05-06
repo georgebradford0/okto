@@ -162,18 +162,18 @@ enum ContainersAction {
 
 #[derive(Subcommand)]
 enum McpAction {
-    /// List MCP servers configured in a container
+    /// List MCP servers configured in a pod
     List {
-        /// Container name (default: lair)
+        /// Pod name (default: lair)
         #[arg(long, default_value = "lair")]
-        container: String,
+        pod: String,
     },
 
-    /// Add an MCP server to a container
+    /// Add an MCP server to a pod
     Add {
-        /// Container name (default: lair)
+        /// Pod name (default: lair)
         #[arg(long, default_value = "lair")]
-        container: String,
+        pod: String,
 
         /// Logical name for the MCP server
         #[arg(long)]
@@ -192,11 +192,11 @@ enum McpAction {
         env: Vec<String>,
     },
 
-    /// Remove an MCP server from a container
+    /// Remove an MCP server from a pod
     Remove {
-        /// Container name (default: lair)
+        /// Pod name (default: lair)
         #[arg(long, default_value = "lair")]
-        container: String,
+        pod: String,
 
         /// Name of the MCP server to remove
         name: String,
@@ -204,9 +204,9 @@ enum McpAction {
 
     /// Add multiple MCP servers from a JSON file
     Import {
-        /// Container name (default: lair)
+        /// Pod name (default: lair)
         #[arg(long, default_value = "lair")]
-        container: String,
+        pod: String,
 
         /// Path to a JSON file containing an array of MCP server objects
         file: std::path::PathBuf,
@@ -465,12 +465,12 @@ async fn main() -> Result<()> {
                 .await?;
         }
         Command::Mcp { action } => match action {
-            McpAction::List { container } => mcp::list(&container).await?,
-            McpAction::Add { container, name, command, args, env } => {
-                mcp::add(&container, &name, &command, &args, &env).await?;
+            McpAction::List { pod } => mcp::list(&pod).await?,
+            McpAction::Add { pod, name, command, args, env } => {
+                mcp::add(&pod, &name, &command, &args, &env).await?;
             }
-            McpAction::Remove { container, name } => mcp::remove(&container, &name).await?,
-            McpAction::Import { container, file } => mcp::import_from_file(&container, &file).await?,
+            McpAction::Remove { pod, name } => mcp::remove(&pod, &name).await?,
+            McpAction::Import { pod, file } => mcp::import_from_file(&pod, &file).await?,
         },
     }
     Ok(())
