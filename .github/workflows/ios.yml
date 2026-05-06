@@ -166,7 +166,7 @@ jobs:
             <false/>
             <key>provisioningProfiles</key>
             <dict>
-              <key>com.octo</key>
+              <key>com.claudulhu</key>
               <string>${PROFILE_UUID}</string>
             </dict>
           </dict>
