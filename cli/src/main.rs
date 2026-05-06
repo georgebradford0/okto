@@ -99,6 +99,26 @@ enum Command {
         #[command(subcommand)]
         action: McpAction,
     },
+
+    /// Run kubectl get for octo resources
+    Get {
+        #[command(subcommand)]
+        resource: GetResource,
+    },
+}
+
+#[derive(Subcommand)]
+enum GetResource {
+    /// Get pods
+    Pods,
+    /// Get deployments
+    Deployments,
+    /// Get services
+    Services,
+    /// Get persistent volume claims
+    Pvc,
+    /// Get secrets
+    Secrets,
 }
 
 #[derive(Subcommand)]
@@ -430,6 +450,19 @@ async fn main() -> Result<()> {
         Command::Uninstall { yes } => uninstall(yes).await?,
         Command::Completions { shell } => {
             generate(shell, &mut Cli::command(), "octo", &mut std::io::stdout());
+        }
+        Command::Get { resource } => {
+            let kind = match resource {
+                GetResource::Pods        => "pods",
+                GetResource::Deployments => "deployments",
+                GetResource::Services    => "services",
+                GetResource::Pvc         => "pvc",
+                GetResource::Secrets     => "secrets",
+            };
+            tokio::process::Command::new("kubectl")
+                .args(["get", kind, "-n", octo_k8s_ops::k8s::NAMESPACE])
+                .status()
+                .await?;
         }
         Command::Mcp { action } => match action {
             McpAction::List { container } => mcp::list(&container).await?,
