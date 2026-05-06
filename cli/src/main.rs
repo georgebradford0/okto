@@ -5,6 +5,12 @@ mod mcp;
 use octo_k8s_ops;
 
 use anyhow::Result;
+
+/// Mask all but the first 4 and last 4 chars of a secret string.
+fn mask(s: &str) -> String {
+    if s.len() <= 8 { return "*".repeat(s.len()); }
+    format!("{}...{}", &s[..4], &s[s.len()-4..])
+}
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
 
@@ -108,6 +114,37 @@ enum Command {
     Get {
         #[command(subcommand)]
         resource: GetResource,
+    },
+
+    /// View or update cluster config (model, API key, endpoint)
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Show current lair-secrets config values
+    Show,
+
+    /// Update one or more config values in lair-secrets (and ~/.octo/config.json)
+    Set {
+        /// Claude model to use (e.g. claude-opus-4-5)
+        #[arg(long)]
+        model: Option<String>,
+
+        /// OpenAI-compatible base URL (leave empty to use Anthropic)
+        #[arg(long)]
+        base_url: Option<String>,
+
+        /// Anthropic API key
+        #[arg(long)]
+        api_key: Option<String>,
+
+        /// GitHub token
+        #[arg(long)]
+        gh_token: Option<String>,
     },
 }
 
@@ -425,6 +462,29 @@ async fn main() -> Result<()> {
         Command::Reload { containers, all } => {
             use octo_k8s_ops::k8s;
             let client = k8s::build_client().await?;
+
+            // Sync ~/.octo/config.json into lair-secrets before restarting so
+            // pods pick up the latest model/endpoint/api-key on the new image.
+            match k8s::read_lair_secrets(&client).await {
+                Ok(current) => {
+                    let local = octo_core::read_config();
+                    let api_key  = local.api_key .unwrap_or(current.api_key);
+                    let model    = local.model   .or(current.model);
+                    let base_url = local.base_url.or(current.base_url);
+                    k8s::upsert_secret(
+                        &client,
+                        &api_key,
+                        current.gh_token.as_deref(),
+                        &current.noise_private_key,
+                        current.mcp_config_json.as_deref(),
+                        model.as_deref(),
+                        base_url.as_deref(),
+                    ).await?;
+                    println!("Config synced to lair-secrets.");
+                }
+                Err(e) => eprintln!("Warning: could not sync config ({e}); proceeding with reload."),
+            }
+
             let updated = if all {
                 k8s::update_and_restart_all(&client).await?
             } else if !containers.is_empty() {
@@ -519,6 +579,45 @@ async fn main() -> Result<()> {
             McpAction::Remove { pod, name } => mcp::remove(&pod, &name).await?,
             McpAction::Import { pod, file } => mcp::import_from_file(&pod, &file).await?,
         },
+        Command::Config { action } => {
+            use octo_k8s_ops::k8s;
+            let client = k8s::build_client().await?;
+            match action {
+                ConfigAction::Show => {
+                    let s = k8s::read_lair_secrets(&client).await?;
+                    println!("api_key:  {}", mask(&s.api_key));
+                    println!("model:    {}", s.model.as_deref().unwrap_or("(default)"));
+                    println!("base_url: {}", s.base_url.as_deref().unwrap_or("(Anthropic)"));
+                    println!("gh_token: {}", s.gh_token.as_deref().map(mask).unwrap_or_else(|| "(not set)".into()));
+                }
+                ConfigAction::Set { model, base_url, api_key, gh_token } => {
+                    let current = k8s::read_lair_secrets(&client).await?;
+                    let new_api_key  = api_key .unwrap_or(current.api_key);
+                    let new_gh_token = gh_token.or(current.gh_token);
+                    let new_model    = model   .or(current.model);
+                    let new_base_url = base_url.or(current.base_url);
+
+                    k8s::upsert_secret(
+                        &client,
+                        &new_api_key,
+                        new_gh_token.as_deref(),
+                        &current.noise_private_key,
+                        current.mcp_config_json.as_deref(),
+                        new_model.as_deref(),
+                        new_base_url.as_deref(),
+                    ).await?;
+
+                    // Also persist to ~/.octo/config.json so reload picks it up.
+                    let mut local = octo_core::read_config();
+                    local.api_key  = Some(new_api_key);
+                    local.model    = new_model;
+                    local.base_url = new_base_url;
+                    octo_core::write_config(&local);
+
+                    println!("Config updated in lair-secrets and ~/.octo/config.json.");
+                }
+            }
+        }
     }
     Ok(())
 }

@@ -1708,6 +1708,7 @@ dependencies = [
  "clap_complete",
  "data-encoding",
  "hex",
+ "octo-core",
  "octo-k8s-ops",
  "qrcode",
  "serde",

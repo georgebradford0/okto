@@ -771,6 +771,43 @@ pub async fn read_secret_value(client: &Client, secret_name: &str, key: &str) ->
     String::from_utf8(bytes).context("secret value is not UTF-8")
 }
 
+/// All values stored in the `lair-secrets` Secret.
+pub struct LairSecrets {
+    pub api_key:           String,
+    pub noise_private_key: String,
+    pub gh_token:          Option<String>,
+    pub mcp_config_json:   Option<String>,
+    pub model:             Option<String>,
+    pub base_url:          Option<String>,
+}
+
+/// Read all current values from the `lair-secrets` Secret.
+pub async fn read_lair_secrets(client: &Client) -> anyhow::Result<LairSecrets> {
+    let secrets: Api<Secret> = Api::namespaced(client.clone(), NAMESPACE);
+    let secret = secrets.get("lair-secrets").await.context("get lair-secrets")?;
+    let data = secret.data.unwrap_or_default();
+
+    let read = |key: &str| -> anyhow::Result<String> {
+        let bytes = data.get(key)
+            .ok_or_else(|| anyhow::anyhow!("lair-secrets missing key '{key}'"))?
+            .clone().0;
+        String::from_utf8(bytes).context("secret value is not UTF-8")
+    };
+    let read_opt = |key: &str| -> Option<String> {
+        data.get(key).and_then(|b| String::from_utf8(b.clone().0).ok())
+            .filter(|s| !s.is_empty())
+    };
+
+    Ok(LairSecrets {
+        api_key:           read("ANTHROPIC_API_KEY")?,
+        noise_private_key: read("NOISE_PRIVATE_KEY")?,
+        gh_token:          read_opt("GH_TOKEN"),
+        mcp_config_json:   read_opt("MCP_CONFIG_JSON"),
+        model:             read_opt("MODEL"),
+        base_url:          read_opt("OPENAI_BASE_URL"),
+    })
+}
+
 /// Trigger a rolling restart of a Deployment (equivalent to `kubectl rollout restart`).
 pub async fn rollout_restart_deployment(client: &Client, name: &str) -> anyhow::Result<()> {
     let deployments: Api<Deployment> = Api::namespaced(client.clone(), NAMESPACE);
