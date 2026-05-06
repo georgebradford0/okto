@@ -1153,6 +1153,7 @@ function AppInner() {
   const sidebarAnim = useRef(new Animated.Value(0)).current
   const [startingContainerId, setStartingContainerId] = useState<string | null>(null)
   const [startingError,       setStartingError]       = useState<string | null>(null)
+  const [reconnecting,        setReconnecting]        = useState(false)
   const startingContainerIdRef = useRef<string | null>(null)
   const clearChatRef       = useRef<() => void>(() => {})
   const reloadRef          = useRef<() => void>(() => {})
@@ -1257,6 +1258,7 @@ function AppInner() {
 
     log(`[noise] foreground reconnect host=${target.host} port=${target.port} pk=${target.pk.slice(0, 8)}…`)
     reconnectingRef.current = true
+    setReconnecting(true)
 
     // Close the existing WebSocket cleanly — onerror/onclose will be suppressed
     // for the duration because reconnectingRef is true.
@@ -1281,6 +1283,7 @@ function AppInner() {
       }
     } finally {
       reconnectingRef.current = false
+      setReconnecting(false)
     }
   }
 
@@ -1493,6 +1496,13 @@ function AppInner() {
             reloadRef={reloadRef}
             closeWsRef={closeWsRef}
           />
+        )}
+
+        {reconnecting && (
+          <View style={s.startingOverlay} pointerEvents="none">
+            <ActivityIndicator color={C.accent} size="large" />
+            <Text style={s.startingText}>Connecting...</Text>
+          </View>
         )}
 
         {startingContainerId !== null && (
