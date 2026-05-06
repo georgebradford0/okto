@@ -730,11 +730,11 @@ const ChatPane = memo(function ChatPane({
   // being listed as a dependency (avoids circular dep: loadHistory → reattachStream → loadHistory).
   const loadHistoryRef = useRef<() => void>(() => {})
 
-  const loadHistory = useCallback(() => {
+  const loadHistory = useCallback((attempt = 0) => {
     historyAbortRef.current?.abort()
     const controller = new AbortController()
     historyAbortRef.current = controller
-    log(`[chat] loadHistory GET ${baseUrl}/history`)
+    log(`[chat] loadHistory GET ${baseUrl}/history${attempt > 0 ? ` (attempt ${attempt + 1})` : ''}`)
     fetch(`${baseUrl}/history`, { signal: controller.signal })
       .then(r => { log(`[chat] loadHistory HTTP ${r.status}`); return r.json() })
       .then((data: { messages: Array<{ role: string; text: string; cost_usd?: number; output?: string }>; is_streaming?: boolean }) => {
@@ -772,7 +772,16 @@ const ChatPane = memo(function ChatPane({
       .catch(e => {
         if ((e as Error).name === 'AbortError') return
         logE(`[chat] loadHistory failed: ${String(e)}`)
-        updateStatus('error')
+        // Retry once after a short delay — the native Noise proxy may not be
+        // ready to accept connections immediately after the tunnel reconnects
+        // (e.g. on foreground return), which would cause a spurious error flash.
+        if (attempt === 0) {
+          setTimeout(() => {
+            if (historyAbortRef.current === controller) loadHistory(1)
+          }, 600)
+        } else {
+          updateStatus('error')
+        }
       })
   }, [baseUrl, reattachStream, updateStatus])
 
