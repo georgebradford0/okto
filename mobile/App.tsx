@@ -1419,7 +1419,7 @@ function AppInner() {
         child={activeChild}
         tunnelPort={tunnelPort}
         tunnelError={tunnelError}
-        onClose={() => setActiveChild(null)}
+        onClose={() => { setActiveChild(null); setShowSidebar(false); sidebarAnim.setValue(0) }}
         initialDraft={draftsRef.current[childKey]}
         onDraftChange={d => { draftsRef.current[childKey] = d }}
         reconnectingRef={reconnectingRef}
@@ -1533,7 +1533,8 @@ function AppInner() {
                     key={c.id}
                     style={s.containerMenuItem}
                     onPress={() => {
-                      closeSidebar()
+                      setShowSidebar(false)
+                      sidebarAnim.setValue(0)
                       if (c.status === 'running') {
                         setTunnelPort(null)
                         setActiveChild(c)
