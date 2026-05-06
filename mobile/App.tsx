@@ -1376,9 +1376,12 @@ function AppInner() {
     Animated.timing(sidebarAnim, { toValue: 1, duration: 240, useNativeDriver: true }).start()
   }, [fetchContainers, sidebarAnim])
 
-  const closeSidebar = useCallback(() => {
+  const closeSidebar = useCallback((onClosed?: () => void) => {
     Animated.timing(sidebarAnim, { toValue: 0, duration: 200, useNativeDriver: true }).start(({ finished }) => {
-      if (finished) setShowSidebar(false)
+      if (finished) {
+        setShowSidebar(false)
+        onClosed?.()
+      }
     })
   }, [sidebarAnim])
 
@@ -1531,13 +1534,14 @@ function AppInner() {
                     key={c.id}
                     style={s.containerMenuItem}
                     onPress={() => {
-                      closeSidebar()
-                      if (c.status === 'running') {
-                        setTunnelPort(null)
-                        setActiveChild(c)
-                      } else {
-                        startContainer(c.id)
-                      }
+                      closeSidebar(() => {
+                        if (c.status === 'running') {
+                          setTunnelPort(null)
+                          setActiveChild(c)
+                        } else {
+                          startContainer(c.id)
+                        }
+                      })
                     }}
                     activeOpacity={0.7}
                   >
