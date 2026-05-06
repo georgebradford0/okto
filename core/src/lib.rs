@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     fs,
     io::{BufRead, BufReader},
     path::PathBuf,
@@ -166,19 +165,14 @@ pub enum ChatEvent {
     InterruptAck,
     Question           { question: String, #[serde(skip)] answer_tx: Option<oneshot::Sender<String>> },
     System             { text: String },
-    Spawning           { task: String },
-    WorkerCreated      { branch: String, worktree_path: String, task: String },
-    WorkerError        { message: String },
-    WorkerSessionReady { branch: String, worktree_path: String, worker_session_id: String, task: String },
 }
 
 // ── Branch ────────────────────────────────────────────────────────────────────
 
 #[derive(Serialize, Clone)]
 pub struct Branch {
-    pub name:     String,
-    pub commit:   String,
-    pub worktree: Option<String>,
+    pub name:   String,
+    pub commit: String,
 }
 
 pub fn now_secs() -> u64 {
@@ -275,13 +269,6 @@ pub fn cost_usd(
         + cache_creation_input_tokens as f64 * input_rate * 1.25
         + cache_read_input_tokens as f64 * input_rate * 0.10)
         / 1_000_000.0
-}
-
-pub fn slug(text: &str) -> String {
-    let s: String = text.to_lowercase().chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
-    let parts: Vec<&str> = s.split('-').filter(|p| !p.is_empty()).collect();
-    parts.join("-").chars().take(40).collect()
 }
 
 // ── Tool Definitions ──────────────────────────────────────────────────────────
@@ -1158,7 +1145,7 @@ pub fn build_ephemeral_system_prompt() -> &'static str {
      text summary before stopping. Never end on a tool_use turn."
 }
 
-pub fn build_system_prompt(repo_path: &str, branch: Option<&str>, worktree_path: Option<&str>) -> String {
+pub fn build_system_prompt(repo_path: &str) -> String {
     let tool_guidance = "\n\nTool use guidelines (IMPORTANT — follow to minimise token cost):\
         \n- To modify an existing file use edit_file (str_replace). Never read the whole file just to rewrite it.\
         \n- Use read_file with offset+limit to read only the section you need.\
@@ -1187,19 +1174,11 @@ pub fn build_system_prompt(repo_path: &str, branch: Option<&str>, worktree_path:
         .map(|s| format!("\n\n# Project instructions (CLAUDE.md)\n{}", s))
         .unwrap_or_default();
 
-    match (branch, worktree_path) {
-        (Some(branch), Some(wt)) => format!(
-            "You are an AI coding assistant working on branch '{branch}' in the git worktree at {wt}.\
-             This is your working directory — use it for all file operations and git commands.\
-             Do not cd to any other directory.\
-             Any path preceded by '@' (e.g. @src/main.rs) is a reference to a file path in the git repository.{claude_md}{tool_guidance}{parent_tool_note}"
-        ),
-        _ => format!(
-            "You are an AI assistant helping manage the git repository at {repo_path}.\
-             You can inspect code, answer questions, and help coordinate work across branches.\
-             Any path preceded by '@' (e.g. @src/main.rs) is a reference to a file path in the git repository.{claude_md}{tool_guidance}{parent_tool_note}"
-        ),
-    }
+    format!(
+        "You are an AI assistant helping manage the git repository at {repo_path}.\
+         You can inspect code, answer questions, and help coordinate work across branches.\
+         Any path preceded by '@' (e.g. @src/main.rs) is a reference to a file path in the git repository.{claude_md}{tool_guidance}{parent_tool_note}"
+    )
 }
 
 // ── Git ───────────────────────────────────────────────────────────────────────
@@ -1207,23 +1186,6 @@ pub fn build_system_prompt(repo_path: &str, branch: Option<&str>, worktree_path:
 pub fn get_branches_for_repo(repo: &str) -> Result<Vec<Branch>, String> {
     if repo.is_empty() { return Ok(vec![]); }
     let repo_obj = git2::Repository::open(repo).map_err(|e| e.to_string())?;
-
-    let mut worktree_map: HashMap<String, String> = HashMap::new();
-    if let Ok(names) = repo_obj.worktrees() {
-        for wt_name in names.iter().flatten() {
-            if let Ok(wt) = repo_obj.find_worktree(wt_name) {
-                let path = wt.path();
-                if let Ok(wt_repo) = git2::Repository::open(path) {
-                    if let Ok(head) = wt_repo.head() {
-                        if let Some(short) = head.shorthand() {
-                            worktree_map.insert(short.to_string(), path.to_string_lossy().to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     let mut branches = Vec::new();
     let iter = repo_obj.branches(Some(git2::BranchType::Local)).map_err(|e| e.to_string())?;
     for item in iter {
@@ -1232,52 +1194,9 @@ pub fn get_branches_for_repo(repo: &str) -> Result<Vec<Branch>, String> {
         let commit = b.get().peel_to_commit()
             .map(|c| c.id().to_string()[..7].to_string())
             .unwrap_or_default();
-        let worktree = worktree_map.get(&name).cloned();
-        branches.push(Branch { name, commit, worktree });
+        branches.push(Branch { name, commit });
     }
     Ok(branches)
-}
-
-pub async fn generate_branch_name(task: &str, api_key: &str) -> String {
-    let body = serde_json::json!({
-        "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 32,
-        "messages": [{ "role": "user", "content": format!(
-            "Generate a short git branch name (2-4 words, lowercase, hyphenated, no punctuation) \
-             for this task: {task}\n\nReply with only the branch name, nothing else."
-        )}]
-    });
-    let name: String = async {
-        let resp = http_client()
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body).send().await.ok()?;
-        if !resp.status().is_success() { return None; }
-        let v: serde_json::Value = resp.json().await.ok()?;
-        let text = v["content"][0]["text"].as_str()?.trim().to_string();
-        Some(text)
-    }.await.unwrap_or_default();
-    let cleaned = slug(&name);
-    if cleaned.is_empty() { slug(task) } else { cleaned }
-}
-
-pub fn create_worktree(repo_path: &str, branch: &str) -> Result<String, String> {
-    let repo_name = PathBuf::from(repo_path).file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "repo".to_string());
-    let worktree_path = data_dir().join("worktrees").join(&repo_name).join(branch);
-    if let Some(parent) = worktree_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let out = std::process::Command::new("git")
-        .args(["worktree", "add", "-b", branch, &worktree_path.to_string_lossy(), "HEAD"])
-        .current_dir(repo_path).output().map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).to_string());
-    }
-    Ok(worktree_path.to_string_lossy().to_string())
 }
 
 // ── Shell Environment Bootstrap ───────────────────────────────────────────────

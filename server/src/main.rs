@@ -635,7 +635,7 @@ async fn main() {
 
     let cfg      = read_config();
     let repo     = effective_repo(&cfg);
-    let system   = build_system_prompt(&repo, None, None);
+    let system   = build_system_prompt(&repo);
     let messages = load_messages();
     info!("[server] loaded {} message(s) from history, repo={repo}", messages.len());
 
