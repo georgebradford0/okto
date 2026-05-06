@@ -181,46 +181,6 @@ pub struct Branch {
     pub worktree: Option<String>,
 }
 
-// ── Task Management ───────────────────────────────────────────────────────────
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Task {
-    pub id:          String,
-    pub subject:     String,
-    pub description: String,
-    pub active_form: Option<String>,
-    pub status:      String,
-    pub owner:       Option<String>,
-    pub output:      Option<String>,
-    pub blocks:      Vec<String>,
-    pub blocked_by:  Vec<String>,
-    pub created_at:  u64,
-    pub updated_at:  u64,
-}
-
-#[derive(Serialize, Deserialize, Default)]
-pub struct TaskStore {
-    pub next_id: u32,
-    pub tasks:   Vec<Task>,
-}
-
-pub fn tasks_path() -> PathBuf {
-    data_dir().join("tasks.json")
-}
-
-pub fn read_task_store() -> TaskStore {
-    fs::read_to_string(tasks_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
-}
-
-pub fn write_task_store(store: &TaskStore) {
-    let path = tasks_path();
-    fs::create_dir_all(path.parent().unwrap()).ok();
-    fs::write(path, serde_json::to_string_pretty(store).unwrap()).ok();
-}
-
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -270,20 +230,13 @@ pub fn tool_output_limit(tool: &str) -> usize {
         "read_file"   => 10_000,
         // Web pages contain lots of useful prose; strip_html already reduces them.
         "web_fetch"   => 10_000,
-        // Task output is subprocess/agent output — can be substantial.
-        "task_output" =>  6_000,
         // Search results: 10 results × ~400 chars each saturates well under 4 k.
         "web_search"  =>  4_000,
         // Match lists: more than ~6 k of grep hits is noise the model won't act on.
         "grep"        =>  4_000,
-        // Task records are short structured JSON.
-        "task_get"    =>  2_000,
-        // Task lists and file-path lists are inherently short.
-        "task_list"   =>  3_000,
+        // File-path lists are inherently short.
         "glob"        =>  3_000,
-        // Everything else (edit_file, write_file, task_create, task_update,
-        // task_stop, ask_user, create_pull_request) returns a short fixed string;
-        // 2 000 is a safe ceiling that costs nothing in practice.
+        // Everything else returns a short fixed string; 2 000 is a safe ceiling.
         _             =>  2_000,
     }
 }
@@ -368,33 +321,6 @@ pub fn tool_definitions() -> Vec<AnthropicTool> {
         AnthropicTool { name: "ask_user".into(),
             description: "Pause and ask the user a clarifying question. Returns the user's answer.".into(),
             input_schema: serde_json::json!({ "type": "object", "properties": { "question": { "type": "string" } }, "required": ["question"] }) },
-        AnthropicTool { name: "task_create".into(),
-            description: "Create a task with status 'pending'. Returns the task ID.".into(),
-            input_schema: serde_json::json!({ "type": "object", "properties": { "subject": { "type": "string" }, "description": { "type": "string" }, "activeForm": { "type": "string" } }, "required": ["subject", "description"] }) },
-        AnthropicTool { name: "task_list".into(),
-            description: "List all non-deleted tasks.".into(),
-            input_schema: serde_json::json!({ "type": "object", "properties": {} }) },
-        AnthropicTool { name: "task_get".into(),
-            description: "Get full details of a task by ID.".into(),
-            input_schema: serde_json::json!({ "type": "object", "properties": { "taskId": { "type": "string" } }, "required": ["taskId"] }) },
-        AnthropicTool { name: "task_update".into(),
-            description: "Update a task's status, subject, description, owner, or dependencies.".into(),
-            input_schema: serde_json::json!({ "type": "object", "properties": {
-                "taskId":       { "type": "string" },
-                "status":       { "type": "string" },
-                "subject":      { "type": "string" },
-                "description":  { "type": "string" },
-                "activeForm":   { "type": "string" },
-                "owner":        { "type": "string" },
-                "addBlocks":    { "type": "array", "items": { "type": "string" } },
-                "addBlockedBy": { "type": "array", "items": { "type": "string" } }
-            }, "required": ["taskId"] }) },
-        AnthropicTool { name: "task_stop".into(),
-            description: "Cancel (delete) a task by ID.".into(),
-            input_schema: serde_json::json!({ "type": "object", "properties": { "task_id": { "type": "string" } }, "required": ["task_id"] }) },
-        AnthropicTool { name: "task_output".into(),
-            description: "Get the output field of a task.".into(),
-            input_schema: serde_json::json!({ "type": "object", "properties": { "task_id": { "type": "string" } }, "required": ["task_id"] }) },
         AnthropicTool { name: "web_fetch".into(),
             description: "Fetch a URL and return its text content (HTML stripped). Truncated at 50 000 chars.".into(),
             input_schema: serde_json::json!({ "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"] }) },
@@ -594,89 +520,6 @@ pub async fn execute_tool(
                     Err(_)     => "error: question was cancelled".to_string(),
                 },
                 _ = cancel.cancelled() => "error: interrupted".to_string(),
-            }
-        }
-        "task_create" => {
-            let subject = input["subject"].as_str().unwrap_or("").to_string();
-            if subject.is_empty() { return "error: subject is required".to_string(); }
-            let description = input["description"].as_str().unwrap_or("").to_string();
-            let active_form = input["activeForm"].as_str().map(|s| s.to_string());
-            let now = now_secs();
-            let mut store = read_task_store();
-            store.next_id += 1;
-            let id = store.next_id.to_string();
-            store.tasks.push(Task {
-                id: id.clone(), subject, description, active_form,
-                status: "pending".to_string(), owner: None, output: None,
-                blocks: vec![], blocked_by: vec![], created_at: now, updated_at: now,
-            });
-            write_task_store(&store);
-            format!("created task {id}")
-        }
-        "task_list" => {
-            let store = read_task_store();
-            let visible: Vec<&Task> = store.tasks.iter().filter(|t| t.status != "deleted").collect();
-            if visible.is_empty() { return "no tasks".to_string(); }
-            visible.iter().map(|t| {
-                let blocked = if t.blocked_by.is_empty() { String::new() }
-                              else { format!(" [blocked by: {}]", t.blocked_by.join(", ")) };
-                let owner = t.owner.as_deref().map(|o| format!(" owner={o}")).unwrap_or_default();
-                format!("[{}] {} — {}{}{}", t.id, t.status, t.subject, owner, blocked)
-            }).collect::<Vec<_>>().join("\n")
-        }
-        "task_get" => {
-            let id = input["taskId"].as_str().unwrap_or("");
-            let store = read_task_store();
-            match store.tasks.iter().find(|t| t.id == id) {
-                None    => format!("error: task {id} not found"),
-                Some(t) => serde_json::to_string_pretty(t).unwrap_or_default(),
-            }
-        }
-        "task_update" => {
-            let id = input["taskId"].as_str().unwrap_or("");
-            let mut store = read_task_store();
-            match store.tasks.iter_mut().find(|t| t.id == id) {
-                None => format!("error: task {id} not found"),
-                Some(t) => {
-                    if let Some(s) = input["status"].as_str()      { t.status      = s.to_string(); }
-                    if let Some(s) = input["subject"].as_str()     { t.subject     = s.to_string(); }
-                    if let Some(s) = input["description"].as_str() { t.description = s.to_string(); }
-                    if let Some(s) = input["activeForm"].as_str()  { t.active_form = Some(s.to_string()); }
-                    if let Some(s) = input["owner"].as_str()       { t.owner       = Some(s.to_string()); }
-                    if let Some(arr) = input["addBlocks"].as_array() {
-                        for v in arr {
-                            if let Some(s) = v.as_str() {
-                                if !t.blocks.contains(&s.to_string()) { t.blocks.push(s.to_string()); }
-                            }
-                        }
-                    }
-                    if let Some(arr) = input["addBlockedBy"].as_array() {
-                        for v in arr {
-                            if let Some(s) = v.as_str() {
-                                if !t.blocked_by.contains(&s.to_string()) { t.blocked_by.push(s.to_string()); }
-                            }
-                        }
-                    }
-                    t.updated_at = now_secs();
-                    write_task_store(&store);
-                    "ok".to_string()
-                }
-            }
-        }
-        "task_stop" => {
-            let id = input["task_id"].as_str().or_else(|| input["taskId"].as_str()).unwrap_or("");
-            let mut store = read_task_store();
-            match store.tasks.iter_mut().find(|t| t.id == id) {
-                None => format!("error: task {id} not found"),
-                Some(t) => { t.status = "deleted".to_string(); t.updated_at = now_secs(); write_task_store(&store); "ok".to_string() }
-            }
-        }
-        "task_output" => {
-            let id = input["task_id"].as_str().unwrap_or("");
-            let store = read_task_store();
-            match store.tasks.iter().find(|t| t.id == id) {
-                None    => format!("error: task {id} not found"),
-                Some(t) => t.output.clone().unwrap_or_else(|| "(no output)".to_string()),
             }
         }
         "web_fetch" => {
