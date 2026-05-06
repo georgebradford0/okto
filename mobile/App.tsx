@@ -328,20 +328,7 @@ function renderText(text: string, baseStyle: object) {
 
 
 
-// ── BlinkingCursor ────────────────────────────────────────────────────────────
 
-function BlinkingCursor() {
-  const opacity = useRef(new Animated.Value(1)).current
-  useEffect(() => {
-    const anim = Animated.loop(Animated.sequence([
-      Animated.timing(opacity, { toValue: 0, duration: 500, useNativeDriver: true }),
-      Animated.timing(opacity, { toValue: 1, duration: 500, useNativeDriver: true }),
-    ]))
-    anim.start()
-    return () => anim.stop()
-  }, [])
-  return <Animated.Text style={[s.streamCursor, { opacity }]}>▍</Animated.Text>
-}
 
 // ── PendingEllipsis ───────────────────────────────────────────────────────────
 
@@ -392,11 +379,10 @@ function containerDisplayName(name: string): string {
 // ── MessageBubble ─────────────────────────────────────────────────────────────
 
 const MessageBubble = memo(function MessageBubble({
-  message, prevRole, isLive,
+  message, prevRole,
 }: {
   message:   Message
   prevRole?: Message['role']
-  isLive?:   boolean
 }) {
   const [toolExpanded, setToolExpanded] = useState(false)
   const fadeAnim = useRef(new Animated.Value(0)).current
@@ -473,7 +459,6 @@ const MessageBubble = memo(function MessageBubble({
     <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
       <View style={s.messageWrap}>
         {renderedText}
-        {isLive && <BlinkingCursor />}
         {message.cost != null && (
           <Text style={s.costLabel}>{formatCost(message.cost)}</Text>
         )}
@@ -553,16 +538,16 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
 // ── ChatPane ──────────────────────────────────────────────────────────────────
 
 const ChatPane = memo(function ChatPane({
-  baseUrl, onStatusChange, clearRef, initialDraft, onDraftChange, silentReconnect, reloadRef, closeWsRef,
+  baseUrl, onStatusChange, clearRef, initialDraft, onDraftChange, reconnectingRef, reloadRef, closeWsRef,
 }: {
-  baseUrl:           string
-  onStatusChange:    (s: ConnStatus) => void
-  clearRef:          React.MutableRefObject<() => void>
-  initialDraft?:     string
-  onDraftChange?:    (draft: string) => void
-  silentReconnect?:  React.MutableRefObject<boolean>
-  reloadRef?:        React.MutableRefObject<() => void>
-  closeWsRef?:       React.MutableRefObject<() => void>
+  baseUrl:            string
+  onStatusChange:     (s: ConnStatus) => void
+  clearRef:           React.MutableRefObject<() => void>
+  initialDraft?:      string
+  onDraftChange?:     (draft: string) => void
+  reconnectingRef?:   React.MutableRefObject<boolean>
+  reloadRef?:         React.MutableRefObject<() => void>
+  closeWsRef?:        React.MutableRefObject<() => void>
 }) {
   const insets                     = useSafeAreaInsets()
   const { height: keyboardHeight } = useReanimatedKeyboardAnimation()
@@ -577,7 +562,6 @@ const ChatPane = memo(function ChatPane({
   const [completions,    setCompletions]    = useState<string[]>([])
   const [showScrollBtn,  setShowScrollBtn]  = useState(false)
   const [inputAreaH,     setInputAreaH]     = useState(0)
-  const [streamingMsgId, setStreamingMsgId] = useState<string | null>(null)
   const [stopSent,       setStopSent]       = useState(false)
   const stopAckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -617,8 +601,6 @@ const ChatPane = memo(function ChatPane({
       streamingIdRef:    { current: string }
       hasAssistantMsgRef: { current: boolean }
       onDone:            () => void
-      onFirstChunk?:     (id: string) => void
-      onStreamEnd?:      () => void
     },
   ) => {
     let event: { type: string; text?: string; tool?: string; input?: unknown; cost_usd?: number; message?: string; line?: string; tool_use_id?: string; output?: string }
@@ -628,7 +610,6 @@ const ChatPane = memo(function ChatPane({
       const chunk = event.text
       if (!opts.hasAssistantMsgRef.current) {
         opts.hasAssistantMsgRef.current = true
-        opts.onFirstChunk?.(opts.streamingIdRef.current)
         setMessages(prev => appendMsg(prev, { id: opts.streamingIdRef.current, role: 'assistant' as const, text: chunk }))
       } else {
         setMessages(prev => prev.map(m => m.id === opts.streamingIdRef.current ? { ...m, text: m.text + chunk } : m))
@@ -662,7 +643,6 @@ const ChatPane = memo(function ChatPane({
       log(`[chat] stream done cost_usd=${event.cost_usd}`)
       lastToolIdRef.current = null
       wsRef.current = null
-      opts.onStreamEnd?.()
       opts.onDone()
     } else if (event.type === 'interrupt_ack') {
       log('[chat] interrupt acknowledged by server')
@@ -674,13 +654,11 @@ const ChatPane = memo(function ChatPane({
       log(`[chat] stream interrupted cost_usd=${event.cost_usd}`)
       lastToolIdRef.current = null
       wsRef.current = null
-      opts.onStreamEnd?.()
       opts.onDone()
     } else if (event.type === 'error') {
       logE(`[chat] stream error: ${event.message}`)
       lastToolIdRef.current = null
       wsRef.current = null
-      opts.onStreamEnd?.()
       setMessages(prev => appendMsg(prev, { id: uid(), role: 'error' as const, text: event.message ?? 'error' }))
       updateStatus('ready')
     }
@@ -709,15 +687,12 @@ const ChatPane = memo(function ChatPane({
         streamingIdRef,
         hasAssistantMsgRef,
         onDone:       () => loadHistoryRef.current(),
-        onFirstChunk: (id) => setStreamingMsgId(id),
-        onStreamEnd:  () => setStreamingMsgId(null),
       })
     }
     ws.onerror = (e) => {
       logE(`[chat] reattachStream ws error after ${Date.now() - wsStart}ms: ${JSON.stringify(e)}`)
       wsRef.current = null
-      setStreamingMsgId(null)
-      if (!closingRef.current) updateStatus('error')
+      if (!closingRef.current && !reconnectingRef?.current) updateStatus('error')
       closingRef.current = false
     }
     ws.onclose = (e) => {
@@ -730,11 +705,11 @@ const ChatPane = memo(function ChatPane({
   // being listed as a dependency (avoids circular dep: loadHistory → reattachStream → loadHistory).
   const loadHistoryRef = useRef<() => void>(() => {})
 
-  const loadHistory = useCallback(() => {
+  const loadHistory = useCallback((attempt = 0) => {
     historyAbortRef.current?.abort()
     const controller = new AbortController()
     historyAbortRef.current = controller
-    log(`[chat] loadHistory GET ${baseUrl}/history`)
+    log(`[chat] loadHistory GET ${baseUrl}/history${attempt > 0 ? ` (attempt ${attempt + 1})` : ''}`)
     fetch(`${baseUrl}/history`, { signal: controller.signal })
       .then(r => { log(`[chat] loadHistory HTTP ${r.status}`); return r.json() })
       .then((data: { messages: Array<{ role: string; text: string; cost_usd?: number; output?: string }>; is_streaming?: boolean }) => {
@@ -772,7 +747,16 @@ const ChatPane = memo(function ChatPane({
       .catch(e => {
         if ((e as Error).name === 'AbortError') return
         logE(`[chat] loadHistory failed: ${String(e)}`)
-        updateStatus('error')
+        // Retry once after a short delay — the native Noise proxy may not be
+        // ready to accept connections immediately after the tunnel reconnects
+        // (e.g. on foreground return), which would cause a spurious error flash.
+        if (attempt === 0) {
+          setTimeout(() => {
+            if (historyAbortRef.current === controller) loadHistory(1)
+          }, 600)
+        } else {
+          updateStatus('error')
+        }
       })
   }, [baseUrl, reattachStream, updateStatus])
 
@@ -794,10 +778,9 @@ const ChatPane = memo(function ChatPane({
   }, [draftKey, input])
 
   // Fetch history on mount and when baseUrl changes.
-  // For silent reconnects (same server, new local port) skip the 'connecting' flash.
+  // Skip the 'connecting' flash when a silent reconnect is in progress.
   useEffect(() => {
-    const silent = silentReconnect?.current ?? false
-    if (silentReconnect) silentReconnect.current = false  // consume
+    const silent = reconnectingRef?.current ?? false
     if (!silent) updateStatus('connecting')
     loadHistory()
     return () => { historyAbortRef.current?.abort() }
@@ -857,15 +840,12 @@ const ChatPane = memo(function ChatPane({
         streamingIdRef,
         hasAssistantMsgRef,
         onDone:       () => loadHistoryRef.current(),
-        onFirstChunk: (id) => setStreamingMsgId(id),
-        onStreamEnd:  () => setStreamingMsgId(null),
       })
     }
     ws.onerror = (e) => {
       logE(`[chat] ws error after ${Date.now() - wsSendStart}ms: ${JSON.stringify(e)}`)
       wsRef.current = null
-      setStreamingMsgId(null)
-      if (!closingRef.current) {
+      if (!closingRef.current && !reconnectingRef?.current) {
         setMessages(prev => appendMsg(prev, { id: uid(), role: 'error' as const, text: 'network error' }))
         updateStatus('error')
       }
@@ -901,9 +881,8 @@ const ChatPane = memo(function ChatPane({
     <MessageBubble
       message={item}
       prevRole={item.prevRole}
-      isLive={item.id === streamingMsgId}
     />
-  ), [streamingMsgId])
+  ), [])
 
   return (
     <View style={s.pane}>
@@ -1042,14 +1021,14 @@ const ChatPane = memo(function ChatPane({
 
 // ── ChildChatScreen ───────────────────────────────────────────────────────────
 
-function ChildChatScreen({ child, tunnelPort, tunnelError, onClose, initialDraft, onDraftChange, silentReconnect, reloadRef, closeWsRef }: {
+function ChildChatScreen({ child, tunnelPort, tunnelError, onClose, initialDraft, onDraftChange, reconnectingRef, reloadRef, closeWsRef }: {
   child:             ContainerInfo
   tunnelPort:        number | null
   tunnelError:       string | null
   onClose:           () => void
   initialDraft?:     string
   onDraftChange?:    (draft: string) => void
-  silentReconnect?:  React.MutableRefObject<boolean>
+  reconnectingRef?:  React.MutableRefObject<boolean>
   reloadRef?:        React.MutableRefObject<() => void>
   closeWsRef?:       React.MutableRefObject<() => void>
 }) {
@@ -1090,7 +1069,7 @@ function ChildChatScreen({ child, tunnelPort, tunnelError, onClose, initialDraft
             clearRef={clearRef}
             initialDraft={initialDraft}
             onDraftChange={onDraftChange}
-            silentReconnect={silentReconnect}
+            reconnectingRef={reconnectingRef}
             reloadRef={reloadRef}
             closeWsRef={closeWsRef}
           />
@@ -1145,15 +1124,22 @@ function AppInner() {
   const sidebarAnim = useRef(new Animated.Value(0)).current
   const [startingContainerId, setStartingContainerId] = useState<string | null>(null)
   const [startingError,       setStartingError]       = useState<string | null>(null)
+  const [reconnecting,        setReconnecting]        = useState(false)
   const startingContainerIdRef = useRef<string | null>(null)
-  const [reconnectKey, setReconnectKey] = useState(0)
-  const clearChatRef        = useRef<() => void>(() => {})
-  const prevTargetKeyRef    = useRef<string | null>(null)
-  const silentReconnectRef  = useRef<boolean>(false)
-  const reloadRef           = useRef<() => void>(() => {})
-  const closeWsRef          = useRef<() => void>(() => {})
+  const clearChatRef       = useRef<() => void>(() => {})
+  const reloadRef          = useRef<() => void>(() => {})
+  const closeWsRef         = useRef<() => void>(() => {})
   // In-memory draft cache: survives ChatPane unmount/remount without async latency.
-  const draftsRef = useRef<Record<string, string>>({})
+  const draftsRef          = useRef<Record<string, string>>({})
+  // Held true for the full duration of a foreground-return reconnect so that
+  // WS error/close callbacks know not to surface a connection-error to the user.
+  const reconnectingRef    = useRef<boolean>(false)
+  // Ref mirrors of conn/activeChild so the imperative reconnect() can read
+  // current values without being a useCallback dependency.
+  const connRef            = useRef<NoiseConnectionInfo | null>(null)
+  const activeChildRef     = useRef<ContainerInfo | null>(null)
+  useEffect(() => { connRef.current = conn },         [conn])
+  useEffect(() => { activeChildRef.current = activeChild }, [activeChild])
 
   // masterBaseUrl is only valid when not viewing a child — fetching containers
   // and sending master messages must always go through the master tunnel.
@@ -1174,15 +1160,9 @@ function AppInner() {
     return () => { cancelled = true }
   }, [])
 
-  // Single connection effect — owns the entire Noise tunnel lifecycle.
-  // Connects to whichever target is currently active: child if one is open,
-  // master otherwise. On failure from a child, clears activeChild so the
-  // effect re-runs immediately and falls back to the master connection.
-  //
-  // Silent reconnect: when the target server hasn't changed (same host/port/pk),
-  // we keep the existing tunnelPort visible so the chat stays on screen while
-  // the native layer reconnects in the background. The connecting banner and full
-  // message reload are suppressed; only new messages are appended.
+  // Connection effect — owns the Noise tunnel lifecycle for target changes
+  // (initial connect, switching between master and child servers).
+  // Foreground-return reconnects are handled imperatively by reconnect() below.
   useEffect(() => {
     setTunnelError(null)
 
@@ -1195,21 +1175,8 @@ function AppInner() {
     if (!target) {
       log('[noise] no target, skipping connect')
       setTunnelPort(null)
-      prevTargetKeyRef.current = null
-      silentReconnectRef.current = false
       return
     }
-
-    const targetKey = `${target.host}:${target.port}:${target.pk}`
-    const isSilent  = targetKey === prevTargetKeyRef.current
-    prevTargetKeyRef.current   = targetKey
-    silentReconnectRef.current = isSilent
-
-    if (!isSilent) {
-      // Switching to a different server — clear port to show connecting screen.
-      setTunnelPort(null)
-    }
-    // For silent reconnects, keep existing tunnelPort so the UI stays visible.
 
     if (!NoiseConnection) {
       logE('[noise] native module unavailable')
@@ -1217,7 +1184,9 @@ function AppInner() {
       return
     }
 
-    log(`[noise] ${isSilent ? 'silent-reconnect' : 'connect'} host=${target.host} port=${target.port} pk=${target.pk.slice(0, 8)}…`)
+    // Show connecting screen when switching to a different server.
+    setTunnelPort(null)
+    log(`[noise] connect host=${target.host} port=${target.port} pk=${target.pk.slice(0, 8)}…`)
 
     let live = true
     NoiseConnection.disconnect()
@@ -1227,10 +1196,6 @@ function AppInner() {
         log(`[noise] connect() resolved in ${Date.now() - connectStart}ms → local port ${port}`)
         if (!live) { log('[noise] connect resolved but effect already cleaned up — discarding'); return }
         setTunnelPort(port)
-        if (isSilent) {
-          // Tunnel re-established — now reload history.
-          reloadRef.current()
-        }
       })
       .catch(e => {
         logE(`[noise] connect() rejected in ${Date.now() - connectStart}ms: ${e?.message ?? String(e)}`)
@@ -1238,8 +1203,6 @@ function AppInner() {
         if (activeChild) {
           setActiveChild(null)
         } else {
-          // On silent reconnect failure, clear the port so the error is visible.
-          if (isSilent) setTunnelPort(null)
           setTunnelError(e?.message ?? String(e))
         }
       })
@@ -1249,15 +1212,56 @@ function AppInner() {
       log('[noise] effect cleanup: calling disconnect()')
       NoiseConnection?.disconnect()
     }
-  }, [conn, activeChild, reconnectKey])
+  }, [conn, activeChild])
 
-  // Single AppState listener — bumps reconnectKey to re-run the connection effect.
+  // Imperative reconnect — called on foreground return. Runs the full sequence
+  // in one async function so there are no races between effect re-runs and WS
+  // error callbacks. reconnectingRef suppresses spurious error UI throughout.
+  const reconnectRef = useRef<() => Promise<void>>(async () => {})
+  reconnectRef.current = async () => {
+    const target = activeChildRef.current
+      ? { host: activeChildRef.current.host, port: activeChildRef.current.port, pk: activeChildRef.current.pubkey }
+      : connRef.current
+      ? { host: connRef.current.host,        port: connRef.current.port,        pk: connRef.current.pk }
+      : null
+
+    if (!target || !NoiseConnection) return
+
+    log(`[noise] foreground reconnect host=${target.host} port=${target.port} pk=${target.pk.slice(0, 8)}…`)
+    reconnectingRef.current = true
+    setReconnecting(true)
+
+    // Close the existing WebSocket cleanly — onerror/onclose will be suppressed
+    // for the duration because reconnectingRef is true.
+    closeWsRef.current()
+
+    try {
+      NoiseConnection.disconnect()
+      const connectStart = Date.now()
+      const port = await NoiseConnection.connect(target.host, target.port, target.pk)
+      log(`[noise] foreground reconnect resolved in ${Date.now() - connectStart}ms → local port ${port}`)
+      setTunnelPort(port)
+      // Tunnel is up — now reload history. reloadRef points to ChatPane's
+      // loadHistory which will set status 'ready' or 'streaming' on success.
+      reloadRef.current()
+    } catch (e: unknown) {
+      logE(`[noise] foreground reconnect failed: ${(e as Error)?.message ?? String(e)}`)
+      if (activeChildRef.current) {
+        setActiveChild(null)
+      } else {
+        setTunnelPort(null)
+        setTunnelError((e as Error)?.message ?? String(e))
+      }
+    } finally {
+      reconnectingRef.current = false
+      setReconnecting(false)
+    }
+  }
+
+  // Single AppState listener — calls the imperative reconnect on foreground return.
   useEffect(() => {
     const sub = AppState.addEventListener('change', state => {
-      if (state === 'active') {
-        closeWsRef.current()   // close existing WS cleanly before tunnel drops
-        setReconnectKey(k => k + 1)
-      }
+      if (state === 'active') reconnectRef.current()
     })
     return () => sub.remove()
   }, [])
@@ -1415,10 +1419,10 @@ function AppInner() {
         child={activeChild}
         tunnelPort={tunnelPort}
         tunnelError={tunnelError}
-        onClose={() => setActiveChild(null)}
+        onClose={() => { setActiveChild(null); setShowSidebar(false); sidebarAnim.setValue(0) }}
         initialDraft={draftsRef.current[childKey]}
         onDraftChange={d => { draftsRef.current[childKey] = d }}
-        silentReconnect={silentReconnectRef}
+        reconnectingRef={reconnectingRef}
         reloadRef={reloadRef}
         closeWsRef={closeWsRef}
       />
@@ -1459,10 +1463,17 @@ function AppInner() {
             clearRef={clearChatRef}
             initialDraft={draftsRef.current['master']}
             onDraftChange={d => { draftsRef.current['master'] = d }}
-            silentReconnect={silentReconnectRef}
+            reconnectingRef={reconnectingRef}
             reloadRef={reloadRef}
             closeWsRef={closeWsRef}
           />
+        )}
+
+        {reconnecting && (
+          <View style={s.startingOverlay} pointerEvents="none">
+            <ActivityIndicator color={C.accent} size="large" />
+            <Text style={s.startingText}>Connecting...</Text>
+          </View>
         )}
 
         {startingContainerId !== null && (
@@ -1522,7 +1533,8 @@ function AppInner() {
                     key={c.id}
                     style={s.containerMenuItem}
                     onPress={() => {
-                      closeSidebar()
+                      setShowSidebar(false)
+                      sidebarAnim.setValue(0)
                       if (c.status === 'running') {
                         setTunnelPort(null)
                         setActiveChild(c)
@@ -1643,7 +1655,6 @@ const s = StyleSheet.create({
   codeBlock:         { backgroundColor: C.surface, borderRadius: 6, padding: 10, marginVertical: 4 },
   codeBlockText:     { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 12, color: C.textPrimary, lineHeight: 18 },
   cursor:            { color: C.textMuted, fontSize: 14, fontFamily: ARIMO },
-  streamCursor:      { color: C.accent, fontSize: 16, marginTop: 2 },
   pendingPill:       { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: C.surface, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8, alignSelf: 'flex-start' },
   questionMark:      { color: C.yellow, fontWeight: '700', fontSize: 15, marginBottom: 2, fontFamily: ARIMO },
   costLabel:         { fontSize: 11, color: C.textMuted, marginTop: 4, marginLeft: 2, fontFamily: ARIMO },

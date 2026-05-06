@@ -232,7 +232,7 @@ async fn message_handler(
             info!("[server/message_handler] done in {elapsed}ms cost=${cost_usd:.4} response=({} chars)", text.len());
             (StatusCode::OK, Json(serde_json::json!({ "text": text, "cost_usd": cost_usd }))).into_response()
         }
-        Err(e) => {
+        Err((e, _)) => {
             let elapsed = start.elapsed().as_millis();
             error!("[server/message_handler] error in {elapsed}ms: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e }))).into_response()
@@ -395,15 +395,13 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
                     }).await.ok();
                 }
             }
-            Err(e) => {
-                {
-                    let mut msgs = msgs_arc.lock().unwrap();
-                    msgs.push(ApiMessage {
-                        role:    "error".to_string(),
-                        content: vec![ContentBlock::Text { text: e.clone() }],
-                    });
-                    save_messages(&msgs);
-                }
+            Err((e, mut partial)) => {
+                partial.push(ApiMessage {
+                    role:    "error".to_string(),
+                    content: vec![ContentBlock::Text { text: e.clone() }],
+                });
+                *msgs_arc.lock().unwrap() = partial.clone();
+                save_messages(&partial);
                 done_tx.send(ChatEvent::Error { message: e }).await.ok();
             }
         }
@@ -750,13 +748,13 @@ async fn main() {
                         *state_sp.last_cost_usd.lock().unwrap() = Some(cost_usd);
                         info!("[server] STARTUP_PROMPT complete cost=${cost_usd:.4}");
                     }
-                    Err(e) => {
-                        let mut msgs = state_sp.messages.lock().unwrap();
-                        msgs.push(ApiMessage {
+                    Err((e, mut partial)) => {
+                        partial.push(ApiMessage {
                             role:    "error".to_string(),
                             content: vec![ContentBlock::Text { text: e.clone() }],
                         });
-                        save_messages(&msgs);
+                        *state_sp.messages.lock().unwrap() = partial.clone();
+                        save_messages(&partial);
                         error!("[server] STARTUP_PROMPT error: {e}");
                     }
                 }

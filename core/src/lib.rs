@@ -1019,7 +1019,7 @@ pub async fn send_message(
     extra_executor: Option<Arc<dyn Fn(String, serde_json::Value)
                             -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
                             + Send + Sync>>,
-) -> Result<(String, f64, Vec<ApiMessage>), String> {
+) -> Result<(String, f64, Vec<ApiMessage>), (String, Vec<ApiMessage>)> {
     let backend    = ApiBackend::resolve();
     let mut total_cost = 0.0f64;
     let mut last_text  = String::new();
@@ -1075,7 +1075,7 @@ pub async fn send_message(
                         .header("anthropic-version", "2023-06-01")
                         .header("anthropic-beta",    "prompt-caching-2024-07-31")
                         .header("content-type",      "application/json")
-                        .json(&body).send() => res.map_err(|e| e.to_string())?,
+                        .json(&body).send() => res.map_err(|e| (e.to_string(), messages.clone()))?,
                     _ = cancel.cancelled() => {
                         tx.send(ChatEvent::InterruptAck).await.ok();
                         return Ok((last_text, total_cost, messages));
@@ -1084,10 +1084,10 @@ pub async fn send_message(
                 if !response.status().is_success() {
                     let status = response.status();
                     let text   = response.text().await.unwrap_or_default();
-                    return Err(format!("API error {status}: {text}"));
+                    return Err((format!("API error {status}: {text}"), messages));
                 }
                 let json: serde_json::Value = tokio::select! {
-                    res = response.json() => res.map_err(|e| e.to_string())?,
+                    res = response.json() => res.map_err(|e| (e.to_string(), messages.clone()))?,
                     _ = cancel.cancelled() => {
                         tx.send(ChatEvent::InterruptAck).await.ok();
                         return Ok((last_text, total_cost, messages));
@@ -1127,7 +1127,7 @@ pub async fn send_message(
                         .post(&url)
                         .header("Authorization", format!("Bearer {api_key}"))
                         .header("content-type",  "application/json")
-                        .json(&body).send() => res.map_err(|e| e.to_string())?,
+                        .json(&body).send() => res.map_err(|e| (e.to_string(), messages.clone()))?,
                     _ = cancel.cancelled() => {
                         tx.send(ChatEvent::InterruptAck).await.ok();
                         return Ok((last_text, total_cost, messages));
@@ -1136,10 +1136,10 @@ pub async fn send_message(
                 if !response.status().is_success() {
                     let status = response.status();
                     let text   = response.text().await.unwrap_or_default();
-                    return Err(format!("API error {status}: {text}"));
+                    return Err((format!("API error {status}: {text}"), messages));
                 }
                 let json: serde_json::Value = tokio::select! {
-                    res = response.json() => res.map_err(|e| e.to_string())?,
+                    res = response.json() => res.map_err(|e| (e.to_string(), messages.clone()))?,
                     _ = cancel.cancelled() => {
                         tx.send(ChatEvent::InterruptAck).await.ok();
                         return Ok((last_text, total_cost, messages));

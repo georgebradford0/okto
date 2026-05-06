@@ -1,6 +1,6 @@
 [package]
 name        = "octo-lair"
-version     = "0.2.29"
+version     = "0.2.30"
 edition     = "2021"
 description = "octo master control node"
 

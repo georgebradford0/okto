@@ -240,7 +240,7 @@ async fn message_handler(
             info!("[lair/message_handler] done in {elapsed}ms cost=${cost_usd:.4} response=({} chars)", text.len());
             (StatusCode::OK, Json(serde_json::json!({ "text": text, "cost_usd": cost_usd }))).into_response()
         }
-        Err(e) => {
+        Err((e, _)) => {
             let elapsed = start.elapsed().as_millis();
             error!("[lair/message_handler] error in {elapsed}ms: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e }))).into_response()
@@ -355,9 +355,13 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
                     }).await.ok();
                 }
             }
-            Err(e) => {
-                msgs_arc.lock().unwrap().pop();
-                save_messages(&msgs_arc.lock().unwrap());
+            Err((e, mut partial)) => {
+                partial.push(ApiMessage {
+                    role:    "error".to_string(),
+                    content: vec![ContentBlock::Text { text: e.clone() }],
+                });
+                *msgs_arc.lock().unwrap() = partial.clone();
+                save_messages(&partial);
                 done_tx.send(ChatEvent::Error { message: e }).await.ok();
             }
         }
