@@ -153,6 +153,22 @@ pub async fn import_from_file(pod: &str, path: &std::path::Path) -> Result<()> {
         return Ok(());
     }
 
+    // Remove any existing entries whose names match the import file so that
+    // add() sees them as new — enabling upsert semantics on re-import.
+    let pod_name = running_pod(pod).await?;
+    let mut existing = read_config(&pod_name).await?;
+    let import_names: std::collections::HashSet<&str> =
+        entries.iter().map(|e| e.name.as_str()).collect();
+    let updating: Vec<&str> = existing.iter()
+        .filter(|c| import_names.contains(c.name.as_str()))
+        .map(|c| c.name.as_str())
+        .collect();
+    if !updating.is_empty() {
+        println!("Updating existing server(s): {}", updating.join(", "));
+        existing.retain(|c| !import_names.contains(c.name.as_str()));
+        write_config(&pod_name, &existing).await?;
+    }
+
     println!("Importing {} MCP server(s) into '{pod}'...", entries.len());
     let mut failed = 0usize;
     for entry in &entries {
