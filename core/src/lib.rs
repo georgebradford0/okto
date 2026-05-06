@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{debug, error, info, warn};
 
 pub mod mcp;
 pub use mcp::{McpPool, init_mcp_pool, build_tools_with_mcp, chain_executor_with_mcp};
@@ -79,8 +79,15 @@ impl ApiBackend {
         let url = std::env::var("OPENAI_BASE_URL").ok().filter(|s| !s.is_empty())
             .or_else(|| read_config().base_url.filter(|s| !s.is_empty()));
         match url {
-            Some(u) => ApiBackend::OpenAi { base_url: u.trim_end_matches('/').to_string() },
-            None    => ApiBackend::Anthropic,
+            Some(u) => {
+                let base = u.trim_end_matches('/').to_string();
+                info!("[core] using OpenAI-compatible backend: {base}");
+                ApiBackend::OpenAi { base_url: base }
+            }
+            None => {
+                debug!("[core] using Anthropic backend");
+                ApiBackend::Anthropic
+            }
         }
     }
 }
@@ -354,6 +361,25 @@ pub fn tool_definitions() -> Vec<AnthropicTool> {
 // ── Tool Execution ─────────────────────────────────────────────────────────────
 
 pub async fn execute_tool(
+    name:             &str,
+    input:            &serde_json::Value,
+    cwd:              &str,
+    tx:               &mpsc::Sender<ChatEvent>,
+    cancel:           CancellationToken,
+    extra_executor:   Option<&(dyn Fn(String, serde_json::Value)
+                               -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
+                               + Send + Sync)>,
+) -> String {
+    let tool_start = std::time::Instant::now();
+    debug!("[core/tool] execute '{name}' cwd={cwd}");
+    let result = execute_tool_inner(name, input, cwd, tx, cancel, extra_executor).await;
+    let elapsed = tool_start.elapsed().as_millis();
+    let preview: String = result.chars().take(200).collect();
+    info!("[core/tool] '{name}' done in {elapsed}ms ({} chars): {preview}", result.len());
+    result
+}
+
+async fn execute_tool_inner(
     name:             &str,
     input:            &serde_json::Value,
     cwd:              &str,
@@ -806,6 +832,12 @@ pub async fn call_turn(
 ) -> Result<(Vec<ContentBlock>, String, StreamUsage), String> {
     let all_tools = tool_definitions_with_mcp(extra_tools);
     let compacted = compact_history(messages, 20);
+    let orig_len = messages.len();
+    let compact_len = compacted.len();
+    debug!(
+        "[core/call_turn] model={model} messages={orig_len} (compacted={compact_len}) tools={}",
+        all_tools.len()
+    );
 
     match backend {
         ApiBackend::Anthropic => {
@@ -871,6 +903,13 @@ pub async fn call_turn(
                 cache_creation_input_tokens: usage["cache_creation_input_tokens"].as_u64().unwrap_or(0),
                 cache_read_input_tokens:     usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
             };
+            info!(
+                "[core/call_turn] stop_reason={stop_reason} in={} out={} cache_create={} cache_read={}",
+                stream_usage.input_tokens,
+                stream_usage.output_tokens,
+                stream_usage.cache_creation_input_tokens,
+                stream_usage.cache_read_input_tokens,
+            );
 
             let mut blocks = Vec::new();
             if let Some(content) = json["content"].as_array() {
@@ -879,6 +918,8 @@ pub async fn call_turn(
                         "text" => {
                             let text = block["text"].as_str().unwrap_or("").to_string();
                             if !text.is_empty() {
+                                let preview: String = text.chars().take(80).collect();
+                                debug!("[core/call_turn] text block ({} chars): {preview}", text.len());
                                 tx.send(ChatEvent::Text { text: text.clone() }).await.ok();
                                 blocks.push(ContentBlock::Text { text });
                             }
@@ -887,6 +928,7 @@ pub async fn call_turn(
                             let id    = block["id"].as_str().unwrap_or("").to_string();
                             let name  = block["name"].as_str().unwrap_or("").to_string();
                             let input = block["input"].clone();
+                            info!("[core/call_turn] tool_use name={name} id={id}");
                             tx.send(ChatEvent::ToolUse { tool: name.clone(), input: input.clone() }).await.ok();
                             blocks.push(ContentBlock::ToolUse { id, name, input });
                         }
@@ -931,22 +973,30 @@ pub async fn call_turn(
             };
 
             let (stop_reason, blocks) = parse_openai_response(&json);
-            for block in &blocks {
-                match block {
-                    ContentBlock::Text { text } =>
-                        tx.send(ChatEvent::Text { text: text.clone() }).await.ok(),
-                    ContentBlock::ToolUse { name, input, .. } =>
-                        tx.send(ChatEvent::ToolUse { tool: name.clone(), input: input.clone() }).await.ok(),
-                    _ => None,
-                };
-            }
-            // OpenAI: no cache tokens; cost tracking skipped.
             let stream_usage = StreamUsage {
                 input_tokens:                json["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
                 output_tokens:               json["usage"]["completion_tokens"].as_u64().unwrap_or(0),
                 cache_creation_input_tokens: 0,
                 cache_read_input_tokens:     0,
             };
+            info!(
+                "[core/call_turn/openai] stop_reason={stop_reason} in={} out={}",
+                stream_usage.input_tokens, stream_usage.output_tokens,
+            );
+            for block in &blocks {
+                match block {
+                    ContentBlock::Text { text } => {
+                        let preview: String = text.chars().take(80).collect();
+                        debug!("[core/call_turn/openai] text block ({} chars): {preview}", text.len());
+                        tx.send(ChatEvent::Text { text: text.clone() }).await.ok()
+                    }
+                    ContentBlock::ToolUse { name, input, .. } => {
+                        info!("[core/call_turn/openai] tool_use name={name}");
+                        tx.send(ChatEvent::ToolUse { tool: name.clone(), input: input.clone() }).await.ok()
+                    }
+                    _ => None,
+                };
+            }
             Ok((blocks, stop_reason, stream_usage))
         }
     }
@@ -1210,6 +1260,7 @@ pub async fn run_agentic_loop(
                             -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
                             + Send + Sync>>,
 ) {
+    info!("[core/agentic_loop] starting session_id={session_id} model={model}");
     let backend = ApiBackend::resolve();
 
     let mut turns                        = 0usize;
@@ -1227,6 +1278,7 @@ pub async fn run_agentic_loop(
 
     loop {
         if turns >= MAX_TURNS {
+            error!("[core/agentic_loop] session_id={session_id} hit MAX_TURNS={MAX_TURNS}, aborting");
             tx.send(ChatEvent::Error {
                 message: format!("Stopped after {MAX_TURNS} turns to prevent runaway loop"),
             }).await.ok();
@@ -1238,7 +1290,10 @@ pub async fn run_agentic_loop(
             (s.messages.clone(), s.system_prompt.clone(), s.cwd.clone(), s.cancel.clone())
         };
 
+        info!("[core/agentic_loop] session_id={session_id} turn {} messages={}", turns + 1, messages.len());
+
         if cancel.is_cancelled() {
+            info!("[core/agentic_loop] session_id={session_id} cancelled before turn");
             tx.send(ChatEvent::InterruptAck).await.ok();
             tx.send(ChatEvent::Interrupted { cost_usd: partial_cost(total_input, total_output, total_cache_creation_input, total_cache_read_input) }).await.ok();
             return;
@@ -1246,11 +1301,13 @@ pub async fn run_agentic_loop(
 
         match call_turn(&messages, &system, &model, &api_key, &cancel, &tx, &extra_tools, &backend).await {
             Err(e) if e == "__interrupted__" => {
+                info!("[core/agentic_loop] session_id={session_id} interrupted");
                 tx.send(ChatEvent::InterruptAck).await.ok();
                 tx.send(ChatEvent::Interrupted { cost_usd: partial_cost(total_input, total_output, total_cache_creation_input, total_cache_read_input) }).await.ok();
                 return;
             }
             Err(e) => {
+                error!("[core/agentic_loop] session_id={session_id} error: {e}");
                 tx.send(ChatEvent::Error { message: e }).await.ok();
                 return;
             }
@@ -1268,6 +1325,9 @@ pub async fn run_agentic_loop(
 
                 if stop_reason != "tool_use" {
                     let cost = partial_cost(total_input, total_output, total_cache_creation_input, total_cache_read_input);
+                    info!(
+                        "[core/agentic_loop] session_id={session_id} done turns={turns} cost=${cost:.4}"
+                    );
                     tx.send(ChatEvent::Result {
                         cost_usd: cost, turns, session_id: session_id.clone(), result: None,
                     }).await.ok();
@@ -1288,6 +1348,11 @@ pub async fn run_agentic_loop(
                         let result = truncate_tool_output(
                             execute_tool(name, input, &cwd, &tx, cancel.clone(), extra_executor.as_deref()).await,
                             tool_output_limit(name),
+                        );
+                        let result_preview: String = result.chars().take(200).collect();
+                        info!(
+                            "[core/agentic_loop] session_id={session_id} tool_result name={name} ({} chars): {result_preview}",
+                            result.len()
                         );
                         tx.send(ChatEvent::ToolResult {
                             tool_use_id: id.clone(),
@@ -1444,8 +1509,10 @@ pub fn get_branches_for_repo(repo: &str) -> Result<Vec<Branch>, String> {
 
 pub fn init_shell_env() {
     if std::env::var("OCTO_SKIP_SHELL_ENV").is_ok() {
+        debug!("[core] OCTO_SKIP_SHELL_ENV set, skipping shell env init");
         return;
     }
+    info!("[core] initializing shell environment from login shell");
     let output = std::process::Command::new("zsh")
         .args(["-l", "-c", "source ~/.zshrc 2>/dev/null; env -0"])
         .output()
@@ -1454,11 +1521,17 @@ pub fn init_shell_env() {
                 .args(["-l", "-c", "source ~/.bashrc 2>/dev/null; env -0"])
                 .output()
         });
-    let Ok(output) = output else { return };
+    let Ok(output) = output else {
+        warn!("[core] failed to run login shell for env init");
+        return;
+    };
     let Ok(env_str) = std::str::from_utf8(&output.stdout) else { return };
+    let mut count = 0usize;
     for entry in env_str.split('\0') {
         if let Some((key, val)) = entry.split_once('=') {
             std::env::set_var(key, val);
+            count += 1;
         }
     }
+    debug!("[core] shell env init loaded {count} environment variables");
 }

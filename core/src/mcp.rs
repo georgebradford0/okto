@@ -30,6 +30,7 @@ use tokio::{
     process::{ChildStdin, ChildStdout},
     sync::{Mutex, RwLock},
 };
+use tracing::{debug, error, info, warn};
 
 use crate::AnthropicTool;
 
@@ -54,11 +55,17 @@ pub struct McpServerConfig {
 /// Returns an empty vec if the file is absent or unparseable.
 pub fn load_mcp_configs() -> Vec<McpServerConfig> {
     let path = crate::data_dir().join("mcp.json");
-    let Ok(text) = std::fs::read_to_string(&path) else { return vec![] };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        debug!("[mcp] no config file at {}", path.display());
+        return vec![];
+    };
     match serde_json::from_str::<Vec<McpServerConfig>>(&text) {
-        Ok(cfgs) => cfgs,
+        Ok(cfgs) => {
+            info!("[mcp] loaded {} server config(s) from {}", cfgs.len(), path.display());
+            cfgs
+        }
         Err(e) => {
-            eprintln!("[mcp] failed to parse {}: {e}", path.display());
+            error!("[mcp] failed to parse {}: {e}", path.display());
             vec![]
         }
     }
@@ -102,10 +109,11 @@ impl McpClient {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit()); // surface MCP server logs
 
+        info!("[mcp] spawning '{}': {} {:?}", cfg.name, cfg.command, cfg.args);
         let mut child = match cmd.spawn() {
             Ok(c)  => c,
             Err(e) => {
-                eprintln!("[mcp] failed to spawn '{}': {e}", cfg.name);
+                error!("[mcp] failed to spawn '{}': {e}", cfg.name);
                 return None;
             }
         };
@@ -126,9 +134,10 @@ impl McpClient {
         })).await;
 
         if let Err(e) = init_result {
-            eprintln!("[mcp] '{}' initialize failed: {e}", cfg.name);
+            error!("[mcp] '{}' initialize failed: {e}", cfg.name);
             return None;
         }
+        debug!("[mcp] '{}' initialize OK", cfg.name);
 
         // notifications/initialized  (fire-and-forget, no response expected)
         let _ = client.notify("notifications/initialized", serde_json::json!({})).await;
@@ -136,12 +145,12 @@ impl McpClient {
         // tools/list
         match client.request("tools/list", serde_json::json!({})).await {
             Err(e) => {
-                eprintln!("[mcp] '{}' tools/list failed: {e}", cfg.name);
+                error!("[mcp] '{}' tools/list failed: {e}", cfg.name);
                 return None;
             }
             Ok(result) => {
                 client.tools = parse_tools(&cfg.name, &result);
-                println!(
+                info!(
                     "[mcp] '{}' connected — {} tool(s): {}",
                     cfg.name,
                     client.tools.len(),
@@ -155,7 +164,9 @@ impl McpClient {
 
     /// Call a tool by name and return its text output.
     pub async fn call_tool(&mut self, name: &str, arguments: Value) -> String {
-        match self.request("tools/call", serde_json::json!({ "name": name, "arguments": arguments })).await {
+        debug!("[mcp] '{}' calling tool '{name}'", self.name);
+        let start = std::time::Instant::now();
+        let out = match self.request("tools/call", serde_json::json!({ "name": name, "arguments": arguments })).await {
             Err(e) => format!("[mcp error from '{}']: {e}", self.name),
             Ok(result) => {
                 // MCP result: { content: [{ type: "text", text: "..." }, ...], isError?: bool }
@@ -183,7 +194,10 @@ impl McpClient {
                     text
                 }
             }
-        }
+        };
+        let elapsed = start.elapsed().as_millis();
+        debug!("[mcp] '{}' tool '{name}' done in {elapsed}ms ({} chars)", self.name, out.len());
+        out
     }
 
     // ── JSON-RPC helpers ──────────────────────────────────────────────────────
@@ -246,7 +260,10 @@ impl McpClient {
 // ── Tool parsing ──────────────────────────────────────────────────────────────
 
 fn parse_tools(server_name: &str, result: &Value) -> Vec<AnthropicTool> {
-    let Some(arr) = result["tools"].as_array() else { return vec![] };
+    let Some(arr) = result["tools"].as_array() else {
+        warn!("[mcp] '{server_name}' tools/list result had no 'tools' array");
+        return vec![];
+    };
     arr.iter().filter_map(|t| {
         let name = t["name"].as_str()?;
         let description = t["description"].as_str().unwrap_or("").to_string();
@@ -269,7 +286,7 @@ trait TapWarnEmpty {
 impl TapWarnEmpty for Vec<AnthropicTool> {
     fn tap_warn_empty(self, server: &str) -> Self {
         if self.is_empty() {
-            eprintln!("[mcp] warning: server '{server}' advertised no tools");
+            warn!("[mcp] server '{server}' advertised no tools");
         }
         self
     }
@@ -296,12 +313,14 @@ pub async fn init_mcp_pool() -> McpPool {
     if !configs.is_empty() {
         let connected = inner.len();
         let names: Vec<&str> = configs.iter().map(|c| c.name.as_str()).collect();
-        eprintln!(
+        info!(
             "[mcp] initialised {}/{} server(s) from config: {}",
             connected,
             configs.len(),
             names.join(", ")
         );
+    } else {
+        debug!("[mcp] no servers configured");
     }
     let pool = std::sync::Arc::new(RwLock::new(inner));
     start_mcp_watcher(pool.clone());
@@ -328,9 +347,11 @@ pub async fn pool_call_tool(pool: &McpPool, name: &str, input: Value) -> Option<
             // Strip the "{server_name}__" prefix before forwarding to the MCP server,
             // which expects the original unprefixed tool name.
             let original = name.split_once("__").map(|(_, n)| n).unwrap_or(name);
+            debug!("[mcp] dispatching '{name}' → server '{}' as '{original}'", c.name);
             return Some(c.call_tool(original, input).await);
         }
     }
+    debug!("[mcp] no pool client owns tool '{name}'");
     None
 }
 
@@ -385,13 +406,16 @@ pub async fn reload_mcp_pool(pool: &McpPool) -> String {
 
     // --- Build summary ---
     if added_names.is_empty() && removed_names.is_empty() {
+        debug!("[mcp] reload: no changes");
         return "no changes".to_string();
     }
     let mut parts = Vec::new();
     if !added_names.is_empty() {
+        info!("[mcp] reload: added servers: {}", added_names.join(", "));
         parts.push(format!("added: {}", added_names.join(", ")));
     }
     if !removed_names.is_empty() {
+        info!("[mcp] reload: removed servers: {}", removed_names.join(", "));
         parts.push(format!("removed: {}", removed_names.join(", ")));
     }
     parts.join("; ")
@@ -450,8 +474,9 @@ fn start_mcp_watcher(pool: McpPool) {
             if modified != last_modified {
                 last_modified = modified;
                 if modified.is_some() {
+                    info!("[mcp] mcp.json changed, hot-reloading pool");
                     let summary = reload_mcp_pool(&pool).await;
-                    println!("[mcp] hot-reload triggered by file change: {summary}");
+                    info!("[mcp] hot-reload complete: {summary}");
                 }
             }
         }

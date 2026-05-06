@@ -9,7 +9,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use axum::{
     extract::{
@@ -51,15 +51,28 @@ fn save_messages(messages: &[ApiMessage]) {
     let dir = session_dir();
     fs::create_dir_all(&dir).ok();
     if let Ok(json) = serde_json::to_string(messages) {
-        fs::write(dir.join("messages.json"), json).ok();
+        let path = dir.join("messages.json");
+        if let Err(e) = fs::write(&path, json) {
+            error!("[server] failed to save messages to {}: {e}", path.display());
+        } else {
+            debug!("[server] saved {} message(s) to {}", messages.len(), path.display());
+        }
     }
 }
 
 fn load_messages() -> Vec<ApiMessage> {
-    fs::read_to_string(session_dir().join("messages.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    let path = session_dir().join("messages.json");
+    match fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()) {
+        Some(msgs) => {
+            let v: Vec<ApiMessage> = msgs;
+            info!("[server] loaded {} message(s) from {}", v.len(), path.display());
+            v
+        }
+        None => {
+            debug!("[server] no saved messages at {}", path.display());
+            vec![]
+        }
+    }
 }
 
 // ── Wire types ────────────────────────────────────────────────────────────────
@@ -235,6 +248,7 @@ async fn stream_handler(
 }
 
 async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
+    info!("[server/stream] WebSocket connection opened");
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Read first frame: either {"text":"..."} to start a new loop,
@@ -244,16 +258,23 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
             Some(Ok(WsMessage::Text(t))) => {
                 match serde_json::from_str::<serde_json::Value>(&t).ok() {
                     Some(v) => break v,
-                    None    => return,
+                    None    => {
+                        warn!("[server/stream] received unparseable first frame, closing");
+                        return;
+                    }
                 }
             }
             Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => continue,
-            _ => return,
+            _ => {
+                debug!("[server/stream] connection closed before first frame");
+                return;
+            }
         }
     };
 
     // ── Watch mode: replay the current-turn buffer then forward live events ─────
     if first.get("type").and_then(|v| v.as_str()) == Some("watch") {
+        info!("[server/stream] watch mode — replaying buffer and subscribing to live events");
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         // Atomically snapshot the buffer and register as a subscriber so no events are lost.
         let replay = {
@@ -262,20 +283,27 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
             ss.subs.push(tx);
             replay
         };
+        info!("[server/stream] replaying {} buffered event(s) to watcher", replay.len());
         for event in replay {
             if ws_tx.send(WsMessage::Text(event)).await.is_err() { return; }
         }
         while let Some(msg) = rx.recv().await {
             if ws_tx.send(WsMessage::Text(msg)).await.is_err() { break; }
         }
+        info!("[server/stream] watch session closed");
         return;
     }
 
     // ── New loop ──────────────────────────────────────────────────────────────
     let text = match first.get("text").and_then(|v| v.as_str()) {
         Some(t) => t.to_string(),
-        None    => return,
+        None    => {
+            warn!("[server/stream] first frame missing 'text' field");
+            return;
+        }
     };
+    let preview: String = text.chars().take(120).collect();
+    info!("[server/stream] new loop ({} chars): {preview}", text.len());
 
     let api_key = match resolve_api_key() {
         Some(k) => k,
@@ -419,9 +447,11 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
     state.is_streaming.store(false, Ordering::Relaxed);
     // Drop subscriber senders so watcher rx channels close cleanly.
     state.stream_state.lock().unwrap().subs.clear();
+    info!("[server/stream] loop complete, streaming=false");
 }
 
 async fn clear_handler(State(state): State<Arc<AppState>>) -> StatusCode {
+    info!("[server/clear] clearing conversation history");
     let mut msgs = state.messages.lock().unwrap();
     msgs.clear();
     save_messages(&msgs);
@@ -465,6 +495,12 @@ async fn get_branches_handler() -> impl IntoResponse {
 async fn get_config_handler() -> Json<Config> { Json(read_config()) }
 
 async fn update_config_handler(Json(patch): Json<Config>) -> StatusCode {
+    info!(
+        "[server/config] update repo={:?} model={:?} api_key={}",
+        patch.repo,
+        patch.model,
+        if patch.api_key.is_some() { "provided" } else { "unchanged" }
+    );
     let mut cfg = read_config();
     if patch.repo.is_some()    { cfg.repo    = patch.repo; }
     if patch.api_key.is_some() { cfg.api_key = patch.api_key; }

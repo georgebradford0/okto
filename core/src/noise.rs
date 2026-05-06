@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tracing::{debug, error, info, warn};
 
 /// Returned when a connection closes before sending any handshake bytes.
 /// This is normal for TCP probes and reconnect races; not a real error.
@@ -54,8 +55,12 @@ pub fn to_base32(data: &[u8]) -> String {
 pub fn load_or_generate_keypair(path: &str) -> (Vec<u8>, Vec<u8>) {
     if let Ok(bytes) = std::fs::read(path) {
         if bytes.len() == 64 {
+            info!("[noise] loaded existing keypair from {path}");
             return (bytes[..32].to_vec(), bytes[32..].to_vec());
         }
+        warn!("[noise] keypair file {path} is wrong length ({}), regenerating", bytes.len());
+    } else {
+        info!("[noise] no keypair at {path}, generating new one");
     }
     let builder = snow::Builder::new(NOISE_PATTERN.parse().expect("valid pattern"));
     let kp = builder.generate_keypair().expect("keygen");
@@ -65,6 +70,7 @@ pub fn load_or_generate_keypair(path: &str) -> (Vec<u8>, Vec<u8>) {
         std::fs::create_dir_all(parent).ok();
     }
     std::fs::write(path, &combined).ok();
+    info!("[noise] generated and saved new keypair to {path}");
     (kp.private, kp.public)
 }
 
@@ -88,6 +94,8 @@ pub async fn noise_handshake(
     stream: &mut tokio::net::TcpStream,
     static_private: &[u8],
 ) -> anyhow::Result<snow::TransportState> {
+    let peer = stream.peer_addr().ok();
+    debug!("[noise] starting XX handshake peer={peer:?}");
     let builder = snow::Builder::new(NOISE_PATTERN.parse()?);
     let mut hs = builder.local_private_key(static_private).build_responder()?;
     let mut payload = vec![0u8; 65535];
@@ -96,20 +104,24 @@ pub async fn noise_handshake(
     let mut len_buf = [0u8; 2];
     let n = stream.read(&mut len_buf).await?;
     if n == 0 {
+        debug!("[noise] probe closed before handshake peer={peer:?}");
         return Err(anyhow::Error::new(ProbeClosed));
     }
     if n == 1 {
         stream.read_exact(&mut len_buf[1..]).await?;
     }
     let msg1_len = u16::from_be_bytes(len_buf) as usize;
+    debug!("[noise] msg1 len={msg1_len} peer={peer:?}");
     let mut msg1 = vec![0u8; msg1_len];
     stream.read_exact(&mut msg1).await?;
     hs.read_message(&msg1, &mut payload)?;
     let mut msg2 = vec![0u8; 65535];
     let n = hs.write_message(&[], &mut msg2)?;
     write_noise_frame(stream, &msg2[..n]).await?;
+    debug!("[noise] msg2 sent ({n} bytes) peer={peer:?}");
     let msg3 = read_noise_frame(stream).await?;
     hs.read_message(&msg3, &mut payload)?;
+    info!("[noise] handshake complete peer={peer:?}");
     Ok(hs.into_transport_mode()?)
 }
 
@@ -118,8 +130,10 @@ pub async fn handle_noise_connection(
     static_private: Arc<Vec<u8>>,
     http_port: u16,
 ) -> anyhow::Result<()> {
+    let peer = stream.peer_addr().ok();
     let transport = noise_handshake(&mut stream, &static_private).await?;
     let transport = Arc::new(Mutex::new(transport));
+    debug!("[noise] connecting to local HTTP port {http_port} for peer={peer:?}");
     let local = tokio::net::TcpStream::connect(format!("127.0.0.1:{http_port}")).await?;
     let (mut raw_read, mut raw_write) = stream.into_split();
     let (mut local_read, mut local_write) = local.into_split();
@@ -159,22 +173,25 @@ pub async fn handle_noise_connection(
     let abort_a = task_a.abort_handle();
     let abort_b = task_b.abort_handle();
     tokio::select! { _ = task_a => { abort_b.abort(); } _ = task_b => { abort_a.abort(); } }
+    debug!("[noise] proxy session closed peer={peer:?}");
     Ok(())
 }
 
 pub async fn run_noise_proxy(static_private: Vec<u8>, noise_port: u16, http_port: u16) {
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{noise_port}"))
         .await.expect("failed to bind Noise port");
-    println!("[noise] listening on 0.0.0.0:{noise_port} → 127.0.0.1:{http_port}");
+    info!("[noise] listening on 0.0.0.0:{noise_port} → 127.0.0.1:{http_port}");
     let static_private = Arc::new(static_private);
     loop {
         let Ok((stream, peer)) = listener.accept().await else { continue };
-        println!("[noise] connection from {peer}");
+        info!("[noise] connection from {peer}");
         let priv_clone = static_private.clone();
         tokio::spawn(async move {
             if let Err(e) = handle_noise_connection(stream, priv_clone, http_port).await {
-                if !e.is::<ProbeClosed>() {
-                    eprintln!("[noise] error from {peer}: {e}");
+                if e.is::<ProbeClosed>() {
+                    debug!("[noise] probe closed (no handshake) from {peer}");
+                } else {
+                    error!("[noise] error from {peer}: {e}");
                 }
             }
         });

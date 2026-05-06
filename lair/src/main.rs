@@ -10,7 +10,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use axum::{
     extract::{
@@ -71,15 +71,28 @@ fn save_messages(messages: &[ApiMessage]) {
     let dir = session_dir();
     fs::create_dir_all(&dir).ok();
     if let Ok(json) = serde_json::to_string(messages) {
-        fs::write(dir.join("messages.json"), json).ok();
+        let path = dir.join("messages.json");
+        if let Err(e) = fs::write(&path, json) {
+            error!("[lair] failed to save messages to {}: {e}", path.display());
+        } else {
+            debug!("[lair] saved {} message(s) to {}", messages.len(), path.display());
+        }
     }
 }
 
 fn load_messages() -> Vec<ApiMessage> {
-    fs::read_to_string(session_dir().join("messages.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    let path = session_dir().join("messages.json");
+    match fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()) {
+        Some(msgs) => {
+            let v: Vec<ApiMessage> = msgs;
+            info!("[lair] loaded {} message(s) from {}", v.len(), path.display());
+            v
+        }
+        None => {
+            debug!("[lair] no saved messages at {}", path.display());
+            vec![]
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -243,6 +256,7 @@ async fn stream_handler(
 }
 
 async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
+    info!("[lair/stream] WebSocket connection opened");
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     let text = loop {
@@ -253,13 +267,21 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
                     .and_then(|v| v["text"].as_str().map(str::to_string))
                 {
                     Some(t) => break t,
-                    None    => return,
+                    None    => {
+                        warn!("[lair/stream] first frame missing 'text' field, closing");
+                        return;
+                    }
                 }
             }
             Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => continue,
-            _ => return,
+            _ => {
+                debug!("[lair/stream] connection closed before first frame");
+                return;
+            }
         }
     };
+    let preview: String = text.chars().take(120).collect();
+    info!("[lair/stream] new loop ({} chars): {preview}", text.len());
 
     let api_key = match resolve_api_key() {
         Some(k) => k,
@@ -342,32 +364,50 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
     });
 
     while let Some(event) = event_rx.recv().await {
-        let json_opt: Option<serde_json::Value> = match event {
-            ChatEvent::Text { text } =>
-                Some(serde_json::json!({"type":"text","text":text})),
-            ChatEvent::ToolUse { tool, input } =>
-                Some(serde_json::json!({"type":"tool_use","tool":tool,"input":input})),
+        let json_opt: Option<serde_json::Value> = match &event {
+            ChatEvent::Text { text } => {
+                debug!("[lair/stream] text event ({} chars)", text.len());
+                Some(serde_json::json!({"type":"text","text":text}))
+            }
+            ChatEvent::ToolUse { tool, input } => {
+                info!("[lair/stream] tool_use event tool={tool}");
+                Some(serde_json::json!({"type":"tool_use","tool":tool,"input":input}))
+            }
             ChatEvent::ToolOutput { line } =>
                 Some(serde_json::json!({"type":"tool_output","line":line})),
-            ChatEvent::ToolResult { tool_use_id, content } =>
-                Some(serde_json::json!({"type":"tool_result","tool_use_id":tool_use_id,"output":content})),
-            ChatEvent::Result { cost_usd, .. } =>
-                Some(serde_json::json!({"type":"done","cost_usd":cost_usd})),
-            ChatEvent::Interrupted { cost_usd } =>
-                Some(serde_json::json!({"type":"interrupted","cost_usd":cost_usd})),
+            ChatEvent::ToolResult { tool_use_id, content } => {
+                let preview = content.as_str().map(|s| s.chars().take(80).collect::<String>()).unwrap_or_default();
+                debug!("[lair/stream] tool_result id={tool_use_id}: {preview}");
+                Some(serde_json::json!({"type":"tool_result","tool_use_id":tool_use_id,"output":content}))
+            }
+            ChatEvent::Result { cost_usd, .. } => {
+                info!("[lair/stream] done event cost=${cost_usd:.4}");
+                Some(serde_json::json!({"type":"done","cost_usd":cost_usd}))
+            }
+            ChatEvent::Interrupted { cost_usd } => {
+                info!("[lair/stream] interrupted event cost=${cost_usd:.4}");
+                Some(serde_json::json!({"type":"interrupted","cost_usd":cost_usd}))
+            }
             ChatEvent::InterruptAck =>
                 Some(serde_json::json!({"type":"interrupt_ack"})),
-            ChatEvent::Error { message } =>
-                Some(serde_json::json!({"type":"error","message":message})),
+            ChatEvent::Error { message } => {
+                error!("[lair/stream] error event: {message}");
+                Some(serde_json::json!({"type":"error","message":message}))
+            }
             _ => None,
         };
         if let Some(json) = json_opt {
-            if ws_tx.send(WsMessage::Text(json.to_string())).await.is_err() { break; }
+            if ws_tx.send(WsMessage::Text(json.to_string())).await.is_err() {
+                info!("[lair/stream] WebSocket send failed — client disconnected");
+                break;
+            }
         }
     }
+    info!("[lair/stream] session complete");
 }
 
 async fn clear_handler(State(state): State<Arc<AppState>>) -> StatusCode {
+    info!("[lair/clear] clearing conversation history");
     let mut msgs = state.messages.lock().unwrap();
     msgs.clear();
     save_messages(&msgs);
@@ -414,20 +454,26 @@ async fn start_container_handler(
 // ── Container poller ──────────────────────────────────────────────────────────
 
 async fn poll_containers(state: Arc<AppState>) {
+    info!("[containers] poller starting, initial delay 5s");
     tokio::time::sleep(Duration::from_secs(5)).await;
     loop {
+        debug!("[containers] polling K8s for managed deployments");
         match k8s::list_managed_deployments(&state.kube_client).await {
             Ok(children) => {
+                debug!("[containers] K8s returned {} deployment(s)", children.len());
                 let new_containers: Vec<ContainerInfo> = children
                     .into_iter()
-                    .map(|c| ContainerInfo {
-                        id:          c.name.clone(),
-                        name:        c.name.clone(),
-                        git_url:     c.git_url.clone(),
-                        status:      c.status.clone(),
-                        host:        state.public_host.clone(),
-                        port:        c.noise_port,
-                        pubkey:      state.pubkey_b32.clone(),
+                    .map(|c| {
+                        debug!("[containers]   {} status={} port={}", c.name, c.status, c.noise_port);
+                        ContainerInfo {
+                            id:          c.name.clone(),
+                            name:        c.name.clone(),
+                            git_url:     c.git_url.clone(),
+                            status:      c.status.clone(),
+                            host:        state.public_host.clone(),
+                            port:        c.noise_port,
+                            pubkey:      state.pubkey_b32.clone(),
+                        }
                     })
                     .collect();
 
@@ -437,15 +483,20 @@ async fn poll_containers(state: Arc<AppState>) {
                 };
                 if changed {
                     let n = new_containers.len();
+                    let names = new_containers.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ");
                     *state.containers.lock().unwrap() = new_containers;
-                    info!("[containers] state changed: {n} child(ren)");
+                    info!("[containers] state changed: {n} child(ren): {names}");
                 }
             }
             Err(e) => error!("[containers] poll error: {e}"),
         }
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(10)) => {}
-            _ = state.poll_trigger.notified() => {}
+            _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                debug!("[containers] poll interval elapsed");
+            }
+            _ = state.poll_trigger.notified() => {
+                info!("[containers] poll triggered manually");
+            }
         }
     }
 }
@@ -699,25 +750,36 @@ async fn exec_terminate_pod(state: Arc<AppState>, input: serde_json::Value) -> S
         None => return "error: missing 'name' field".to_string(),
     };
 
+    info!("[lair/terminate_pod] terminating '{name}'");
     match k8s::delete_child_resources(&state.kube_client, &name).await {
         Ok(_) => {
+            info!("[lair/terminate_pod] '{name}' deleted, triggering re-poll");
             state.poll_trigger.notify_one();
             format!("Terminated '{name}' and deleted all resources.")
         }
-        Err(e) => format!("error: {e}"),
+        Err(e) => {
+            error!("[lair/terminate_pod] failed to delete '{name}': {e}");
+            format!("error: {e}")
+        }
     }
 }
 
 async fn exec_restart_all_containers(state: Arc<AppState>) -> String {
+    info!("[lair/restart_all] triggering rollout restart for all deployments");
     match k8s::restart_deployments(&state.kube_client, &[]).await {
         Ok(restarted) if restarted.is_empty() => {
+            info!("[lair/restart_all] no deployments found");
             "No deployments found to restart.".to_string()
         }
         Ok(restarted) => {
+            info!("[lair/restart_all] restarted: {}", restarted.join(", "));
             state.poll_trigger.notify_one();
             format!("Rollout restart triggered for: {}.", restarted.join(", "))
         }
-        Err(e) => format!("error: {e}"),
+        Err(e) => {
+            error!("[lair/restart_all] error: {e}");
+            format!("error: {e}")
+        }
     }
 }
 
