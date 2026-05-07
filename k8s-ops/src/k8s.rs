@@ -739,6 +739,29 @@ pub async fn wait_for_deployment_ready(client: &Client, name: &str, timeout_secs
     }
 }
 
+/// After a deployment is ready, poll the pod's HTTP /health endpoint via
+/// `kubectl exec` until it responds 200. This ensures the server is actually
+/// accepting connections before we declare success.
+pub async fn wait_for_pod_http_ready(client: &Client, app_name: &str, timeout_secs: u64) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!("timeout waiting for '{app_name}' HTTP health check");
+        }
+        if let Ok(pod_name) = get_running_pod(client, app_name).await {
+            let ok = tokio::process::Command::new("kubectl")
+                .args(["exec", "-n", NAMESPACE, &pod_name, "--",
+                       "curl", "-sf", "http://localhost:8000/health"])
+                .output()
+                .await
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if ok { return Ok(()); }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
 pub async fn get_running_pod(client: &Client, app_name: &str) -> anyhow::Result<String> {
     let pods: Api<Pod> = Api::namespaced(client.clone(), NAMESPACE);
     let list = pods.list(&ListParams::default().labels(&format!("app={app_name}")))

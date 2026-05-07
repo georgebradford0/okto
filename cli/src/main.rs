@@ -521,6 +521,7 @@ async fn main() -> Result<()> {
                     print!("  {name} ... ");
                     std::io::Write::flush(&mut std::io::stdout())?;
                     k8s::wait_for_deployment_ready(&client, name, 120).await?;
+                    k8s::wait_for_pod_http_ready(&client, name, 30).await?;
                     let new_ver = k8s::get_deployment_version(&client, name).await
                         .unwrap_or_else(|| "unknown".to_string());
                     if old_ver != new_ver {
