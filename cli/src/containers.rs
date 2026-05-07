@@ -83,7 +83,8 @@ pub async fn delete(name: &str, yes: bool) -> Result<()> {
         std::io::stdout().flush()?;
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
-        if input.trim().to_lowercase() != "y" {
+        let trimmed = input.trim().to_lowercase();
+        if trimmed != "y" && trimmed != "yes" {
             println!("Aborted.");
             return Ok(());
         }
