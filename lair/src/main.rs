@@ -4,6 +4,7 @@ use std::{
     fs,
     path::PathBuf,
     sync::{
+        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -31,9 +32,8 @@ use octo_core::{
 use hex;
 use futures_util::{SinkExt, StreamExt};
 use octo_k8s_ops::Client;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc, watch, Notify};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Notify;
 use tower_http::cors::{Any, CorsLayer};
 
 // ── Noise Protocol ────────────────────────────────────────────────────────────
@@ -174,17 +174,28 @@ struct AppState {
     messages:             Arc<Mutex<Vec<ApiMessage>>>,
     last_cost_usd:        Mutex<Option<f64>>,
     system:               String,
-    containers:           Arc<Mutex<Vec<ContainerInfo>>>,
+    /// Watch channel published by the K8s poller. Each /stream WS subscribes
+    /// and re-sends a `containers` event whenever the list changes.
+    containers_tx:        watch::Sender<Vec<ContainerInfo>>,
+    /// Receiver kept alongside the sender so `containers_tx` always has at
+    /// least one subscriber (avoids `send` failures when no WS is open).
+    containers_rx:        watch::Receiver<Vec<ContainerInfo>>,
     poll_trigger:         Arc<Notify>,
     pubkey_b32:           String,
     /// Hex-encoded 64-byte keypair (32 private + 32 public); injected into children.
     noise_private_key_hex: String,
     public_host:          String,
-    lair_url:           String,
+    lair_url:             String,
     kube_client:          Client,
-    mcp_pool:             McpPool,
+    mcp_pool:              McpPool,
     /// Cancellation token for the current streaming turn. Replaced at the start of each turn.
     cancel:               Mutex<CancellationToken>,
+    /// True while an agentic turn is actively running. Guards against concurrent
+    /// `user_message` frames; the second one is rejected until the first completes.
+    is_streaming:         AtomicBool,
+    /// Broadcast of JSON-serialized ChatEvents from the active turn. Each /stream
+    /// WS subscribes and forwards every event it receives.
+    events_tx:            broadcast::Sender<String>,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -255,159 +266,254 @@ async fn stream_handler(
     ws.on_upgrade(move |socket| handle_stream(socket, state))
 }
 
+/// Render a `ChatEvent` to the JSON shape the wire schema (mobile/src/wire.ts)
+/// expects. Returns `None` for variants that aren't part of the /stream protocol.
+/// Variant→JSON shape is hand-coded rather than relying on serde's auto-derive
+/// because the wire uses `output` for tool_result content (not the auto-derived
+/// `content` field), and we want to keep that explicit.
+fn chat_event_to_wire_json(event: &ChatEvent) -> Option<serde_json::Value> {
+    match event {
+        ChatEvent::Text { text } =>
+            Some(serde_json::json!({"type":"text","text":text})),
+        ChatEvent::ToolUse { tool, input } =>
+            Some(serde_json::json!({"type":"tool_use","tool":tool,"input":input})),
+        ChatEvent::ToolOutput { line } =>
+            Some(serde_json::json!({"type":"tool_output","line":line})),
+        ChatEvent::ToolResult { tool_use_id, content } =>
+            Some(serde_json::json!({"type":"tool_result","tool_use_id":tool_use_id,"output":content})),
+        ChatEvent::Result { cost_usd, .. } =>
+            Some(serde_json::json!({"type":"done","cost_usd":cost_usd})),
+        ChatEvent::Interrupted { cost_usd } =>
+            Some(serde_json::json!({"type":"interrupted","cost_usd":cost_usd})),
+        ChatEvent::InterruptAck =>
+            Some(serde_json::json!({"type":"interrupt_ack"})),
+        ChatEvent::Error { message } =>
+            Some(serde_json::json!({"type":"error","message":message})),
+        ChatEvent::System { text } =>
+            Some(serde_json::json!({"type":"system","text":text})),
+        // Ready, Containers, Ping, Pong, UserMessage, Interrupt, StartContainer:
+        // these are emitted directly by the WS handler / poller, not by the agentic
+        // loop, and never travel through this conversion path.
+        _ => None,
+    }
+}
+
+/// Spawn an agentic turn. Returns immediately; events are broadcast via
+/// `state.events_tx` to all connected /stream subscribers. The caller must
+/// have already verified `is_streaming` was false and flipped it to true.
+fn spawn_turn(state: Arc<AppState>, text: String) {
+    tokio::spawn(async move {
+        let api_key = match resolve_api_key() {
+            Some(k) => k,
+            None => {
+                let _ = state.events_tx.send(
+                    serde_json::json!({"type":"error","message":"no API key configured"}).to_string()
+                );
+                state.is_streaming.store(false, Ordering::Relaxed);
+                return;
+            }
+        };
+        let model = resolve_model();
+
+        {
+            let mut msgs = state.messages.lock().unwrap();
+            msgs.push(ApiMessage {
+                role:    "user".to_string(),
+                content: vec![ContentBlock::Text { text: text.clone() }],
+            });
+            save_messages(&msgs);
+        }
+
+        let messages: Vec<ApiMessage> = state.messages.lock().unwrap().iter()
+            .filter(|m| m.role != "interrupted")
+            .cloned()
+            .collect();
+        let system    = state.system.clone();
+        let msgs_arc  = state.messages.clone();
+        let state_arc = Arc::clone(&state);
+        let events_for_relay = state.events_tx.clone();
+
+        let (event_tx, mut event_rx) = mpsc::channel::<ChatEvent>(256);
+        let done_tx = event_tx.clone();
+
+        // Fresh cancellation token for this turn; stored on AppState so /interrupt
+        // and incoming "interrupt" frames can reach it.
+        let cancel = CancellationToken::new();
+        *state.cancel.lock().unwrap() = cancel.clone();
+
+        let extra_tools = build_tools_with_mcp(&state.mcp_pool, &lair_extra_tools()).await;
+        let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), lair_extra_executor(Arc::clone(&state)));
+
+        // Agent task: drives the model loop, terminates with Result/Interrupted/Error.
+        tokio::spawn(async move {
+            match send_message(messages, &system, &model, &api_key, "/", Some(event_tx), cancel.clone(), &extra_tools, executor).await {
+                Ok((_, cost_usd, mut updated)) => {
+                    if cancel.is_cancelled() {
+                        updated.push(ApiMessage {
+                            role:    "interrupted".to_string(),
+                            content: vec![ContentBlock::Text { text: "interrupted".to_string() }],
+                        });
+                        *msgs_arc.lock().unwrap() = updated.clone();
+                        save_messages(&updated);
+                        *state_arc.last_cost_usd.lock().unwrap() = Some(cost_usd);
+                        done_tx.send(ChatEvent::Interrupted { cost_usd }).await.ok();
+                    } else {
+                        *msgs_arc.lock().unwrap() = updated.clone();
+                        save_messages(&updated);
+                        *state_arc.last_cost_usd.lock().unwrap() = Some(cost_usd);
+                        done_tx.send(ChatEvent::Result {
+                            cost_usd, turns: 0, session_id: String::new(), result: None,
+                        }).await.ok();
+                    }
+                }
+                Err((e, mut partial)) => {
+                    partial.push(ApiMessage {
+                        role:    "error".to_string(),
+                        content: vec![ContentBlock::Text { text: e.clone() }],
+                    });
+                    *msgs_arc.lock().unwrap() = partial.clone();
+                    save_messages(&partial);
+                    done_tx.send(ChatEvent::Error { message: e }).await.ok();
+                }
+            }
+        });
+
+        // Relay task: drains the per-turn mpsc and broadcasts JSON to all WS subs.
+        while let Some(event) = event_rx.recv().await {
+            if let Some(json) = chat_event_to_wire_json(&event) {
+                let _ = events_for_relay.send(json.to_string());
+            }
+        }
+        state.is_streaming.store(false, Ordering::Relaxed);
+        info!("[lair/stream] turn complete, is_streaming=false");
+    });
+}
+
 async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
     info!("[lair/stream] WebSocket connection opened");
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    let text = loop {
-        match ws_rx.next().await {
-            Some(Ok(WsMessage::Text(t))) => {
-                match serde_json::from_str::<serde_json::Value>(&t)
-                    .ok()
-                    .and_then(|v| v["text"].as_str().map(str::to_string))
-                {
-                    Some(t) => break t,
-                    None    => {
-                        warn!("[lair/stream] first frame missing 'text' field, closing");
-                        return;
-                    }
-                }
-            }
-            Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => continue,
-            _ => {
-                debug!("[lair/stream] connection closed before first frame");
-                return;
-            }
+    // Greet the client. `resumed` reflects whether they're joining an in-flight
+    // turn (whose remaining events they'll receive via the broadcast channel).
+    let resumed = state.is_streaming.load(Ordering::Relaxed);
+    let ready = serde_json::json!({"type":"ready","session_id":"","resumed":resumed}).to_string();
+    if ws_tx.send(WsMessage::Text(ready)).await.is_err() {
+        return;
+    }
+    // Send an initial containers snapshot so the UI can render immediately.
+    {
+        let snapshot = state.containers_rx.borrow().clone();
+        let json = serde_json::json!({"type":"containers","containers":snapshot}).to_string();
+        if ws_tx.send(WsMessage::Text(json)).await.is_err() {
+            return;
         }
-    };
-    let preview: String = text.chars().take(120).collect();
-    info!("[lair/stream] new loop ({} chars): {preview}", text.len());
+    }
 
-    let api_key = match resolve_api_key() {
-        Some(k) => k,
-        None => {
-            ws_tx.send(WsMessage::Text(
-                serde_json::json!({"type":"error","message":"no API key configured"}).to_string()
-            )).await.ok();
+    let mut events_rx     = state.events_tx.subscribe();
+    let mut containers_rx = state.containers_rx.clone();
+
+    loop {
+        tokio::select! {
+            // Outgoing: agentic-turn events broadcast from spawn_turn.
+            res = events_rx.recv() => match res {
+                Ok(json) => {
+                    if ws_tx.send(WsMessage::Text(json)).await.is_err() { break; }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!("[lair/stream] subscriber lagged by {n} events");
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+
+            // Outgoing: container list updates from the K8s poller.
+            res = containers_rx.changed() => {
+                if res.is_err() { break; }
+                let list = containers_rx.borrow_and_update().clone();
+                let json = serde_json::json!({"type":"containers","containers":list}).to_string();
+                if ws_tx.send(WsMessage::Text(json)).await.is_err() { break; }
+            },
+
+            // Incoming: client frames.
+            msg = ws_rx.next() => match msg {
+                Some(Ok(WsMessage::Text(t))) => {
+                    handle_client_frame(&t, &state).await;
+                }
+                Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => continue,
+                Some(Ok(WsMessage::Close(_))) | None => break,
+                Some(Err(_)) => break,
+                _ => continue,
+            },
+        }
+    }
+
+    info!("[lair/stream] connection closed");
+}
+
+/// Dispatch a client → server frame parsed from a /stream WS message.
+async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
+    let v: serde_json::Value = match serde_json::from_str(raw) {
+        Ok(v)  => v,
+        Err(_) => {
+            warn!("[lair/stream] dropping unparseable client frame");
             return;
         }
     };
-    let model = resolve_model();
-
-    {
-        let mut msgs = state.messages.lock().unwrap();
-        msgs.push(ApiMessage {
-            role:    "user".to_string(),
-            content: vec![ContentBlock::Text { text: text.clone() }],
-        });
-        save_messages(&msgs);
-    }
-
-    let messages: Vec<ApiMessage> = state.messages.lock().unwrap().iter()
-        .filter(|m| m.role != "interrupted")
-        .cloned()
-        .collect();
-    let system    = state.system.clone();
-    let msgs_arc  = state.messages.clone();
-    let state_arc = Arc::clone(&state);
-
-    let (event_tx, mut event_rx) = mpsc::channel::<ChatEvent>(256);
-    let done_tx = event_tx.clone();
-
-    // Fresh cancellation token for this turn; stored on AppState so /interrupt can reach it.
-    let cancel = CancellationToken::new();
-    *state.cancel.lock().unwrap() = cancel.clone();
-    let cancel_for_listener = cancel.clone();
-
-    tokio::spawn(async move {
-        while let Some(Ok(WsMessage::Text(t))) = ws_rx.next().await {
-            if serde_json::from_str::<serde_json::Value>(&t)
-                .ok()
-                .and_then(|v| v["type"].as_str().map(str::to_string))
-                .as_deref() == Some("interrupt")
+    let frame_type = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+    match frame_type {
+        "user_message" => {
+            let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            if text.is_empty() {
+                warn!("[lair/stream] user_message frame missing/empty text");
+                return;
+            }
+            // Reject overlapping turns. Mobile gates sends on its own
+            // status, but a buggy or malicious client could try anyway.
+            if state.is_streaming
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
             {
-                cancel_for_listener.cancel();
-                break;
+                let _ = state.events_tx.send(
+                    serde_json::json!({"type":"error","message":"a turn is already running"}).to_string()
+                );
+                return;
             }
+            let preview: String = text.chars().take(120).collect();
+            info!("[lair/stream] user_message ({} chars): {preview}", text.len());
+            spawn_turn(state.clone(), text);
         }
-    });
-
-    let extra_tools = build_tools_with_mcp(&state.mcp_pool, &lair_extra_tools()).await;
-    let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), lair_extra_executor(Arc::clone(&state)));
-    tokio::spawn(async move {
-        match send_message(messages, &system, &model, &api_key, "/", Some(event_tx), cancel.clone(), &extra_tools, executor).await {
-            Ok((_, cost_usd, mut updated)) => {
-                if cancel.is_cancelled() {
-                    updated.push(ApiMessage {
-                        role:    "interrupted".to_string(),
-                        content: vec![ContentBlock::Text { text: "interrupted".to_string() }],
-                    });
-                    *msgs_arc.lock().unwrap() = updated.clone();
-                    save_messages(&updated);
-                    *state_arc.last_cost_usd.lock().unwrap() = Some(cost_usd);
-                    done_tx.send(ChatEvent::Interrupted { cost_usd }).await.ok();
-                } else {
-                    *msgs_arc.lock().unwrap() = updated.clone();
-                    save_messages(&updated);
-                    *state_arc.last_cost_usd.lock().unwrap() = Some(cost_usd);
-                    done_tx.send(ChatEvent::Result {
-                        cost_usd, turns: 0, session_id: String::new(), result: None,
-                    }).await.ok();
+        "interrupt" => {
+            info!("[lair/stream] interrupt frame received");
+            state.cancel.lock().unwrap().cancel();
+            // Optimistic ack — the agentic loop will follow up with Interrupted.
+            let _ = state.events_tx.send(
+                serde_json::json!({"type":"interrupt_ack"}).to_string()
+            );
+        }
+        "start_container" => {
+            let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            if id.is_empty() {
+                warn!("[lair/stream] start_container frame missing id");
+                return;
+            }
+            info!("[lair/stream] start_container id={id}");
+            let state = state.clone();
+            tokio::spawn(async move {
+                if let Err(e) = start_container_by_id(&state, &id).await {
+                    error!("[lair/stream] start_container failed: {e}");
+                    let _ = state.events_tx.send(
+                        serde_json::json!({"type":"error","message":format!("start_container: {e}")}).to_string()
+                    );
                 }
-            }
-            Err((e, mut partial)) => {
-                partial.push(ApiMessage {
-                    role:    "error".to_string(),
-                    content: vec![ContentBlock::Text { text: e.clone() }],
-                });
-                *msgs_arc.lock().unwrap() = partial.clone();
-                save_messages(&partial);
-                done_tx.send(ChatEvent::Error { message: e }).await.ok();
-            }
+            });
         }
-    });
-
-    while let Some(event) = event_rx.recv().await {
-        let json_opt: Option<serde_json::Value> = match &event {
-            ChatEvent::Text { text } => {
-                debug!("[lair/stream] text event ({} chars)", text.len());
-                Some(serde_json::json!({"type":"text","text":text}))
-            }
-            ChatEvent::ToolUse { tool, input } => {
-                info!("[lair/stream] tool_use event tool={tool}");
-                Some(serde_json::json!({"type":"tool_use","tool":tool,"input":input}))
-            }
-            ChatEvent::ToolOutput { line } =>
-                Some(serde_json::json!({"type":"tool_output","line":line})),
-            ChatEvent::ToolResult { tool_use_id, content } => {
-                let preview = content.as_str().map(|s| s.chars().take(80).collect::<String>()).unwrap_or_default();
-                debug!("[lair/stream] tool_result id={tool_use_id}: {preview}");
-                Some(serde_json::json!({"type":"tool_result","tool_use_id":tool_use_id,"output":content}))
-            }
-            ChatEvent::Result { cost_usd, .. } => {
-                info!("[lair/stream] done event cost=${cost_usd:.4}");
-                Some(serde_json::json!({"type":"done","cost_usd":cost_usd}))
-            }
-            ChatEvent::Interrupted { cost_usd } => {
-                info!("[lair/stream] interrupted event cost=${cost_usd:.4}");
-                Some(serde_json::json!({"type":"interrupted","cost_usd":cost_usd}))
-            }
-            ChatEvent::InterruptAck =>
-                Some(serde_json::json!({"type":"interrupt_ack"})),
-            ChatEvent::Error { message } => {
-                error!("[lair/stream] error event: {message}");
-                Some(serde_json::json!({"type":"error","message":message}))
-            }
-            _ => None,
-        };
-        if let Some(json) = json_opt {
-            if ws_tx.send(WsMessage::Text(json.to_string())).await.is_err() {
-                info!("[lair/stream] WebSocket send failed — client disconnected");
-                break;
-            }
+        "pong" => {
+            // App-level keepalive ack — handled per-WS in the future ping/pong work.
+            // For now just no-op so unknown clients don't see it as an error.
+        }
+        other => {
+            warn!("[lair/stream] unknown client frame type='{other}'");
         }
     }
-    info!("[lair/stream] session complete");
 }
 
 async fn clear_handler(State(state): State<Arc<AppState>>) -> StatusCode {
@@ -418,41 +524,24 @@ async fn clear_handler(State(state): State<Arc<AppState>>) -> StatusCode {
     StatusCode::OK
 }
 
-async fn containers_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let list = state.containers.lock().unwrap().clone();
-    Json(serde_json::json!({ "containers": list }))
-}
+/// Scale the named child Deployment to 1 replica. Shared between the deprecated
+/// HTTP handler (kept for one release) and the `start_container` /stream frame.
+async fn start_container_by_id(state: &AppState, id: &str) -> Result<(), String> {
+    let name = state
+        .containers_rx
+        .borrow()
+        .iter()
+        .find(|c| c.id == id)
+        .map(|c| c.name.clone())
+        .ok_or_else(|| format!("container '{id}' not found"))?;
 
-#[derive(Deserialize)]
-struct StartContainerBody { id: String }
-
-async fn start_container_handler(
-    State(state): State<Arc<AppState>>,
-    Json(body):   Json<StartContainerBody>,
-) -> impl IntoResponse {
-    let name = {
-        let containers = state.containers.lock().unwrap();
-        containers.iter().find(|c| c.id == body.id).map(|c| c.name.clone())
-    };
-
-    let name = match name {
-        Some(n) => n,
-        None    => return (StatusCode::NOT_FOUND,
-                           Json(serde_json::json!({"error": "container not found"}))).into_response(),
-    };
-
-    match k8s::scale_deployment(&state.kube_client, &name, 1).await {
-        Ok(_) => {
-            info!("[containers] scaled {name} to 1, triggering re-poll");
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            state.poll_trigger.notify_one();
-            (StatusCode::OK, Json(serde_json::json!({}))).into_response()
-        }
-        Err(e) => {
-            error!("[containers] scale {name} failed: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
-        }
-    }
+    k8s::scale_deployment(&state.kube_client, &name, 1)
+        .await
+        .map_err(|e| e.to_string())?;
+    info!("[containers] scaled {name} to 1, triggering re-poll");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    state.poll_trigger.notify_one();
+    Ok(())
 }
 
 // ── Container poller ──────────────────────────────────────────────────────────
@@ -481,15 +570,14 @@ async fn poll_containers(state: Arc<AppState>) {
                     })
                     .collect();
 
-                let changed = {
-                    let current = state.containers.lock().unwrap();
-                    *current != new_containers
-                };
+                let changed = *state.containers_tx.borrow() != new_containers;
                 if changed {
                     let n = new_containers.len();
                     let names = new_containers.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ");
-                    *state.containers.lock().unwrap() = new_containers;
                     info!("[containers] state changed: {n} child(ren): {names}");
+                    // send_replace ignores no-receiver errors; containers_rx in AppState
+                    // also keeps the channel alive even with zero open WS connections.
+                    state.containers_tx.send_replace(new_containers);
                 }
             }
             Err(e) => error!("[containers] poll error: {e}"),
@@ -701,7 +789,7 @@ fn lair_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
 }
 
 async fn exec_list_pods(state: Arc<AppState>) -> String {
-    let containers = state.containers.lock().unwrap().clone();
+    let containers = state.containers_rx.borrow().clone();
     serde_json::to_string_pretty(&containers).unwrap_or_else(|e| format!("error: {e}"))
 }
 
@@ -956,12 +1044,18 @@ async fn main() {
 
     let mcp_pool     = init_mcp_pool().await;
     let poll_trigger = Arc::new(Notify::new());
+    let (containers_tx, containers_rx) = watch::channel(Vec::<ContainerInfo>::new());
+    // Buffer ample for a slow client: a typical turn fits well under 256 events,
+    // and each subscriber catches up with `recv()` independently. Lagged
+    // subscribers drop oldest events and surface a warning, never block sends.
+    let (events_tx, _) = broadcast::channel::<String>(512);
 
     let state = Arc::new(AppState {
         messages:              Arc::new(Mutex::new(messages)),
         last_cost_usd:         Mutex::new(None),
         system:                build_system_prompt(),
-        containers:            Arc::new(Mutex::new(Vec::new())),
+        containers_tx,
+        containers_rx,
         poll_trigger:          poll_trigger.clone(),
         pubkey_b32,
         noise_private_key_hex,
@@ -970,6 +1064,8 @@ async fn main() {
         kube_client,
         mcp_pool,
         cancel:                Mutex::new(CancellationToken::new()),
+        is_streaming:          AtomicBool::new(false),
+        events_tx,
     });
 
     tokio::spawn(poll_containers(state.clone()));
@@ -987,8 +1083,6 @@ async fn main() {
         .route("/stream",           get(stream_handler))
         .route("/interrupt",        post(interrupt_handler))
         .route("/clear",            post(clear_handler))
-        .route("/containers",       get(containers_handler))
-        .route("/containers/start", post(start_container_handler))
         .with_state(state)
         .layer(cors);
 

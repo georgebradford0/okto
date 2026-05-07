@@ -22,6 +22,13 @@ import Reanimated, { useAnimatedStyle } from 'react-native-reanimated'
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Camera, useCameraDevice, useCodeScanner } from 'react-native-vision-camera'
 import NoiseConnection from './src/NativeNoiseConnection'
+import {
+  type ClientFrame,
+  type ContainerInfo as WireContainerInfo,
+  type ServerEvent,
+  encodeClientFrame,
+  parseServerEvent,
+} from './src/wire'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -539,15 +546,23 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
 
 const ChatPane = memo(function ChatPane({
   baseUrl, onStatusChange, clearRef, initialDraft, onDraftChange, reconnectingRef, reloadRef, closeWsRef,
+  sendFrameRef, onContainersUpdate,
 }: {
-  baseUrl:            string
-  onStatusChange:     (s: ConnStatus) => void
-  clearRef:           React.MutableRefObject<() => void>
-  initialDraft?:      string
-  onDraftChange?:     (draft: string) => void
-  reconnectingRef?:   React.MutableRefObject<boolean>
-  reloadRef?:         React.MutableRefObject<() => void>
-  closeWsRef?:        React.MutableRefObject<() => void>
+  baseUrl:             string
+  onStatusChange:      (s: ConnStatus) => void
+  clearRef:            React.MutableRefObject<() => void>
+  initialDraft?:       string
+  onDraftChange?:      (draft: string) => void
+  reconnectingRef?:    React.MutableRefObject<boolean>
+  reloadRef?:          React.MutableRefObject<() => void>
+  closeWsRef?:         React.MutableRefObject<() => void>
+  /// Imperative handle: call to send a typed client frame on the persistent
+  /// /stream WS. Returns false if the WS isn't currently open. Master ChatPane
+  /// receives this so AppInner can issue start_container frames.
+  sendFrameRef?:       React.MutableRefObject<(frame: ClientFrame) => boolean>
+  /// Push hook for `containers` events. Lair sends one immediately after Ready
+  /// and again on every poller state-change. Children never send containers.
+  onContainersUpdate?: (containers: WireContainerInfo[]) => void
 }) {
   const insets                     = useSafeAreaInsets()
   const { height: keyboardHeight } = useReanimatedKeyboardAnimation()
@@ -568,6 +583,8 @@ const ChatPane = memo(function ChatPane({
   const sendMessageRef    = useRef<() => void>(() => {})
   const wsRef             = useRef<WebSocket | null>(null)
   const closingRef        = useRef(false)
+  const streamingIdRef    = useRef<string>(uid())
+  const hasAssistantMsgRef = useRef<boolean>(false)
   const listRef           = useRef<FlatList<Message>>(null)
   const isAtBottomRef     = useRef(true)
   const contentHeightRef  = useRef(0)
@@ -594,112 +611,116 @@ const ChatPane = memo(function ChatPane({
     onStatusChange(s)
   }, [onStatusChange])
 
-  // Shared event handler used by both sendMessage and reattachStream.
-  const handleStreamEvent = useCallback((
-    raw: string,
-    opts: {
-      streamingIdRef:    { current: string }
-      hasAssistantMsgRef: { current: boolean }
-      onDone:            () => void
-    },
-  ) => {
-    let event: { type: string; text?: string; tool?: string; input?: unknown; cost_usd?: number; message?: string; line?: string; tool_use_id?: string; output?: string }
-    try { event = JSON.parse(raw) } catch { return }
+  // Send a typed client frame on the persistent WS. Returns false if the WS
+  // isn't currently open (caller decides how to surface that).
+  const sendFrame = useCallback((frame: ClientFrame): boolean => {
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false
+    ws.send(encodeClientFrame(frame))
+    return true
+  }, [])
 
-    if (event.type === 'text' && event.text) {
-      const chunk = event.text
-      if (!opts.hasAssistantMsgRef.current) {
-        opts.hasAssistantMsgRef.current = true
-        setMessages(prev => appendMsg(prev, { id: opts.streamingIdRef.current, role: 'assistant' as const, text: chunk }))
-      } else {
-        setMessages(prev => prev.map(m => m.id === opts.streamingIdRef.current ? { ...m, text: m.text + chunk } : m))
-      }
-    } else if (event.type === 'tool_use') {
-      opts.hasAssistantMsgRef.current = false
-      opts.streamingIdRef.current = uid()
-      const firstVal = event.input && typeof event.input === 'object'
-        ? String(Object.values(event.input as Record<string, unknown>)[0] ?? '').trim()
-        : ''
-      const toolText = firstVal ? `${event.tool}(${firstVal})` : (event.tool ?? '')
-      log(`[chat] tool_use tool=${event.tool}`)
-      const toolId = uid()
-      lastToolIdRef.current = toolId
-      setMessages(prev => appendMsg(prev, { id: toolId, role: 'tool' as const, text: toolText, toolUseId: event.tool_use_id }))
-    } else if (event.type === 'tool_output' && event.line != null) {
-      const toolId = lastToolIdRef.current
-      if (toolId) {
-        setMessages(prev => prev.map(m =>
-          m.id === toolId ? { ...m, output: (m.output ?? '') + event.line + '\n' } : m
-        ))
-      }
-    } else if (event.type === 'tool_result' && event.output != null) {
-      const toolId = lastToolIdRef.current
-      if (toolId) {
-        setMessages(prev => prev.map(m =>
-          m.id === toolId ? { ...m, output: typeof event.output === 'string' ? event.output : JSON.stringify(event.output) } : m
-        ))
-      }
-    } else if (event.type === 'done') {
-      log(`[chat] stream done cost_usd=${event.cost_usd}`)
-      lastToolIdRef.current = null
-      wsRef.current = null
-      opts.onDone()
-    } else if (event.type === 'interrupt_ack') {
-      log('[chat] interrupt acknowledged by server')
-      if (stopAckTimerRef.current) {
-        clearTimeout(stopAckTimerRef.current)
-        stopAckTimerRef.current = null
-      }
-    } else if (event.type === 'interrupted') {
-      log(`[chat] stream interrupted cost_usd=${event.cost_usd}`)
-      lastToolIdRef.current = null
-      wsRef.current = null
-      opts.onDone()
-    } else if (event.type === 'error') {
-      logE(`[chat] stream error: ${event.message}`)
-      lastToolIdRef.current = null
-      wsRef.current = null
-      setMessages(prev => appendMsg(prev, { id: uid(), role: 'error' as const, text: event.message ?? 'error' }))
-      updateStatus('ready')
-    }
-  }, [updateStatus])
+  // Expose sendFrame so the parent (AppInner) can issue frames like start_container
+  // on the master ChatPane's WS without owning the WS itself.
+  useEffect(() => {
+    if (sendFrameRef) sendFrameRef.current = sendFrame
+  }, [sendFrame, sendFrameRef])
 
-  // Open a watch-only WebSocket to tail an already-running server loop.
-  const reattachStream = useCallback(() => {
-    if (wsRef.current) {
-      log('[chat] reattachStream: already have ws, skipping')
-      return
+  const handleStreamEvent = useCallback((raw: string) => {
+    const event = parseServerEvent(raw)
+    if (!event) return
+
+    switch (event.type) {
+      case 'ready': {
+        // Server greets us; status becomes 'streaming' if we joined an in-flight
+        // turn (events for it will arrive next), else 'ready' for input.
+        updateStatus(event.resumed ? 'streaming' : 'ready')
+        // Fresh per-turn refs in case we're starting clean.
+        if (!event.resumed) {
+          streamingIdRef.current = uid()
+          hasAssistantMsgRef.current = false
+        }
+        break
+      }
+      case 'text': {
+        const chunk = event.text
+        if (!hasAssistantMsgRef.current) {
+          hasAssistantMsgRef.current = true
+          const id = streamingIdRef.current
+          setMessages(prev => appendMsg(prev, { id, role: 'assistant' as const, text: chunk }))
+        } else {
+          const id = streamingIdRef.current
+          setMessages(prev => prev.map(m => m.id === id ? { ...m, text: m.text + chunk } : m))
+        }
+        break
+      }
+      case 'tool_use': {
+        // Bump streaming id so the *next* text block becomes a fresh message
+        // after the tool, not appended to pre-tool text.
+        hasAssistantMsgRef.current = false
+        streamingIdRef.current = uid()
+        const firstVal = event.input && typeof event.input === 'object'
+          ? String(Object.values(event.input as Record<string, unknown>)[0] ?? '').trim()
+          : ''
+        const toolText = firstVal ? `${event.tool}(${firstVal})` : event.tool
+        log(`[chat] tool_use tool=${event.tool}`)
+        const toolId = uid()
+        lastToolIdRef.current = toolId
+        setMessages(prev => appendMsg(prev, { id: toolId, role: 'tool' as const, text: toolText }))
+        break
+      }
+      case 'tool_output': {
+        const toolId = lastToolIdRef.current
+        if (toolId) {
+          setMessages(prev => prev.map(m =>
+            m.id === toolId ? { ...m, output: (m.output ?? '') + event.line + '\n' } : m
+          ))
+        }
+        break
+      }
+      case 'tool_result': {
+        const toolId = lastToolIdRef.current
+        if (toolId) {
+          const out = typeof event.output === 'string' ? event.output : JSON.stringify(event.output)
+          setMessages(prev => prev.map(m => m.id === toolId ? { ...m, output: out } : m))
+        }
+        break
+      }
+      case 'done':
+        log(`[chat] stream done cost_usd=${event.cost_usd}`)
+        lastToolIdRef.current = null
+        // WS stays open across turns now; reconcile with /history for cost stamp etc.
+        loadHistoryRef.current()
+        break
+      case 'interrupt_ack':
+        log('[chat] interrupt acknowledged by server')
+        if (stopAckTimerRef.current) {
+          clearTimeout(stopAckTimerRef.current)
+          stopAckTimerRef.current = null
+        }
+        break
+      case 'interrupted':
+        log(`[chat] stream interrupted cost_usd=${event.cost_usd}`)
+        lastToolIdRef.current = null
+        loadHistoryRef.current()
+        break
+      case 'error':
+        logE(`[chat] stream error: ${event.message}`)
+        lastToolIdRef.current = null
+        setMessages(prev => appendMsg(prev, { id: uid(), role: 'error' as const, text: event.message }))
+        updateStatus('ready')
+        break
+      case 'system':
+        log(`[chat] system: ${event.text}`)
+        break
+      case 'containers':
+        if (onContainersUpdate) onContainersUpdate(event.containers)
+        break
+      case 'ping':
+        sendFrame({ type: 'pong', id: event.id })
+        break
     }
-    const streamingIdRef      = { current: uid() }
-    const hasAssistantMsgRef  = { current: false }
-    const wsUrl = baseUrl.replace(/^http/, 'ws') + '/stream'
-    log(`[chat] reattachStream opening ${wsUrl}`)
-    const wsStart = Date.now()
-    const ws = new WebSocket(wsUrl)
-    wsRef.current = ws
-    updateStatus('streaming')
-    ws.onopen = () => {
-      log(`[chat] reattachStream ws open after ${Date.now() - wsStart}ms, sending watch`)
-      ws.send(JSON.stringify({ type: 'watch' }))
-    }
-    ws.onmessage = (e) => {
-      handleStreamEvent(e.data, {
-        streamingIdRef,
-        hasAssistantMsgRef,
-        onDone:       () => loadHistoryRef.current(),
-      })
-    }
-    ws.onerror = (e) => {
-      logE(`[chat] reattachStream ws error after ${Date.now() - wsStart}ms: ${JSON.stringify(e)}`)
-      wsRef.current = null
-      if (!closingRef.current && !reconnectingRef?.current) updateStatus('error')
-      closingRef.current = false
-    }
-    ws.onclose = (e) => {
-      log(`[chat] reattachStream ws closed after ${Date.now() - wsStart}ms code=${e.code} reason=${e.reason}`)
-      closingRef.current = false
-    }
-  }, [baseUrl, handleStreamEvent, updateStatus])
+  }, [updateStatus, sendFrame, onContainersUpdate])
 
   // Keep a stable ref to loadHistory so reattachStream can call it without
   // being listed as a dependency (avoids circular dep: loadHistory → reattachStream → loadHistory).
@@ -733,12 +754,10 @@ const ChatPane = memo(function ChatPane({
           const tail = msgs.slice(prev.length)
           setMessages(cur => [...cur, ...tail.map((m, j) => ({ ...m, prevRole: j === 0 ? (cur.length > 0 ? cur[cur.length - 1].role : undefined) : tail[j - 1].role }))])
         }
-        // else identical — no update
-        if (data.is_streaming) {
-          reattachStream()
-        } else {
-          updateStatus('ready')
-        }
+        // else identical — no update.
+        // The persistent /stream WS handles is_streaming via its `ready` event,
+        // so loadHistory no longer needs to open a watch-mode connection.
+        updateStatus(data.is_streaming ? 'streaming' : 'ready')
         setTimeout(() => {
           const offset = Math.max(0, contentHeightRef.current - listHeightRef.current)
           listRef.current?.scrollToOffset({ offset, animated: false })
@@ -758,10 +777,48 @@ const ChatPane = memo(function ChatPane({
           updateStatus('error')
         }
       })
-  }, [baseUrl, reattachStream, updateStatus])
+  }, [baseUrl, updateStatus])
 
   useEffect(() => { loadHistoryRef.current = loadHistory }, [loadHistory])
   useEffect(() => { if (reloadRef) reloadRef.current = loadHistory }, [loadHistory, reloadRef])
+
+  // Persistent /stream WebSocket: opens once per baseUrl, stays open across turns.
+  // Replaces the per-turn open/close that lived inside sendMessage. The server's
+  // `ready` event drives status; subsequent events feed handleStreamEvent until
+  // the WS closes (unmount or baseUrl change).
+  useEffect(() => {
+    const wsUrl = baseUrl.replace(/^http/, 'ws') + '/stream'
+    log(`[chat] opening persistent ws ${wsUrl}`)
+    const wsStart = Date.now()
+    const ws = new WebSocket(wsUrl)
+    wsRef.current = ws
+    ws.onopen = () => {
+      log(`[chat] ws open after ${Date.now() - wsStart}ms`)
+      // No initial frame — server greets us with `ready` first.
+    }
+    ws.onmessage = (e) => {
+      handleStreamEvent(typeof e.data === 'string' ? e.data : '')
+    }
+    ws.onerror = (e) => {
+      logE(`[chat] ws error after ${Date.now() - wsStart}ms: ${JSON.stringify(e)}`)
+      if (!closingRef.current && !reconnectingRef?.current) updateStatus('error')
+    }
+    ws.onclose = (e) => {
+      log(`[chat] ws closed after ${Date.now() - wsStart}ms code=${e.code} reason=${e.reason}`)
+      if (wsRef.current === ws) wsRef.current = null
+      closingRef.current = false
+      // TODO: exponential backoff reconnect lives here once the rest of batch B lands.
+    }
+
+    return () => {
+      if (wsRef.current === ws) {
+        log('[chat] tearing down ws (effect cleanup)')
+        closingRef.current = true
+        ws.close()
+        wsRef.current = null
+      }
+    }
+  }, [baseUrl, handleStreamEvent, reconnectingRef, updateStatus])
 
   // Restore draft input on mount / baseUrl change.
   // Restore draft on mount / baseUrl change (cold-start fallback; skipped if
@@ -823,39 +880,17 @@ const ChatPane = memo(function ChatPane({
     AsyncStorage.removeItem(draftKey).catch(() => {})
     updateStatus('streaming')
 
-    const streamingIdRef     = { current: uid() }
-    const hasAssistantMsgRef = { current: false }
+    // Reset per-turn refs so the upcoming text/tool events anchor onto a fresh
+    // streaming message id rather than appending onto the previous turn's tail.
+    streamingIdRef.current = uid()
+    hasAssistantMsgRef.current = false
 
-    const wsUrl = baseUrl.replace(/^http/, 'ws') + '/stream'
-    log(`[chat] opening ws ${wsUrl}`)
-    const wsSendStart = Date.now()
-    const ws = new WebSocket(wsUrl)
-    wsRef.current = ws
-    ws.onopen = () => {
-      log(`[chat] ws open after ${Date.now() - wsSendStart}ms, sending message`)
-      ws.send(JSON.stringify({ text }))
+    if (!sendFrame({ type: 'user_message', text })) {
+      logE('[chat] sendMessage: WS not open, surfacing error')
+      setMessages(prev => appendMsg(prev, { id: uid(), role: 'error' as const, text: 'network error' }))
+      updateStatus('error')
     }
-    ws.onmessage = (e) => {
-      handleStreamEvent(e.data, {
-        streamingIdRef,
-        hasAssistantMsgRef,
-        onDone:       () => loadHistoryRef.current(),
-      })
-    }
-    ws.onerror = (e) => {
-      logE(`[chat] ws error after ${Date.now() - wsSendStart}ms: ${JSON.stringify(e)}`)
-      wsRef.current = null
-      if (!closingRef.current && !reconnectingRef?.current) {
-        setMessages(prev => appendMsg(prev, { id: uid(), role: 'error' as const, text: 'network error' }))
-        updateStatus('error')
-      }
-      closingRef.current = false
-    }
-    ws.onclose = (e) => {
-      log(`[chat] ws closed after ${Date.now() - wsSendStart}ms code=${e.code} reason=${e.reason}`)
-      closingRef.current = false
-    }
-  }, [input, status, baseUrl, handleStreamEvent, updateStatus])
+  }, [input, status, sendFrame, updateStatus, draftKey])
 
   sendMessageRef.current = sendMessage
 
@@ -944,23 +979,20 @@ const ChatPane = memo(function ChatPane({
               style={[s.inputStopBtn, stopSent && { opacity: 0.4 }]}
               disabled={stopSent}
               onPress={() => {
+                if (!sendFrame({ type: 'interrupt' })) return
                 setStopSent(true)
-                const ws = wsRef.current
-                if (ws) {
-                  ws.send(JSON.stringify({ type: 'interrupt' }))
-                  // If no ack arrives within 3 s, re-enable so the user can retry
-                  if (stopAckTimerRef.current) clearTimeout(stopAckTimerRef.current)
-                  stopAckTimerRef.current = setTimeout(() => {
-                    stopAckTimerRef.current = null
-                    setStopSent(false)
-                  }, 3000)
-                  const toolId = lastToolIdRef.current
-                  if (toolId) {
-                    setMessages(prev => withPrevRoles(prev.map(m =>
-                      m.id === toolId ? { ...m, role: 'interrupted' as const } : m
-                    )))
-                    lastToolIdRef.current = null
-                  }
+                // If no ack arrives within 3 s, re-enable so the user can retry
+                if (stopAckTimerRef.current) clearTimeout(stopAckTimerRef.current)
+                stopAckTimerRef.current = setTimeout(() => {
+                  stopAckTimerRef.current = null
+                  setStopSent(false)
+                }, 3000)
+                const toolId = lastToolIdRef.current
+                if (toolId) {
+                  setMessages(prev => withPrevRoles(prev.map(m =>
+                    m.id === toolId ? { ...m, role: 'interrupted' as const } : m
+                  )))
+                  lastToolIdRef.current = null
                 }
               }}
               activeOpacity={0.7}
@@ -1129,6 +1161,9 @@ function AppInner() {
   const clearChatRef       = useRef<() => void>(() => {})
   const reloadRef          = useRef<() => void>(() => {})
   const closeWsRef         = useRef<() => void>(() => {})
+  // Bound to the master ChatPane's persistent /stream WS once it's open.
+  // Returns false if no WS is connected (caller should surface or retry).
+  const masterSendFrameRef = useRef<(frame: ClientFrame) => boolean>(() => false)
   // In-memory draft cache: survives ChatPane unmount/remount without async latency.
   const draftsRef          = useRef<Record<string, string>>({})
   // Held true for the full duration of a foreground-return reconnect so that
@@ -1266,44 +1301,27 @@ function AppInner() {
     return () => sub.remove()
   }, [])
 
-  // Fetch container list from lair.
-  const fetchContainers = useCallback(() => {
-    if (!masterBaseUrl) return
-    fetch(`${masterBaseUrl}/containers`)
-      .then(r => { log(`[app] fetchContainers HTTP ${r.status}`); return r.json() })
-      .then((data: { containers: ContainerInfo[] }) => {
-        log(`[app] fetchContainers: ${data.containers.length} container(s)`)
-        data.containers.forEach(c => {
-          log(`[app]   container id=${c.id} name=${c.name} status=${c.status} host=${c.host} port=${c.port} pubkey=${c.pubkey ? c.pubkey.slice(0, 8) + '…' : '(none)'}`)
-        })
-        setContainers(data.containers)
-        const waitingId = startingContainerIdRef.current
-        if (waitingId) {
-          const started = data.containers.find(c => c.id === waitingId && c.status === 'running' && c.pubkey)
-          if (started) {
-            log(`[app] container ${started.name} is now running, connecting`)
-            startingContainerIdRef.current = null
-            setStartingContainerId(null)
-            setStartingError(null)
-            setTunnelPort(null)
-            setActiveChild(started)
-          }
-        }
-      })
-      .catch(e => logE(`[app] fetchContainers failed: ${String(e)}`))
-  }, [masterBaseUrl])
-
-  // Fetch containers on connect and periodically while a start is in progress.
-  useEffect(() => {
-    if (!masterBaseUrl) return
-    fetchContainers()
-  }, [masterBaseUrl])
-
-  useEffect(() => {
-    if (!startingContainerId) return
-    const interval = setInterval(fetchContainers, 3000)
-    return () => clearInterval(interval)
-  }, [startingContainerId, fetchContainers])
+  // Container list is now pushed by lair on its persistent /stream — no HTTP poll.
+  // The master ChatPane forwards `containers` events here via onContainersUpdate.
+  const handleContainersUpdate = useCallback((list: ContainerInfo[]) => {
+    log(`[app] containers push: ${list.length} container(s)`)
+    list.forEach(c => {
+      log(`[app]   container id=${c.id} name=${c.name} status=${c.status} host=${c.host} port=${c.port} pubkey=${c.pubkey ? c.pubkey.slice(0, 8) + '…' : '(none)'}`)
+    })
+    setContainers(list)
+    const waitingId = startingContainerIdRef.current
+    if (waitingId) {
+      const started = list.find(c => c.id === waitingId && c.status === 'running' && c.pubkey)
+      if (started) {
+        log(`[app] container ${started.name} is now running, connecting`)
+        startingContainerIdRef.current = null
+        setStartingContainerId(null)
+        setStartingError(null)
+        setTunnelPort(null)
+        setActiveChild(started)
+      }
+    }
+  }, [])
 
   const handleQrScanned = useCallback((raw: string) => {
     setScanning(false)
@@ -1340,36 +1358,23 @@ function AppInner() {
     startingContainerIdRef.current = id
     setStartingContainerId(id)
     setStartingError(null)
-    fetch(`${masterBaseUrl}/containers/start`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ id }),
-    })
-      .then(r => r.json())
-      .then((data: { error?: string }) => {
-        if (data.error) {
-          logE(`[app] startContainer error: ${data.error}`)
-          startingContainerIdRef.current = null
-          setStartingContainerId(null)
-          setStartingError(data.error)
-        } else {
-          log(`[app] startContainer request accepted, polling for running state`)
-        }
-      })
-      .catch(e => {
-        logE(`[app] startContainer request failed: ${String(e)}`)
-        startingContainerIdRef.current = null
-        setStartingContainerId(null)
-        setStartingError(String(e))
-      })
+    if (!masterSendFrameRef.current({ type: 'start_container', id })) {
+      const msg = 'master /stream not connected'
+      logE(`[app] startContainer failed: ${msg}`)
+      startingContainerIdRef.current = null
+      setStartingContainerId(null)
+      setStartingError(msg)
+    }
+    // No follow-up needed: lair will push a `containers` event when the
+    // deployment scales, and handleContainersUpdate auto-connects to it.
   }, [masterBaseUrl])
 
   const openSidebar = useCallback(() => {
-    fetchContainers()
+    // Containers are pushed live over /stream — no manual refresh needed.
     sidebarAnim.setValue(0)
     setShowSidebar(true)
     Animated.timing(sidebarAnim, { toValue: 1, duration: 240, useNativeDriver: true }).start()
-  }, [fetchContainers, sidebarAnim])
+  }, [sidebarAnim])
 
   const closeSidebar = useCallback(() => {
     Animated.timing(sidebarAnim, { toValue: 0, duration: 200, useNativeDriver: true }).start(({ finished }) => {
@@ -1466,6 +1471,8 @@ function AppInner() {
             reconnectingRef={reconnectingRef}
             reloadRef={reloadRef}
             closeWsRef={closeWsRef}
+            sendFrameRef={masterSendFrameRef}
+            onContainersUpdate={handleContainersUpdate}
           />
         )}
 

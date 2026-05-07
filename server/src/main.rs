@@ -248,205 +248,237 @@ async fn stream_handler(
     ws.on_upgrade(move |socket| handle_stream(socket, state))
 }
 
+/// Render a `ChatEvent` to the JSON shape the wire schema (mobile/src/wire.ts)
+/// expects. Returns `None` for variants that aren't part of the /stream protocol.
+fn chat_event_to_wire_json(event: &ChatEvent) -> Option<serde_json::Value> {
+    match event {
+        ChatEvent::Text { text } =>
+            Some(serde_json::json!({"type":"text","text":text})),
+        ChatEvent::ToolUse { tool, input } =>
+            Some(serde_json::json!({"type":"tool_use","tool":tool,"input":input})),
+        ChatEvent::ToolOutput { line } =>
+            Some(serde_json::json!({"type":"tool_output","line":line})),
+        ChatEvent::ToolResult { tool_use_id, content } =>
+            Some(serde_json::json!({"type":"tool_result","tool_use_id":tool_use_id,"output":content})),
+        ChatEvent::Result { cost_usd, .. } =>
+            Some(serde_json::json!({"type":"done","cost_usd":cost_usd})),
+        ChatEvent::Interrupted { cost_usd } =>
+            Some(serde_json::json!({"type":"interrupted","cost_usd":cost_usd})),
+        ChatEvent::InterruptAck =>
+            Some(serde_json::json!({"type":"interrupt_ack"})),
+        ChatEvent::Error { message } =>
+            Some(serde_json::json!({"type":"error","message":message})),
+        ChatEvent::System { text } =>
+            Some(serde_json::json!({"type":"system","text":text})),
+        _ => None,
+    }
+}
+
+/// Push a JSON-serialized event to the per-turn buffer and fan it out to every
+/// live WS subscriber. Mirrors the previous in-line block but factored out so
+/// the spawn_turn task can call it without holding any other state.
+fn buffer_and_fanout(state: &AppState, json: String) {
+    let mut ss = state.stream_state.lock().unwrap();
+    ss.buffer.push(json.clone());
+    ss.subs.retain(|tx| tx.send(json.clone()).is_ok());
+}
+
+/// Spawn an agentic turn. Returns immediately; events are buffered + fanned out
+/// to all current /stream subscribers. The caller must have already verified
+/// `is_streaming` was false and flipped it to true.
+fn spawn_turn(state: Arc<AppState>, text: String) {
+    tokio::spawn(async move {
+        let api_key = match resolve_api_key() {
+            Some(k) => k,
+            None => {
+                let errmsg = "no API key configured".to_string();
+                {
+                    let mut msgs = state.messages.lock().unwrap();
+                    msgs.push(ApiMessage {
+                        role:    "error".to_string(),
+                        content: vec![ContentBlock::Text { text: errmsg.clone() }],
+                    });
+                    save_messages(&msgs);
+                }
+                let json = serde_json::json!({"type":"error","message": errmsg}).to_string();
+                buffer_and_fanout(&state, json);
+                state.is_streaming.store(false, Ordering::Relaxed);
+                return;
+            }
+        };
+        let model = resolve_model();
+
+        {
+            let mut msgs = state.messages.lock().unwrap();
+            msgs.push(ApiMessage {
+                role:    "user".to_string(),
+                content: vec![ContentBlock::Text { text: text.clone() }],
+            });
+            save_messages(&msgs);
+        }
+
+        let messages: Vec<ApiMessage> = state.messages.lock().unwrap().iter()
+            .filter(|m| m.role != "interrupted" && m.role != "error")
+            .cloned()
+            .collect();
+        let system    = state.system.clone();
+        let cwd       = state.cwd.clone();
+        let msgs_arc  = state.messages.clone();
+        let state_arc = Arc::clone(&state);
+
+        let (event_tx, mut event_rx) = mpsc::channel::<ChatEvent>(256);
+        let done_tx = event_tx.clone();
+
+        // Fresh cancellation token for this turn; stored on AppState so /interrupt
+        // and incoming "interrupt" frames can reach it.
+        let cancel = CancellationToken::new();
+        *state.cancel.lock().unwrap() = cancel.clone();
+
+        // Clear the per-turn buffer; subscribers stay so live events still fan out.
+        state.stream_state.lock().unwrap().buffer.clear();
+
+        let extra_tools = build_tools_with_mcp(&state.mcp_pool, &make_extra_tools()).await;
+        let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), make_extra_executor());
+
+        // Agent task: drives the model loop, terminates with Result/Interrupted/Error.
+        tokio::spawn(async move {
+            match send_message(messages, &system, &model, &api_key, &cwd, Some(event_tx), cancel.clone(), &extra_tools, executor).await {
+                Ok((_, cost_usd, mut updated)) => {
+                    if cancel.is_cancelled() {
+                        updated.push(ApiMessage {
+                            role:    "interrupted".to_string(),
+                            content: vec![ContentBlock::Text { text: "interrupted".to_string() }],
+                        });
+                        *msgs_arc.lock().unwrap() = updated.clone();
+                        save_messages(&updated);
+                        *state_arc.last_cost_usd.lock().unwrap() = Some(cost_usd);
+                        done_tx.send(ChatEvent::Interrupted { cost_usd }).await.ok();
+                    } else {
+                        *msgs_arc.lock().unwrap() = updated.clone();
+                        save_messages(&updated);
+                        *state_arc.last_cost_usd.lock().unwrap() = Some(cost_usd);
+                        done_tx.send(ChatEvent::Result {
+                            cost_usd, turns: 0, session_id: String::new(), result: None,
+                        }).await.ok();
+                    }
+                }
+                Err((e, mut partial)) => {
+                    partial.push(ApiMessage {
+                        role:    "error".to_string(),
+                        content: vec![ContentBlock::Text { text: e.clone() }],
+                    });
+                    *msgs_arc.lock().unwrap() = partial.clone();
+                    save_messages(&partial);
+                    done_tx.send(ChatEvent::Error { message: e }).await.ok();
+                }
+            }
+        });
+
+        // Relay task: drains the per-turn mpsc, buffers and fans out to all WS subs.
+        while let Some(event) = event_rx.recv().await {
+            if let Some(json) = chat_event_to_wire_json(&event) {
+                buffer_and_fanout(&state, json.to_string());
+            }
+        }
+        state.is_streaming.store(false, Ordering::Relaxed);
+        info!("[server/stream] turn complete, is_streaming=false");
+    });
+}
+
 async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
     info!("[server/stream] WebSocket connection opened");
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    // Read first frame: either {"text":"..."} to start a new loop,
-    // or {"type":"watch"} to attach to an already-running loop.
-    let first = loop {
-        match ws_rx.next().await {
-            Some(Ok(WsMessage::Text(t))) => {
-                match serde_json::from_str::<serde_json::Value>(&t).ok() {
-                    Some(v) => break v,
-                    None    => {
-                        warn!("[server/stream] received unparseable first frame, closing");
-                        return;
-                    }
-                }
-            }
-            Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => continue,
-            _ => {
-                debug!("[server/stream] connection closed before first frame");
-                return;
-            }
-        }
+    // Atomically snapshot the buffer (events from any in-flight turn) and
+    // register as a subscriber so no events are lost in the gap.
+    let (sub_tx, mut sub_rx) = mpsc::unbounded_channel::<String>();
+    let (replay, resumed) = {
+        let mut ss = state.stream_state.lock().unwrap();
+        let replay = ss.buffer.clone();
+        ss.subs.push(sub_tx);
+        (replay, state.is_streaming.load(Ordering::Relaxed))
     };
 
-    // ── Watch mode: replay the current-turn buffer then forward live events ─────
-    if first.get("type").and_then(|v| v.as_str()) == Some("watch") {
-        info!("[server/stream] watch mode — replaying buffer and subscribing to live events");
-        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-        // Atomically snapshot the buffer and register as a subscriber so no events are lost.
-        let replay = {
-            let mut ss = state.stream_state.lock().unwrap();
-            let replay = ss.buffer.clone();
-            ss.subs.push(tx);
-            replay
-        };
-        info!("[server/stream] replaying {} buffered event(s) to watcher", replay.len());
+    // Greet the client. `resumed` indicates whether they're joining an in-flight
+    // turn; if so the buffer replay below catches them up to its current state.
+    let ready = serde_json::json!({"type":"ready","session_id":"","resumed":resumed}).to_string();
+    if ws_tx.send(WsMessage::Text(ready)).await.is_err() {
+        return;
+    }
+    if !replay.is_empty() {
+        info!("[server/stream] replaying {} buffered event(s) to new connection", replay.len());
         for event in replay {
             if ws_tx.send(WsMessage::Text(event)).await.is_err() { return; }
         }
-        while let Some(msg) = rx.recv().await {
-            if ws_tx.send(WsMessage::Text(msg)).await.is_err() { break; }
-        }
-        info!("[server/stream] watch session closed");
-        return;
     }
 
-    // ── New loop ──────────────────────────────────────────────────────────────
-    let text = match first.get("text").and_then(|v| v.as_str()) {
-        Some(t) => t.to_string(),
-        None    => {
-            warn!("[server/stream] first frame missing 'text' field");
-            return;
-        }
-    };
-    let preview: String = text.chars().take(120).collect();
-    info!("[server/stream] new loop ({} chars): {preview}", text.len());
-
-    let api_key = match resolve_api_key() {
-        Some(k) => k,
-        None => {
-            let errmsg = "no API key configured".to_string();
-            {
-                let mut msgs = state.messages.lock().unwrap();
-                msgs.push(ApiMessage {
-                    role:    "error".to_string(),
-                    content: vec![ContentBlock::Text { text: errmsg.clone() }],
-                });
-                save_messages(&msgs);
-            }
-            let msg = serde_json::json!({"type":"error","message": errmsg}).to_string();
-            ws_tx.send(WsMessage::Text(msg)).await.ok();
-            return;
-        }
-    };
-    let model = resolve_model();
-
-    {
-        let mut msgs = state.messages.lock().unwrap();
-        msgs.push(ApiMessage {
-            role:    "user".to_string(),
-            content: vec![ContentBlock::Text { text: text.clone() }],
-        });
-        save_messages(&msgs);
-    }
-
-    let messages: Vec<ApiMessage> = state.messages.lock().unwrap().iter()
-        .filter(|m| m.role != "interrupted" && m.role != "error")
-        .cloned()
-        .collect();
-    let system   = state.system.clone();
-    let cwd      = state.cwd.clone();
-    let msgs_arc  = state.messages.clone();
-    let state_arc = Arc::clone(&state);
-
-    let (event_tx, mut event_rx) = mpsc::channel::<ChatEvent>(256);
-    let done_tx = event_tx.clone();
-
-    // Fresh cancellation token for this turn; stored on AppState so /interrupt can reach it.
-    let cancel = CancellationToken::new();
-    *state.cancel.lock().unwrap() = cancel.clone();
-    let cancel_for_listener = cancel.clone();
-
-    // Clear any leftover buffer/subs from a previous turn before starting a new one.
-    {
-        let mut ss = state.stream_state.lock().unwrap();
-        ss.buffer.clear();
-        ss.subs.clear();
-    }
-    state.is_streaming.store(true, Ordering::Relaxed);
-
-    // WS listener: cancel the token on "interrupt" or if the socket closes.
-    tokio::spawn(async move {
-        while let Some(Ok(WsMessage::Text(t))) = ws_rx.next().await {
-            if serde_json::from_str::<serde_json::Value>(&t)
-                .ok()
-                .and_then(|v| v["type"].as_str().map(str::to_string))
-                .as_deref() == Some("interrupt")
-            {
-                cancel_for_listener.cancel();
-                break;
-            }
-        }
-    });
-
-    let extra_tools = build_tools_with_mcp(&state.mcp_pool, &make_extra_tools()).await;
-    let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), make_extra_executor());
-    tokio::spawn(async move {
-        match send_message(messages, &system, &model, &api_key, &cwd, Some(event_tx), cancel.clone(), &extra_tools, executor).await {
-            Ok((_, cost_usd, mut updated)) => {
-                if cancel.is_cancelled() {
-                    updated.push(ApiMessage {
-                        role:    "interrupted".to_string(),
-                        content: vec![ContentBlock::Text { text: "interrupted".to_string() }],
-                    });
-                    *msgs_arc.lock().unwrap() = updated.clone();
-                    save_messages(&updated);
-                    *state_arc.last_cost_usd.lock().unwrap() = Some(cost_usd);
-                    done_tx.send(ChatEvent::Interrupted { cost_usd }).await.ok();
-                } else {
-                    *msgs_arc.lock().unwrap() = updated.clone();
-                    save_messages(&updated);
-                    *state_arc.last_cost_usd.lock().unwrap() = Some(cost_usd);
-                    done_tx.send(ChatEvent::Result {
-                        cost_usd, turns: 0, session_id: String::new(), result: None,
-                    }).await.ok();
+    loop {
+        tokio::select! {
+            // Outgoing: agentic-turn events fanned out from spawn_turn / buffer.
+            msg = sub_rx.recv() => match msg {
+                Some(json) => {
+                    if ws_tx.send(WsMessage::Text(json)).await.is_err() { break; }
                 }
-            }
-            Err((e, mut partial)) => {
-                partial.push(ApiMessage {
-                    role:    "error".to_string(),
-                    content: vec![ContentBlock::Text { text: e.clone() }],
-                });
-                *msgs_arc.lock().unwrap() = partial.clone();
-                save_messages(&partial);
-                done_tx.send(ChatEvent::Error { message: e }).await.ok();
-            }
-        }
-    });
+                None => break,
+            },
 
-    let mut ws_alive = true;
-    while let Some(event) = event_rx.recv().await {
-        let json_opt: Option<serde_json::Value> = match event {
-            ChatEvent::Text { text } =>
-                Some(serde_json::json!({"type":"text","text":text})),
-            ChatEvent::ToolUse { tool, input } =>
-                Some(serde_json::json!({"type":"tool_use","tool":tool,"input":input})),
-            ChatEvent::ToolOutput { line } =>
-                Some(serde_json::json!({"type":"tool_output","line":line})),
-            ChatEvent::ToolResult { tool_use_id, content } =>
-                Some(serde_json::json!({"type":"tool_result","tool_use_id":tool_use_id,"output":content})),
-            ChatEvent::Result { cost_usd, .. } =>
-                Some(serde_json::json!({"type":"done","cost_usd":cost_usd})),
-            ChatEvent::Interrupted { cost_usd } =>
-                Some(serde_json::json!({"type":"interrupted","cost_usd":cost_usd})),
-            ChatEvent::InterruptAck =>
-                Some(serde_json::json!({"type":"interrupt_ack"})),
-            ChatEvent::Error { message } =>
-                Some(serde_json::json!({"type":"error","message":message})),
-            _ => None,
-        };
-        if let Some(json) = json_opt {
-            let json_str = json.to_string();
-            {
-                let mut ss = state.stream_state.lock().unwrap();
-                ss.buffer.push(json_str.clone());
-                ss.subs.retain(|tx| tx.send(json_str.clone()).is_ok());
-            }
-            // If the original WS has closed (e.g. client backgrounded), keep the
-            // loop running so the agentic task completes and watchers can reattach.
-            if ws_alive && ws_tx.send(WsMessage::Text(json_str)).await.is_err() {
-                ws_alive = false;
-            }
+            // Incoming: client frames.
+            msg = ws_rx.next() => match msg {
+                Some(Ok(WsMessage::Text(t))) => {
+                    handle_client_frame(&t, &state).await;
+                }
+                Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => continue,
+                Some(Ok(WsMessage::Close(_))) | None => break,
+                Some(Err(_)) => break,
+                _ => continue,
+            },
         }
     }
-    state.is_streaming.store(false, Ordering::Relaxed);
-    // Drop subscriber senders so watcher rx channels close cleanly.
-    state.stream_state.lock().unwrap().subs.clear();
-    info!("[server/stream] loop complete, streaming=false");
+
+    info!("[server/stream] connection closed");
+}
+
+/// Dispatch a client → server frame parsed from a /stream WS message.
+async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
+    let v: serde_json::Value = match serde_json::from_str(raw) {
+        Ok(v)  => v,
+        Err(_) => {
+            warn!("[server/stream] dropping unparseable client frame");
+            return;
+        }
+    };
+    let frame_type = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+    match frame_type {
+        "user_message" => {
+            let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            if text.is_empty() {
+                warn!("[server/stream] user_message frame missing/empty text");
+                return;
+            }
+            if state.is_streaming
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
+                let json = serde_json::json!({"type":"error","message":"a turn is already running"}).to_string();
+                buffer_and_fanout(state, json);
+                return;
+            }
+            let preview: String = text.chars().take(120).collect();
+            info!("[server/stream] user_message ({} chars): {preview}", text.len());
+            spawn_turn(state.clone(), text);
+        }
+        "interrupt" => {
+            info!("[server/stream] interrupt frame received");
+            state.cancel.lock().unwrap().cancel();
+            buffer_and_fanout(state, serde_json::json!({"type":"interrupt_ack"}).to_string());
+        }
+        "pong" => {
+            // App-level keepalive ack — handled per-WS in the future ping/pong work.
+        }
+        other => {
+            warn!("[server/stream] unknown client frame type='{other}'");
+        }
+    }
 }
 
 async fn clear_handler(State(state): State<Arc<AppState>>) -> StatusCode {
