@@ -467,7 +467,7 @@ async fn main() -> Result<()> {
             // pods pick up the latest model/endpoint/api-key on the new image.
             match k8s::read_lair_secrets(&client).await {
                 Ok(current) => {
-                    let local = octo_core::read_config();
+                    let local = octo_k8s_ops::read_config();
                     let api_key  = local.api_key .unwrap_or(current.api_key);
                     let model    = local.model   .or(current.model);
                     let base_url = local.base_url.or(current.base_url);
@@ -608,11 +608,11 @@ async fn main() -> Result<()> {
                     ).await?;
 
                     // Also persist to ~/.octo/config.json so reload picks it up.
-                    let mut local = octo_core::read_config();
+                    let mut local = octo_k8s_ops::read_config();
                     local.api_key  = Some(new_api_key);
                     local.model    = new_model;
                     local.base_url = new_base_url;
-                    octo_core::write_config(&local);
+                    octo_k8s_ops::write_config(&local);
 
                     println!("Config updated in lair-secrets and ~/.octo/config.json.");
                 }

@@ -1708,7 +1708,6 @@ dependencies = [
  "clap_complete",
  "data-encoding",
  "hex",
- "octo-core",
  "octo-k8s-ops",
  "qrcode",
  "serde",
@@ -1751,7 +1750,7 @@ dependencies = [
 
 [[package]]
 name = "octo-lair"
-version = "0.2.31"
+version = "0.2.32"
 dependencies = [
  "anyhow",
  "axum",
