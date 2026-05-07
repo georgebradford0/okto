@@ -516,6 +516,7 @@ and all required environment variables automatically.\n\n\
 To send a message to a running child's agent, use message_child(container_name, text). \
 Use this to delegate coding tasks or coordinate work across children.\n\n\
 To permanently remove a child and all its resources, use terminate_pod(name).\n\n\
+The gh CLI is installed. GH_TOKEN is set in the environment so gh commands work without any login step.\n\n\
 Be concise and direct."
         .to_string()
 }
