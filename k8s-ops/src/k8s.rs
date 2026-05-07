@@ -135,17 +135,12 @@ pub struct CreateChildParams<'a> {
     pub name:              &'a str,
     pub git_url:           Option<&'a str>,
     pub noise_port:        u16,
-    pub api_key:           &'a str,
-    pub gh_token:          Option<&'a str>,
     pub pub_host:          &'a str,
     pub lair_url:          &'a str,
     pub startup_script:    Option<&'a str>,
     pub startup_prompt:    Option<&'a str>,
     /// Hex-encoded 64-byte keypair (32 private + 32 public) to inject into the child.
     pub noise_private_key: &'a str,
-    pub openai_api_key:    Option<&'a str>,
-    pub openai_base_url:   Option<&'a str>,
-    pub model:             Option<&'a str>,
 }
 
 pub async fn create_child_resources(client: &Client, p: &CreateChildParams<'_>) -> anyhow::Result<()> {
@@ -193,35 +188,24 @@ async fn create_deployment(client: &Client, p: &CreateChildParams<'_>) -> anyhow
         meta_annotations["octo.git_url"] = json!(url);
     }
 
+    // Pod-specific vars only — shared config (API keys, model, tokens) comes
+    // from lair-secrets via envFrom so it never needs to be threaded through here.
     let mut env = vec![
-        json!({"name": "ANTHROPIC_API_KEY",  "value": p.api_key}),
-        json!({"name": "NOISE_PORT",         "value": "9000"}),
-        json!({"name": "PUBLIC_PORT",        "value": p.noise_port.to_string()}),
-        json!({"name": "PUBLIC_HOST",        "value": p.pub_host}),
-        json!({"name": "LAIR_URL",           "value": p.lair_url}),
-        json!({"name": "NOISE_PRIVATE_KEY",  "value": p.noise_private_key}),
-        json!({"name": "DEPLOYMENT_NAME",    "value": p.name}),
+        json!({"name": "NOISE_PORT",        "value": "9000"}),
+        json!({"name": "PUBLIC_PORT",       "value": p.noise_port.to_string()}),
+        json!({"name": "PUBLIC_HOST",       "value": p.pub_host}),
+        json!({"name": "LAIR_URL",          "value": p.lair_url}),
+        json!({"name": "NOISE_PRIVATE_KEY", "value": p.noise_private_key}),
+        json!({"name": "DEPLOYMENT_NAME",   "value": p.name}),
     ];
     if let Some(url) = p.git_url {
         env.push(json!({"name": "GIT_URL", "value": url}));
-    }
-    if let Some(gh) = p.gh_token {
-        env.push(json!({"name": "GH_TOKEN", "value": gh}));
     }
     if let Some(s) = p.startup_script {
         env.push(json!({"name": "STARTUP_SCRIPT", "value": s}));
     }
     if let Some(s) = p.startup_prompt {
         env.push(json!({"name": "STARTUP_PROMPT", "value": s}));
-    }
-    if let Some(k) = p.openai_api_key {
-        env.push(json!({"name": "OPENAI_API_KEY", "value": k}));
-    }
-    if let Some(u) = p.openai_base_url {
-        env.push(json!({"name": "OPENAI_BASE_URL", "value": u}));
-    }
-    if let Some(m) = p.model {
-        env.push(json!({"name": "MODEL", "value": m}));
     }
     if std::env::var("OCTO_DEV").as_deref() == Ok("1") {
         env.push(json!({"name": "OCTO_DEV", "value": "1"}));
@@ -245,6 +229,7 @@ async fn create_deployment(client: &Client, p: &CreateChildParams<'_>) -> anyhow
             "imagePullPolicy": pull_policy,
             "command": [ENTRYPOINT],
             "env": env,
+            "envFrom": [{"secretRef": {"name": "lair-secrets"}}],
             "ports": [
                 {"containerPort": 8000, "name": "http"},
                 {"containerPort": 9000, "name": "noise"}

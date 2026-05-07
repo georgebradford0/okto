@@ -37,23 +37,18 @@ pub async fn create(git_url: Option<&str>, name: Option<&str>, noise_port: Optio
         None => k8s::assign_nodeport(&client).await?,
     };
 
-    let secrets   = k8s::read_lair_secrets(&client).await?;
-    let pub_host  = std::env::var("PUBLIC_HOST").unwrap_or_default();
+    let secrets  = k8s::read_lair_secrets(&client).await?;
+    let pub_host = std::env::var("PUBLIC_HOST").unwrap_or_default();
 
     let params = k8s::CreateChildParams {
         name:              &child_name,
         git_url,
         noise_port:        port,
-        api_key:           &secrets.api_key,
-        gh_token:          secrets.gh_token.as_deref(),
         pub_host:          &pub_host,
         lair_url:          "",
         startup_script:    None,
         startup_prompt:    None,
         noise_private_key: &secrets.noise_private_key,
-        openai_api_key:    secrets.openai_api_key.as_deref(),
-        openai_base_url:   secrets.base_url.as_deref(),
-        model:             secrets.model.as_deref(),
     };
 
     k8s::create_child_resources(&client, &params).await?;

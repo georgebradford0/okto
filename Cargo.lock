@@ -1701,7 +1701,7 @@ dependencies = [
 
 [[package]]
 name = "octo"
-version = "0.0.54"
+version = "0.0.55"
 dependencies = [
  "anyhow",
  "clap",
@@ -1750,7 +1750,7 @@ dependencies = [
 
 [[package]]
 name = "octo-lair"
-version = "0.2.39"
+version = "0.2.40"
 dependencies = [
  "anyhow",
  "axum",
@@ -1770,7 +1770,7 @@ dependencies = [
 
 [[package]]
 name = "octo-server"
-version = "0.2.39"
+version = "0.2.40"
 dependencies = [
  "anyhow",
  "axum",
