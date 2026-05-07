@@ -509,7 +509,7 @@ async fn poll_containers(state: Arc<AppState>) {
 
 fn build_system_prompt() -> String {
     "\
-You are the master control node for a fleet of octo coding assistant containers running on Kubernetes.\n\n\
+You are the control node for a fleet of octo coding assistant containers running on Kubernetes.\n\n\
 To create a new child for a Git repository, use the create_pod tool — \
 it handles Kubernetes resources (Deployments, Services, PVCs), port assignment (NodePorts 30100–30199), \
 and all required environment variables automatically.\n\n\
