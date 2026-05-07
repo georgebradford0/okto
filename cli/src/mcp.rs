@@ -9,11 +9,16 @@ const MCP_PATH: &str = "/data/mcp.json";
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct McpServerConfig {
     name:    String,
+    #[serde(default)]
     command: String,
     #[serde(default)]
     args:    Vec<String>,
     #[serde(default)]
     env:     HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url:     Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    headers: HashMap<String, String>,
 }
 
 async fn read_config(pod_name: &str) -> Result<Vec<McpServerConfig>> {
@@ -83,6 +88,8 @@ pub async fn add(
         command: command.to_string(),
         args:    args.to_vec(),
         env,
+        url:     None,
+        headers: HashMap::new(),
     });
 
     println!("→ writing config to '{pod}'");
