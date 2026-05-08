@@ -102,6 +102,8 @@ PIPE=$(mktemp -t octo-pipe-XXXXXX)
 rm -f "$PIPE"
 mkfifo "$PIPE"
 
+cd "$WORKSPACE"
+
 octo-server 2>&1 | tee "$PIPE" &
 SERVER_PID=$!
 
