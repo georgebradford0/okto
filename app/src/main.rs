@@ -1,17 +1,18 @@
-//! Merged binary that runs either the lair (parent / orchestrator) or server
-//! (child / repo-scoped agentic loop) role. The Docker image ships one binary;
-//! the entrypoint scripts pick which role to run by passing `--role`.
+//! Merged binary that runs either the lair (parent / orchestrator) or agent
+//! (child / per-pod agentic loop) role. The Docker image ships one binary;
+//! the image's ENTRYPOINT runs the lair role, and child Deployments override
+//! `command:` to flip the role to `agent`.
 
 use clap::{Parser, ValueEnum};
 
 mod bootstrap;
 mod lair;
-mod server;
+mod agent;
 
 #[derive(Clone, Copy, ValueEnum)]
 pub enum Role {
     Lair,
-    Server,
+    Agent,
 }
 
 #[derive(Parser)]
@@ -22,8 +23,8 @@ struct Args {
     role: Role,
 
     /// Print the Noise static pubkey (base32) for the picked role and exit.
-    /// Used by entrypoint scripts to embed the pubkey in the QR code before
-    /// the server starts listening.
+    /// Used internally during boot to embed the pubkey in the QR code before
+    /// the HTTP listener binds.
     #[arg(long)]
     print_pubkey: bool,
 }
@@ -32,7 +33,7 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     match args.role {
-        Role::Lair   => lair::run(args.print_pubkey).await,
-        Role::Server => server::run(args.print_pubkey).await,
+        Role::Lair  => lair::run(args.print_pubkey).await,
+        Role::Agent => agent::run(args.print_pubkey).await,
     }
 }

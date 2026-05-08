@@ -1,7 +1,7 @@
 //! Pre-flight work that used to live in the `docker-entrypoint*.sh` shell
 //! scripts. Both roles call into this module before they bind their HTTP
 //! listener: detecting the advertised public host, running the operator's
-//! `STARTUP_SCRIPT`, optionally cloning a git repo (server role only), and
+//! `STARTUP_SCRIPT`, optionally cloning a git repo (agent role only), and
 //! rendering the connection QR code.
 
 use anyhow::{Context, Result};
@@ -84,7 +84,7 @@ pub async fn ensure_workspace(
         .with_context(|| format!("create workspace {}", workspace.display()))?;
 
     let Some(url) = git_url.map(str::trim).filter(|s| !s.is_empty()) else {
-        info!("[server] no GIT_URL set — running as a generic agent in {}", workspace.display());
+        info!("[agent] no GIT_URL set — running as a generic agent in {}", workspace.display());
         return Ok(false);
     };
 
@@ -108,11 +108,11 @@ pub async fn ensure_workspace(
     let dot_git = workspace.join(".git");
 
     if dot_git.exists() {
-        info!("[server] updating existing repo at {workspace_str}");
+        info!("[agent] updating existing repo at {workspace_str}");
         run_git(&["-C", &workspace_str, "remote", "set-url", "origin", &clone_url]).await?;
         run_git(&["-C", &workspace_str, "fetch", "--all"]).await?;
     } else {
-        info!("[server] cloning {url} into {workspace_str}");
+        info!("[agent] cloning {url} into {workspace_str}");
         run_git(&["clone", &clone_url, &workspace_str]).await?;
     }
 

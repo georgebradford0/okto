@@ -45,11 +45,11 @@ const NOISE_KEY_FILE: &str = "/etc/octo/noise_key.bin";
 // binary's data dir and log prefix.
 
 fn save_messages(messages: &[ApiMessage]) {
-    octo_core::save_messages(&data_dir(), messages, "server");
+    octo_core::save_messages(&data_dir(), messages, "agent");
 }
 
 fn load_messages() -> Vec<ApiMessage> {
-    octo_core::load_messages(&data_dir(), "server")
+    octo_core::load_messages(&data_dir(), "agent")
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
@@ -94,13 +94,13 @@ async fn message_handler(
     Json(body):   Json<PostMessage>,
 ) -> impl IntoResponse {
     let preview: String = body.text.chars().take(120).collect();
-    info!("[server/message_handler] received ({} chars): {preview}", body.text.len());
+    info!("[agent/message_handler] received ({} chars): {preview}", body.text.len());
     let start = Instant::now();
 
     let api_key = match resolve_api_key() {
         Some(k) => k,
         None    => {
-            error!("[server/message_handler] no API key configured");
+            error!("[agent/message_handler] no API key configured");
             return (StatusCode::INTERNAL_SERVER_ERROR,
                            Json(serde_json::json!({"error": "no API key configured"}))).into_response();
         }
@@ -113,18 +113,18 @@ async fn message_handler(
         content: vec![ContentBlock::Text { text: body.text }],
     }];
 
-    info!("[server/message_handler] calling ephemeral send_message");
+    info!("[agent/message_handler] calling ephemeral send_message");
     let extra_tools = build_tools_with_mcp(&state.mcp_pool, &make_extra_tools()).await;
     let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), make_extra_executor());
     match send_message(messages, build_ephemeral_system_prompt(), &model, &api_key, &state.cwd, None, CancellationToken::new(), &extra_tools, executor).await {
         Ok((text, cost_usd, _)) => {
             let elapsed = start.elapsed().as_millis();
-            info!("[server/message_handler] done in {elapsed}ms cost=${cost_usd:.4} response=({} chars)", text.len());
+            info!("[agent/message_handler] done in {elapsed}ms cost=${cost_usd:.4} response=({} chars)", text.len());
             (StatusCode::OK, Json(serde_json::json!({ "text": text, "cost_usd": cost_usd }))).into_response()
         }
         Err((e, _)) => {
             let elapsed = start.elapsed().as_millis();
-            error!("[server/message_handler] error in {elapsed}ms: {e}");
+            error!("[agent/message_handler] error in {elapsed}ms: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e }))).into_response()
         }
     }
@@ -236,12 +236,12 @@ fn spawn_turn(state: Arc<AppState>, text: String) {
             }
         }
         state.is_streaming.store(false, Ordering::Relaxed);
-        info!("[server/stream] turn complete, is_streaming=false");
+        info!("[agent/stream] turn complete, is_streaming=false");
     });
 }
 
 async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
-    info!("[server/stream] WebSocket connection opened");
+    info!("[agent/stream] WebSocket connection opened");
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Atomically snapshot the buffer (events from any in-flight turn) and
@@ -261,7 +261,7 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
         return;
     }
     if !replay.is_empty() {
-        info!("[server/stream] replaying {} buffered event(s) to new connection", replay.len());
+        info!("[agent/stream] replaying {} buffered event(s) to new connection", replay.len());
         for event in replay {
             if ws_tx.send(WsMessage::Text(event)).await.is_err() { return; }
         }
@@ -289,7 +289,7 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
             _ = ping_interval.tick() => {
                 let outstanding = next_ping_id.saturating_sub(last_acked_id);
                 if outstanding >= KEEPALIVE_MAX_MISSED {
-                    warn!("[server/stream] evicting peer: {outstanding} unacked ping(s)");
+                    warn!("[agent/stream] evicting peer: {outstanding} unacked ping(s)");
                     break;
                 }
                 next_ping_id += 1;
@@ -319,7 +319,7 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
     }
 
 
-    info!("[server/stream] connection closed");
+    info!("[agent/stream] connection closed");
 }
 
 /// Dispatch a client → server frame parsed from a /stream WS message.
@@ -327,7 +327,7 @@ async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
     let v: serde_json::Value = match serde_json::from_str(raw) {
         Ok(v)  => v,
         Err(_) => {
-            warn!("[server/stream] dropping unparseable client frame");
+            warn!("[agent/stream] dropping unparseable client frame");
             return;
         }
     };
@@ -336,7 +336,7 @@ async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
         "user_message" => {
             let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
             if text.is_empty() {
-                warn!("[server/stream] user_message frame missing/empty text");
+                warn!("[agent/stream] user_message frame missing/empty text");
                 return;
             }
             if state.is_streaming
@@ -348,11 +348,11 @@ async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
                 return;
             }
             let preview: String = text.chars().take(120).collect();
-            info!("[server/stream] user_message ({} chars): {preview}", text.len());
+            info!("[agent/stream] user_message ({} chars): {preview}", text.len());
             spawn_turn(state.clone(), text);
         }
         "interrupt" => {
-            info!("[server/stream] interrupt frame received");
+            info!("[agent/stream] interrupt frame received");
             state.cancel.lock().unwrap().cancel();
             buffer_and_fanout(&state.stream_state, serde_json::json!({"type":"interrupt_ack"}).to_string());
         }
@@ -360,13 +360,13 @@ async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
             // App-level keepalive ack — handled per-WS in the future ping/pong work.
         }
         other => {
-            warn!("[server/stream] unknown client frame type='{other}'");
+            warn!("[agent/stream] unknown client frame type='{other}'");
         }
     }
 }
 
 async fn clear_handler(State(state): State<Arc<AppState>>) -> StatusCode {
-    info!("[server/clear] clearing conversation history");
+    info!("[agent/clear] clearing conversation history");
     let mut msgs = state.messages.lock().unwrap();
     msgs.clear();
     save_messages(&msgs);
@@ -415,7 +415,7 @@ async fn get_config_handler() -> Json<Config> { Json(read_config()) }
 
 async fn update_config_handler(Json(patch): Json<Config>) -> StatusCode {
     info!(
-        "[server/config] update model={:?} api_key={}",
+        "[agent/config] update model={:?} api_key={}",
         patch.model,
         if patch.api_key.is_some() { "provided" } else { "unchanged" }
     );
@@ -483,7 +483,7 @@ fn make_extra_executor() -> Option<Arc<dyn Fn(String, serde_json::Value)
             };
             let preview: String = text.chars().take(120).collect();
             let url = format!("{}/message", lair_url.trim_end_matches('/'));
-            info!("[server/message_lair] → POST {url} ({} chars): {preview}", text.len());
+            info!("[agent/message_lair] → POST {url} ({} chars): {preview}", text.len());
             let start = Instant::now();
             match client
                 .post(&url)
@@ -494,7 +494,7 @@ fn make_extra_executor() -> Option<Arc<dyn Fn(String, serde_json::Value)
                 Ok(resp) => {
                     let status = resp.status();
                     let elapsed = start.elapsed().as_millis();
-                    info!("[server/message_lair] ← HTTP {status} in {elapsed}ms");
+                    info!("[agent/message_lair] ← HTTP {status} in {elapsed}ms");
                     match resp.json::<serde_json::Value>().await {
                         Ok(body) => {
                             let result = body
@@ -503,18 +503,18 @@ fn make_extra_executor() -> Option<Arc<dyn Fn(String, serde_json::Value)
                                 .unwrap_or("(no response text)")
                                 .to_string();
                             let rpreview: String = result.chars().take(120).collect();
-                            info!("[server/message_lair] response ({} chars): {rpreview}", result.len());
+                            info!("[agent/message_lair] response ({} chars): {rpreview}", result.len());
                             result
                         }
                         Err(e) => {
-                            error!("[server/message_lair] parse error: {e}");
+                            error!("[agent/message_lair] parse error: {e}");
                             format!("error parsing parent response: {e}")
                         }
                     }
                 }
                 Err(e) => {
                     let elapsed = start.elapsed().as_millis();
-                    error!("[server/message_lair] request failed in {elapsed}ms: {e}");
+                    error!("[agent/message_lair] request failed in {elapsed}ms: {e}");
                     format!("error contacting parent: {e}")
                 }
             }
@@ -563,7 +563,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
     }
 
     let (static_private, static_public) = if is_dev {
-        warn!("[server] DEV MODE: using fixed dev keypair (OCTO_DEV=1)");
+        warn!("[agent] DEV MODE: using fixed dev keypair (OCTO_DEV=1)");
         (DEV_STATIC_PRIVATE.to_vec(), DEV_STATIC_PUBLIC.to_vec())
     } else if let Some(kp) = injected_keypair {
         kp
@@ -575,14 +575,14 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
     let public_port: u16 = std::env::var("PUBLIC_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(noise_port);
     let http_port:   u16 = 8000;
     let lair_url    = std::env::var("LAIR_URL").unwrap_or_default();
-    let public_host = crate::bootstrap::resolve_public_host("server").await?;
+    let public_host = crate::bootstrap::resolve_public_host("agent").await?;
     let pubkey_b32  = to_base32(&static_public);
 
-    info!("[server] noise_pubkey={pubkey_b32} noise_port={noise_port} http_port={http_port}");
+    info!("[agent] noise_pubkey={pubkey_b32} noise_port={noise_port} http_port={http_port}");
     if lair_url.is_empty() {
-        info!("[server] LAIR_URL not set — message_lair tool disabled");
+        info!("[agent] LAIR_URL not set — message_lair tool disabled");
     } else {
-        info!("[server] LAIR_URL={lair_url} — message_lair tool enabled");
+        info!("[agent] LAIR_URL={lair_url} — message_lair tool enabled");
     }
 
     // Workspace + optional git repo. With GIT_URL set, behaviour matches the
@@ -602,7 +602,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
 
     // STARTUP_SCRIPT runs after the workspace is populated so it can reference
     // the cloned repo (matches the bash entrypoint's order).
-    crate::bootstrap::run_startup_script("server").await?;
+    crate::bootstrap::run_startup_script("agent").await?;
 
     tokio::spawn(run_noise_proxy(static_private, noise_port, http_port));
 
@@ -622,10 +622,10 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             });
             match reqwest::Client::new().post(&url).json(&body).send().await {
                 Ok(resp) if resp.status().is_success() => {
-                    info!("[server] reported version {} to lair (deployment/{deployment_name})", env!("CARGO_PKG_VERSION"));
+                    info!("[agent] reported version {} to lair (deployment/{deployment_name})", env!("CARGO_PKG_VERSION"));
                 }
-                Ok(resp) => warn!("[server] lair rejected version report: {}", resp.status()),
-                Err(e)   => warn!("[server] could not report version to lair: {e}"),
+                Ok(resp) => warn!("[agent] lair rejected version report: {}", resp.status()),
+                Err(e)   => warn!("[agent] could not report version to lair: {e}"),
             }
         });
     }
@@ -638,7 +638,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
     };
     let messages  = load_messages();
     info!(
-        "[server] loaded {} message(s) from history, cwd={cwd} (repo={})",
+        "[agent] loaded {} message(s) from history, cwd={cwd} (repo={})",
         messages.len(),
         if has_repo { "yes" } else { "no" },
     );
@@ -677,11 +677,11 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
     let addr = format!("0.0.0.0:{http_port}");
     let listener = tokio::net::TcpListener::bind(&addr).await
         .map_err(|e| anyhow::anyhow!("failed to bind HTTP port {addr}: {e}"))?;
-    info!("[server] HTTP listening on {addr} (Noise proxy on 0.0.0.0:{noise_port}, cwd: {})", state.cwd);
+    info!("[agent] HTTP listening on {addr} (Noise proxy on 0.0.0.0:{noise_port}, cwd: {})", state.cwd);
 
     // Listener is bound; the Noise port is reachable. Print the QR now so the
     // user never scans before the server can accept the connection.
-    crate::bootstrap::print_qr("server", &public_host, public_port, &pubkey_b32);
+    crate::bootstrap::print_qr("agent", &public_host, public_port, &pubkey_b32);
 
     if let Ok(prompt) = std::env::var("STARTUP_PROMPT") {
         if !prompt.is_empty() {
@@ -690,7 +690,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             let model_sp   = resolve_model();
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                info!("[server] running STARTUP_PROMPT ({} chars)", prompt.len());
+                info!("[agent] running STARTUP_PROMPT ({} chars)", prompt.len());
                 state_sp.is_streaming.store(true, Ordering::Relaxed);
                 {
                     let mut msgs = state_sp.messages.lock().unwrap();
@@ -721,7 +721,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
                         *state_sp.messages.lock().unwrap() = updated.clone();
                         save_messages(&updated);
                         *state_sp.last_cost_usd.lock().unwrap() = Some(cost_usd);
-                        info!("[server] STARTUP_PROMPT complete cost=${cost_usd:.4}");
+                        info!("[agent] STARTUP_PROMPT complete cost=${cost_usd:.4}");
                     }
                     Err((e, mut partial)) => {
                         partial.push(ApiMessage {
@@ -730,7 +730,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
                         });
                         *state_sp.messages.lock().unwrap() = partial.clone();
                         save_messages(&partial);
-                        error!("[server] STARTUP_PROMPT error: {e}");
+                        error!("[agent] STARTUP_PROMPT error: {e}");
                     }
                 }
                 state_sp.is_streaming.store(false, Ordering::Relaxed);
