@@ -22,6 +22,21 @@ const NODEPORT_MIN:  u16  = 30100;
 const NODEPORT_MAX:  u16  = 30199;
 pub const IMAGE:          &str = "ghcr.io/georgebradford0/lair:latest";
 pub const VERSION_ANNOTATION: &str = "octo.image-version";
+
+/// Effective image name for managed pods (lair + every child). In production this
+/// is the published GHCR tag; in dev (`OCTO_DEV=1`) it switches to `lair:dev` so
+/// the locally-built image from `start_dev.sh` is used instead of the stale
+/// remote one. Override with `OCTO_DEV_IMAGE` if you tagged the local build
+/// differently (e.g. `lair:my-feature`). Coupled with `imagePullPolicy:
+/// IfNotPresent` for child pods in dev, this means kubelet uses the Docker
+/// Desktop daemon's local image store directly without a registry round-trip.
+pub fn effective_image() -> String {
+    if std::env::var("OCTO_DEV").as_deref() == Ok("1") {
+        std::env::var("OCTO_DEV_IMAGE").unwrap_or_else(|_| "lair:dev".to_string())
+    } else {
+        IMAGE.to_string()
+    }
+}
 const ENTRYPOINT:    &str = "/usr/local/bin/docker-entrypoint-server.sh";
 const LAIR_NAME:   &str = "lair";
 
@@ -225,7 +240,7 @@ async fn create_deployment(client: &Client, p: &CreateChildParams<'_>) -> anyhow
         "imagePullSecrets": [{"name": GHCR_PULL_SECRET}],
         "containers": [{
             "name": "octo",
-            "image": IMAGE,
+            "image": effective_image(),
             "imagePullPolicy": pull_policy,
             "command": [ENTRYPOINT],
             "env": env,
@@ -366,9 +381,10 @@ pub async fn restart_deployments(client: &Client, names: &[&str]) -> anyhow::Res
     Ok(restarted)
 }
 
-/// Patch the image to `IMAGE` and bump `restartedAt` on every managed deployment
-/// plus lair itself.  Since `imagePullPolicy: Always` is set on all pods, this
-/// forces each one to pull the latest image on the next start.
+/// Patch the image to `effective_image()` and bump `restartedAt` on every managed
+/// deployment plus lair itself. In production (imagePullPolicy: Always) this
+/// forces each one to pull the latest GHCR tag on the next start; in dev mode
+/// the local image is reused from the Docker Desktop daemon's image store.
 /// Returns the names of deployments that were successfully patched.
 pub async fn update_and_restart_all(client: &Client) -> anyhow::Result<Vec<String>> {
     let deployments: Api<Deployment> = Api::namespaced(client.clone(), NAMESPACE);
@@ -415,7 +431,7 @@ pub async fn update_and_restart_all(client: &Client) -> anyhow::Result<Vec<Strin
         let patch = json!({
             "spec": { "template": {
                 "metadata": { "annotations": { "kubectl.kubernetes.io/restartedAt": now } },
-                "spec": { "containers": [{ "name": container_name, "image": IMAGE }] }
+                "spec": { "containers": [{ "name": container_name, "image": effective_image() }] }
             }}
         });
         match deployments.patch(name, &PatchParams::default(), &Patch::Strategic(patch)).await {
@@ -619,6 +635,7 @@ pub async fn ensure_ghcr_pull_secret(client: &Client, gh_token: Option<&str>) ->
 
 pub async fn upsert_lair_deployment(client: &Client, public_port: u16) -> anyhow::Result<()> {
     let deployments: Api<Deployment> = Api::namespaced(client.clone(), NAMESPACE);
+    let pull_policy = if std::env::var("OCTO_DEV").as_deref() == Ok("1") { "IfNotPresent" } else { "Always" };
     let deployment: Deployment = serde_json::from_value(json!({
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -637,8 +654,8 @@ pub async fn upsert_lair_deployment(client: &Client, public_port: u16) -> anyhow
                     "imagePullSecrets": [{"name": GHCR_PULL_SECRET}],
                     "containers": [{
                         "name": LAIR_NAME,
-                        "image": IMAGE,
-                        "imagePullPolicy": "Always",
+                        "image": effective_image(),
+                        "imagePullPolicy": pull_policy,
                         "env": [
                             {"name": "PUBLIC_PORT",           "value": public_port.to_string()},
                             {"name": "NOISE_PORT",            "value": "9000"},
