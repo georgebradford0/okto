@@ -585,8 +585,6 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
         info!("[server] LAIR_URL={lair_url} — message_lair tool enabled");
     }
 
-    crate::bootstrap::run_startup_script("server").await?;
-
     // Workspace + optional git repo. With GIT_URL set, behaviour matches the
     // old shell entrypoint exactly (clone-or-fetch, set git user, install a
     // credential helper). Without it, the workspace is just `mkdir -p` and
@@ -601,6 +599,10 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
         git_url.as_deref(),
         gh_token.as_deref(),
     ).await?;
+
+    // STARTUP_SCRIPT runs after the workspace is populated so it can reference
+    // the cloned repo (matches the bash entrypoint's order).
+    crate::bootstrap::run_startup_script("server").await?;
 
     tokio::spawn(run_noise_proxy(static_private, noise_port, http_port));
 
