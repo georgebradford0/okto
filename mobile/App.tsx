@@ -1468,7 +1468,17 @@ function AppInner() {
         child={activeChild}
         tunnelPort={tunnelPort}
         tunnelError={tunnelError}
-        onClose={() => { setActiveChild(null); setShowSidebar(false); sidebarAnim.setValue(0) }}
+        onClose={() => {
+          // Clear tunnelPort synchronously so masterBaseUrl is null until the
+          // connection effect re-resolves it for lair. Without this, master
+          // ChatPane briefly mounts with the now-defunct child tunnel port and
+          // its WS attempt errors out before the new tunnel is up. Mirrors the
+          // setTunnelPort(null) on the symmetric "tap a child in sidebar" path.
+          setTunnelPort(null)
+          setActiveChild(null)
+          setShowSidebar(false)
+          sidebarAnim.setValue(0)
+        }}
         initialDraft={draftsRef.current[childKey]}
         onDraftChange={d => { draftsRef.current[childKey] = d }}
         reconnectingRef={reconnectingRef}
