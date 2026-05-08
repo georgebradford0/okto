@@ -726,14 +726,24 @@ const ChatPane = memo(function ChatPane({
         }
         break
       }
-      case 'done':
+      case 'done': {
         log(`[chat] stream done cost_usd=${event.cost_usd}`)
         lastToolIdRef.current = null
         streamingLockRef.current = false
         updateStatus('ready')
-        // WS stays open across turns now; reconcile with /history for cost stamp etc.
-        loadHistoryRef.current()
+        const cost = event.cost_usd
+        setMessages(prev => {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].role === 'assistant') {
+              const next = prev.slice()
+              next[i] = { ...next[i], cost }
+              return next
+            }
+          }
+          return prev
+        })
         break
+      }
       case 'interrupt_ack':
         log('[chat] interrupt acknowledged by server')
         if (stopAckTimerRef.current) {
@@ -741,13 +751,25 @@ const ChatPane = memo(function ChatPane({
           stopAckTimerRef.current = null
         }
         break
-      case 'interrupted':
+      case 'interrupted': {
         log(`[chat] stream interrupted cost_usd=${event.cost_usd}`)
         lastToolIdRef.current = null
         streamingLockRef.current = false
         updateStatus('ready')
-        loadHistoryRef.current()
+        const cost = event.cost_usd
+        setMessages(prev => {
+          let stamped = prev
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].role === 'assistant') {
+              stamped = prev.slice()
+              stamped[i] = { ...stamped[i], cost }
+              break
+            }
+          }
+          return appendMsg(stamped, { id: uid(), role: 'interrupted' as const, text: 'interrupted' })
+        })
         break
+      }
       case 'error':
         logE(`[chat] stream error: ${event.message}`)
         lastToolIdRef.current = null
@@ -1160,13 +1182,6 @@ const ChatPane = memo(function ChatPane({
                       stopAckTimerRef.current = null
                       setStopSent(false)
                     }, 3000)
-                    const toolId = lastToolIdRef.current
-                    if (toolId) {
-                      setMessages(prev => withPrevRoles(prev.map(m =>
-                        m.id === toolId ? { ...m, role: 'interrupted' as const } : m
-                      )))
-                      lastToolIdRef.current = null
-                    }
                   }}
                   activeOpacity={0.7}
                 >
