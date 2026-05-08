@@ -1,5 +1,5 @@
 //! Merged binary that runs either the lair (parent / orchestrator) or agent
-//! (child / per-pod agentic loop) role. The Docker image ships one binary;
+//! (child / per-agent agentic loop) role. The Docker image ships one binary;
 //! the image's ENTRYPOINT runs the lair role, and child Deployments override
 //! `command:` to flip the role to `agent`.
 
@@ -8,6 +8,7 @@ use clap::{Parser, ValueEnum};
 mod bootstrap;
 mod lair;
 mod agent;
+mod push;
 
 #[derive(Clone, Copy, ValueEnum)]
 pub enum Role {

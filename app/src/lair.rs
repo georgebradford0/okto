@@ -26,9 +26,10 @@ use axum::{
 use octo_core::{
     self,
     build_ephemeral_system_prompt, build_tools_with_mcp, chain_executor_with_mcp,
-    init_mcp_pool, init_shell_env, load_or_generate_keypair,
-    resolve_api_key, resolve_model, run_noise_proxy, send_message, to_base32, ApiMessage, AnthropicTool,
-    ChatEvent, ContentBlock, McpPool, DEV_PUBKEY_BASE32, DEV_STATIC_PRIVATE, DEV_STATIC_PUBLIC,
+    completion_chat_event, init_mcp_pool, init_shell_env, load_or_generate_keypair,
+    resolve_api_key, resolve_model, run_noise_proxy, run_background_task_tool, send_message,
+    spawn_background_task, to_base32, ApiMessage, AnthropicTool, BackgroundTaskParams, ChatEvent,
+    ContentBlock, McpPool, DEV_PUBKEY_BASE32, DEV_STATIC_PRIVATE, DEV_STATIC_PUBLIC,
     KEEPALIVE_INTERVAL, KEEPALIVE_MAX_MISSED,
     StreamState, buffer_and_fanout, chat_event_to_wire_json, messages_to_history,
     parse_ping_id, parse_pong_id,
@@ -86,6 +87,12 @@ struct AppState {
     messages:             Arc<Mutex<Vec<ApiMessage>>>,
     last_cost_usd:        Mutex<Option<f64>>,
     system:               String,
+    /// Persistent device-token registry. Mobile clients hand us their APNs
+    /// token over /stream after the Noise tunnel comes up.
+    push_registry:        Arc<crate::push::PushTokenRegistry>,
+    /// Configured iff APNS_KEY_P8 + KEY_ID + TEAM_ID + BUNDLE_ID are set.
+    /// `None` means push is disabled (we still fan a `system` event in-app).
+    apns_sender:          Option<Arc<crate::push::ApnsSender>>,
     /// Watch channel published by the K8s poller. Each /stream WS subscribes
     /// and re-sends a `containers` event whenever the list changes.
     containers_tx:        watch::Sender<Vec<ContainerInfo>>,
@@ -460,6 +467,31 @@ async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
                 }
             });
         }
+        "terminate_agent" => {
+            let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            if id.is_empty() {
+                warn!("[lair/stream] terminate_agent frame missing id");
+                return;
+            }
+            info!("[lair/stream] terminate_agent id={id}");
+            let state = state.clone();
+            tokio::spawn(async move {
+                if let Err(e) = terminate_agent_by_id(&state, &id).await {
+                    error!("[lair/stream] terminate_agent failed: {e}");
+                    let json = serde_json::json!({"type":"error","message":format!("terminate_agent: {e}")}).to_string();
+                    buffer_and_fanout(&state.stream_state, json);
+                }
+            });
+        }
+        "register_push_token" => {
+            let token    = v.get("token")   .and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+            let platform = v.get("platform").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+            if token.is_empty() || !matches!(platform.as_str(), "ios" | "android") {
+                warn!("[lair/stream] register_push_token: missing/invalid token or platform");
+                return;
+            }
+            state.push_registry.register(&platform, &token);
+        }
         "pong" => {
             // App-level keepalive ack — handled per-WS in the future ping/pong work.
             // For now just no-op so unknown clients don't see it as an error.
@@ -494,6 +526,25 @@ async fn start_container_by_id(state: &AppState, id: &str) -> Result<(), String>
         .map_err(|e| e.to_string())?;
     info!("[containers] scaled {name} to 1, triggering re-poll");
     tokio::time::sleep(Duration::from_secs(3)).await;
+    state.poll_trigger.notify_one();
+    Ok(())
+}
+
+/// Delete the named child Deployment, both Services, and both PVCs. Backs the
+/// `terminate_agent` /stream frame so the mobile UI can long-press to terminate.
+async fn terminate_agent_by_id(state: &AppState, id: &str) -> Result<(), String> {
+    let name = state
+        .containers_rx
+        .borrow()
+        .iter()
+        .find(|c| c.id == id)
+        .map(|c| c.name.clone())
+        .ok_or_else(|| format!("agent '{id}' not found"))?;
+
+    k8s::delete_child_resources(&state.kube_client, &name)
+        .await
+        .map_err(|e| e.to_string())?;
+    info!("[containers] terminated {name}, triggering re-poll");
     state.poll_trigger.notify_one();
     Ok(())
 }
@@ -551,7 +602,7 @@ async fn poll_containers(state: Arc<AppState>) {
 
 fn build_system_prompt() -> String {
     r#"# Identity & context
-You are "lair" — the control-plane agent of an octo cluster, a Kubernetes-managed fleet of LLM agents. You run inside the parent pod in the `octo` namespace. The user is talking to you over an encrypted Noise tunnel from a mobile or desktop client; you are usually the first agent they reach. From here they create, message, and tear down "child" pods (each a separate Deployment, typically pinned to one git repository).
+You are "lair" — the control-plane agent of an octo cluster, a Kubernetes-managed fleet of LLM agents. You run inside the parent pod in the `octo` namespace. The user is talking to you over an encrypted Noise tunnel from a mobile or desktop client; you are usually the first agent they reach. From here they create, message, and tear down "child" agents (each a separate Deployment, typically pinned to one git repository).
 
 octo can host any kind of agent workload, not only coding agents — don't assume the user is doing software work unless they say so.
 
@@ -578,6 +629,7 @@ octo can host any kind of agent workload, not only coding agents — don't assum
 - **`message_child(container_name, text)`** — send a message to a child's agent and wait for its reply. Use this to delegate work or get status. The child has its own shell, repo, and tools.
 - **`terminate_agent(name)`** — *destructive.* Deletes the Deployment, both Services, and both PVCs (`<name>-data`, `<name>-workspace`). All workspace state is lost. Confirm with the user before calling unless the request was unambiguous and explicit.
 - **`restart_all_containers`** — rollout-restarts every managed Deployment and lair itself. Use only after a new image push; not for routine flakes.
+- **`run_background_task(task_description)`** — spawn a long-running task in the background and return immediately. The user is notified when it finishes. Use for work that would otherwise block the current turn for minutes (long builds, multi-step research, repo-wide refactors). The task description must be self-contained — the background loop does not inherit conversation history.
 
 # General tools (shared with children)
 - `bash` — shell commands; use for git, gh, kubectl, curl, one-offs.
@@ -714,7 +766,14 @@ fn restart_all_containers_tool() -> AnthropicTool {
 }
 
 fn lair_extra_tools() -> Vec<AnthropicTool> {
-    vec![list_agents_tool(), message_child_tool(), create_agent_tool(), terminate_agent_tool(), restart_all_containers_tool()]
+    vec![
+        list_agents_tool(),
+        message_child_tool(),
+        create_agent_tool(),
+        terminate_agent_tool(),
+        restart_all_containers_tool(),
+        run_background_task_tool(),
+    ]
 }
 
 fn lair_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_json::Value)
@@ -736,6 +795,7 @@ fn lair_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
                 "create_agent" => exec_create_agent(state, input).await,
                 "terminate_agent" => exec_terminate_agent(state, input).await,
                 "restart_all_containers" => exec_restart_all_containers(state).await,
+                "run_background_task" => exec_run_background_task(state, input).await,
                 other => format!("unknown tool: {other}"),
             }
         })
@@ -869,6 +929,65 @@ async fn exec_terminate_agent(state: Arc<AppState>, input: serde_json::Value) ->
     }
 }
 
+async fn exec_run_background_task(state: Arc<AppState>, input: serde_json::Value) -> String {
+    let task_description = match input.get("task_description").and_then(|v| v.as_str()) {
+        Some(s) if !s.trim().is_empty() => s.to_string(),
+        _ => return "error: missing or empty 'task_description'".to_string(),
+    };
+
+    let api_key = match resolve_api_key() {
+        Some(k) => k,
+        None    => return "error: no API key configured for background task".to_string(),
+    };
+    let model = resolve_model();
+
+    let task_id = format!("bg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+    info!("[lair/run_background_task] spawning {task_id} ({} chars)", task_description.len());
+
+    // Build a fresh tools+executor pair so the background task gets the same
+    // capabilities the main loop has, including MCP servers.
+    let extra_tools = build_tools_with_mcp(&state.mcp_pool, &lair_extra_tools()).await;
+    let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), lair_extra_executor(state.clone()));
+
+    let params = BackgroundTaskParams {
+        task_id:          task_id.clone(),
+        task_description,
+        system:           state.system.clone(),
+        model,
+        api_key,
+        cwd:              "/".to_string(),
+        extra_tools,
+        extra_executor:   executor,
+    };
+
+    let stream_state_arc = state.clone();
+    spawn_background_task(params, move |outcome| {
+        let event = completion_chat_event(&outcome);
+        if let Some(json) = chat_event_to_wire_json(&event) {
+            buffer_and_fanout(&stream_state_arc.stream_state, json.to_string());
+        }
+        // Push to iOS devices (if APNs configured). Webhook is fired separately
+        // by `spawn_background_task` itself before this callback runs.
+        if let Some(sender) = stream_state_arc.apns_sender.clone() {
+            let registry = stream_state_arc.push_registry.clone();
+            let title = match outcome.status {
+                "done" => "octo: task complete".to_string(),
+                _      => "octo: task failed".to_string(),
+            };
+            let body = if outcome.summary.is_empty() {
+                format!("Task {} {}", outcome.task_id, outcome.status)
+            } else {
+                outcome.summary.clone()
+            };
+            tokio::spawn(async move {
+                crate::push::push_to_ios(&sender, &registry, &title, &body).await;
+            });
+        }
+    });
+
+    format!("Background task {task_id} started. The user will be notified when it completes.")
+}
+
 async fn exec_restart_all_containers(state: Arc<AppState>) -> String {
     info!("[lair/restart_all] triggering rollout restart for all deployments");
     match k8s::restart_deployments(&state.kube_client, &[]).await {
@@ -989,10 +1108,19 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
     let poll_trigger = Arc::new(Notify::new());
     let (containers_tx, containers_rx) = watch::channel(Vec::<ContainerInfo>::new());
 
+    let push_registry = Arc::new(crate::push::PushTokenRegistry::load(&dir));
+    let apns_sender = match crate::push::ApnsSender::from_env() {
+        Ok(Some(s)) => Some(Arc::new(s)),
+        Ok(None)    => { info!("[lair] APNs not configured — push disabled (set APNS_KEY_P8/KEY_ID/TEAM_ID/BUNDLE_ID to enable)"); None }
+        Err(e)      => { error!("[lair] APNs setup error — push disabled: {e}"); None }
+    };
+
     let state = Arc::new(AppState {
         messages:              Arc::new(Mutex::new(messages)),
         last_cost_usd:         Mutex::new(None),
         system:                build_system_prompt(),
+        push_registry,
+        apns_sender,
         containers_tx,
         containers_rx,
         poll_trigger:          poll_trigger.clone(),

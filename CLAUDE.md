@@ -103,6 +103,7 @@ Image: `ghcr.io/georgebradford0/lair`
 | `GH_TOKEN` | yes | Passed to child containers on creation |
 | `PUBLIC_HOST` | no | Advertised host in QR (auto-detected if unset) |
 | `NOISE_PORT` | no | Listening port (default: 9000) |
+| `OCTO_PUSH_WEBHOOK_URL` | no | When set, lair POSTs `{ task_id, status, title, message, cost_usd, task_description }` to this URL whenever a `run_background_task` call completes. Generic enough for ntfy / Pushover / Slack / Discord / a custom APNs-FCM bridge. |
 
 ### agent (child container) environment variables
 
@@ -121,6 +122,7 @@ Image: `ghcr.io/georgebradford0/lair`
 | `GIT_USER_NAME` / `GIT_USER_EMAIL` | no | Commit author identity |
 | `LAIR_URL` | no | HTTP URL of the parent lair container (e.g. `http://lair:8000`); when set, enables the `message_lair` tool so the agent can ask lair for information or secrets |
 | `DEPLOYMENT_NAME` | no | This pod's Deployment name. When set together with `LAIR_URL`, the agent POSTs its compiled version to lair's `/child-version` endpoint at boot so `octo reload` can show the version transition. |
+| `OCTO_PUSH_WEBHOOK_URL` | no | When set, the agent POSTs a `run_background_task` completion payload to this URL (same shape as the lair-side webhook). |
 
 ### CI/CD workflows (all manual dispatch)
 

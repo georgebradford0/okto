@@ -24,6 +24,12 @@ pub use app::{
     parse_ping_id, parse_pong_id,
 };
 
+pub mod background;
+pub use background::{
+    BackgroundTaskParams, BackgroundTaskResult,
+    completion_chat_event, run_background_task_tool, spawn_background_task,
+};
+
 // ── Shared HTTP client ────────────────────────────────────────────────────────
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -40,6 +46,10 @@ fn http_client() -> &'static reqwest::Client {
             .expect("failed to build HTTP client")
     })
 }
+
+/// Public accessor used by sibling modules (e.g. background.rs) that need a
+/// pooled HTTP client without having to maintain their own.
+pub(crate) fn http_client_public() -> &'static reqwest::Client { http_client() }
 
 use serde::{Deserialize, Serialize};
 use futures_util::StreamExt;
@@ -1623,18 +1633,31 @@ fn parent_tool_note() -> &'static str {
     }
 }
 
+/// Background-task tool note shared by every role that exposes
+/// `run_background_task`.
+fn background_task_note() -> &'static str {
+    "\n\nYou have a run_background_task(task_description) tool. Use it to spawn a long-running \
+     task that should not block the current chat turn — long builds, multi-step research, \
+     repo-wide refactors. The task runs as an isolated agentic loop with the same tools you \
+     have, starting from `task_description` as its first user message; it does not inherit \
+     conversation history, so make the description self-contained. The user is notified \
+     in-app and (if configured) via push when it completes. Do not use it for trivially short \
+     tasks — the user prefers a direct reply."
+}
+
 pub fn build_system_prompt(repo_path: &str) -> String {
     let claude_md = std::fs::read_to_string(format!("{}/CLAUDE.md", repo_path))
         .map(|s| format!("\n\n# Project instructions (CLAUDE.md)\n{}", s))
         .unwrap_or_default();
 
     let tool_guidance    = shared_tool_guidance();
-    let parent_tool_note = parent_tool_note();
+    let parent_tool_note  = parent_tool_note();
+    let bg_task_note      = background_task_note();
 
     format!(
         "You are an AI assistant helping manage the git repository at {repo_path}.\
          You can inspect code, answer questions, and help coordinate work across branches.\
-         Any path preceded by '@' (e.g. @src/main.rs) is a reference to a file path in the git repository.{claude_md}{tool_guidance}{parent_tool_note}"
+         Any path preceded by '@' (e.g. @src/main.rs) is a reference to a file path in the git repository.{claude_md}{tool_guidance}{parent_tool_note}{bg_task_note}"
     )
 }
 
@@ -1652,13 +1675,14 @@ pub fn build_agent_system_prompt(workspace: &str) -> String {
         None    => String::new(),
     };
     let tool_guidance    = shared_tool_guidance();
-    let parent_tool_note = parent_tool_note();
+    let parent_tool_note  = parent_tool_note();
+    let bg_task_note      = background_task_note();
 
     format!(
         "You are an AI agent running in a containerized workspace at {workspace}.\
          You have bash, file-system, and (when configured) MCP-server tools available.\
          You are not bound to any specific git repository — treat the workspace as scratch \
-         space unless the user gives you something else to work on.{purpose_block}{tool_guidance}{parent_tool_note}"
+         space unless the user gives you something else to work on.{purpose_block}{tool_guidance}{parent_tool_note}{bg_task_note}"
     )
 }
 

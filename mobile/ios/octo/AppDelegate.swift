@@ -31,6 +31,25 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     return true
   }
+
+  // ── APNs registration callbacks ────────────────────────────────────────────
+  //
+  // Forwarded into PushModule.swift so the JS-side promise from
+  // `Push.requestPermissionAndRegister()` can resolve with the token.
+
+  func application(
+    _ application: UIApplication,
+    didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+  ) {
+    Push.handleRegistration(token: deviceToken)
+  }
+
+  func application(
+    _ application: UIApplication,
+    didFailToRegisterForRemoteNotificationsWithError error: Error
+  ) {
+    Push.handleRegistrationError(error)
+  }
 }
 
 class ReactNativeDelegate: RCTDefaultReactNativeFactoryDelegate {

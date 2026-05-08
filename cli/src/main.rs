@@ -92,10 +92,10 @@ enum Command {
         config: Option<std::path::PathBuf>,
     },
 
-    /// Manage child pods
-    Pods {
+    /// Manage child agents
+    Agents {
         #[command(subcommand)]
-        action: PodsAction,
+        action: AgentsAction,
     },
 
     /// Delete the entire octo namespace and all data (irreversible)
@@ -197,8 +197,8 @@ enum ConfigAction {
 
 #[derive(Subcommand)]
 enum GetResource {
-    /// Get pods
-    Pods,
+    /// Get agents (Deployments)
+    Agents,
     /// Get deployments
     Deployments,
     /// Get services
@@ -210,17 +210,17 @@ enum GetResource {
 }
 
 #[derive(Subcommand)]
-enum PodsAction {
-    /// List all managed child pods
+enum AgentsAction {
+    /// List all managed child agents
     List,
 
-    /// Create a new child pod
+    /// Create a new child agent
     Create {
         /// Git repository URL
         #[arg(long)]
         git_url: Option<String>,
 
-        /// Pod name (auto-derived from repo if omitted)
+        /// Agent name (auto-derived from repo if omitted)
         #[arg(long)]
         name: Option<String>,
 
@@ -229,17 +229,17 @@ enum PodsAction {
         noise_port: Option<u16>,
     },
 
-    /// Scale a stopped pod up to 1 replica
+    /// Scale a stopped agent up to 1 replica
     Start {
         name: String,
     },
 
-    /// Scale a running pod down to 0 replicas
+    /// Scale a running agent down to 0 replicas
     Stop {
         name: String,
     },
 
-    /// Delete a pod and all its data (irreversible)
+    /// Delete an agent and all its data (irreversible)
     Delete {
         name: String,
         /// Skip confirmation prompt
@@ -250,18 +250,18 @@ enum PodsAction {
 
 #[derive(Subcommand)]
 enum McpAction {
-    /// List MCP servers configured in a pod
+    /// List MCP servers configured in an agent
     List {
-        /// Pod name (default: lair)
+        /// Agent name (default: lair)
         #[arg(long, default_value = "lair")]
-        pod: String,
+        agent: String,
     },
 
-    /// Add an MCP server to a pod
+    /// Add an MCP server to an agent
     Add {
-        /// Pod name (default: lair)
+        /// Agent name (default: lair)
         #[arg(long, default_value = "lair")]
-        pod: String,
+        agent: String,
 
         /// Logical name for the MCP server
         #[arg(long)]
@@ -280,11 +280,11 @@ enum McpAction {
         env: Vec<String>,
     },
 
-    /// Remove an MCP server from a pod
+    /// Remove an MCP server from an agent
     Remove {
-        /// Pod name (default: lair)
+        /// Agent name (default: lair)
         #[arg(long, default_value = "lair")]
-        pod: String,
+        agent: String,
 
         /// Name of the MCP server to remove
         name: String,
@@ -292,9 +292,9 @@ enum McpAction {
 
     /// Add multiple MCP servers from a JSON file
     Import {
-        /// Pod name (default: lair)
+        /// Agent name (default: lair)
         #[arg(long, default_value = "lair")]
-        pod: String,
+        agent: String,
 
         /// Path to a JSON file containing an array of MCP server objects
         file: std::path::PathBuf,
@@ -496,7 +496,7 @@ async fn main() -> Result<()> {
 
             println!("Deleting namespace '{}'...", k8s::NAMESPACE);
             k8s::delete_namespace(&client).await?;
-            println!("Waiting for all pods and PVCs to terminate...");
+            println!("Waiting for all agents and PVCs to terminate...");
             let start = Instant::now();
             while k8s::namespace_exists(&client).await {
                 print!("\r  Still terminating... {}s", start.elapsed().as_secs());
@@ -506,20 +506,20 @@ async fn main() -> Result<()> {
             println!("\rNamespace removed.                              ");
             println!("Done. All resources removed.");
         }
-        Command::Pods { action } => match action {
-            PodsAction::List => containers::list().await?,
-            PodsAction::Create { git_url, name, noise_port } => {
+        Command::Agents { action } => match action {
+            AgentsAction::List => containers::list().await?,
+            AgentsAction::Create { git_url, name, noise_port } => {
                 containers::create(git_url.as_deref(), name.as_deref(), noise_port).await?;
             }
-            PodsAction::Start { name } => containers::start(&name).await?,
-            PodsAction::Stop  { name } => containers::stop(&name).await?,
-            PodsAction::Delete { name, yes } => containers::delete(&name, yes).await?,
+            AgentsAction::Start { name } => containers::start(&name).await?,
+            AgentsAction::Stop  { name } => containers::stop(&name).await?,
+            AgentsAction::Delete { name, yes } => containers::delete(&name, yes).await?,
         },
         Command::Reload { containers, all, config } => {
             use octo_k8s_ops::k8s;
             let client = k8s::build_client().await?;
 
-            // Sync config into lair-secrets before restarting so pods pick up
+            // Sync config into lair-secrets before restarting so agents pick up
             // the latest model/endpoint/api-key on the new image.
             // If --config is given, load from that file; otherwise use ~/.octo/config.json.
             let local = match config {
@@ -621,7 +621,7 @@ async fn main() -> Result<()> {
                     Ok(p)  => (p, true),
                     Err(_) => match k8s::get_any_pod(&client, deployment).await {
                         Ok((p, phase)) => {
-                            eprintln!("[{deployment}] pod is {phase} (not Running) — showing available logs:");
+                            eprintln!("[{deployment}] agent is {phase} (not Running) — showing available logs:");
                             (p, false)
                         }
                         Err(e) => { eprintln!("[{deployment}] {e}"); continue; }
@@ -652,7 +652,7 @@ async fn main() -> Result<()> {
         }
         Command::Get { resource } => {
             let kind = match resource {
-                GetResource::Pods        => "deployments",
+                GetResource::Agents      => "deployments",
                 GetResource::Deployments => "deployments",
                 GetResource::Services    => "services",
                 GetResource::Pvc         => "pvc",
@@ -664,12 +664,12 @@ async fn main() -> Result<()> {
                 .await?;
         }
         Command::Mcp { action } => match action {
-            McpAction::List { pod } => mcp::list(&pod).await?,
-            McpAction::Add { pod, name, command, args, env } => {
-                mcp::add(&pod, &name, &command, &args, &env).await?;
+            McpAction::List { agent } => mcp::list(&agent).await?,
+            McpAction::Add { agent, name, command, args, env } => {
+                mcp::add(&agent, &name, &command, &args, &env).await?;
             }
-            McpAction::Remove { pod, name } => mcp::remove(&pod, &name).await?,
-            McpAction::Import { pod, file } => mcp::import_from_file(&pod, &file).await?,
+            McpAction::Remove { agent, name } => mcp::remove(&agent, &name).await?,
+            McpAction::Import { agent, file } => mcp::import_from_file(&agent, &file).await?,
         },
         Command::Config { action } => {
             use octo_k8s_ops::k8s;

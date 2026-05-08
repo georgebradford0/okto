@@ -24,11 +24,12 @@ use axum::{
 use octo_core::{
     self,
     build_agent_system_prompt, build_ephemeral_system_prompt, build_system_prompt,
-    build_tools_with_mcp, chain_executor_with_mcp, data_dir, get_branches_for_repo,
-    init_mcp_pool, init_shell_env, load_or_generate_keypair, read_config, resolve_api_key,
-    resolve_model, run_noise_proxy, send_message, to_base32, write_config, ApiMessage, AnthropicTool,
-    ChatEvent, Config, ContentBlock, McpPool, DEV_PUBKEY_BASE32, DEV_STATIC_PRIVATE, DEV_STATIC_PUBLIC,
-    KEEPALIVE_INTERVAL, KEEPALIVE_MAX_MISSED,
+    build_tools_with_mcp, chain_executor_with_mcp, completion_chat_event, data_dir,
+    get_branches_for_repo, init_mcp_pool, init_shell_env, load_or_generate_keypair, read_config,
+    resolve_api_key, resolve_model, run_background_task_tool, run_noise_proxy, send_message,
+    spawn_background_task, to_base32, write_config, ApiMessage, AnthropicTool,
+    BackgroundTaskParams, ChatEvent, Config, ContentBlock, McpPool, DEV_PUBKEY_BASE32,
+    DEV_STATIC_PRIVATE, DEV_STATIC_PUBLIC, KEEPALIVE_INTERVAL, KEEPALIVE_MAX_MISSED,
     StreamState, buffer_and_fanout, chat_event_to_wire_json, messages_to_history,
     parse_ping_id, parse_pong_id,
 };
@@ -115,7 +116,7 @@ async fn message_handler(
 
     info!("[agent/message_handler] calling ephemeral send_message");
     let extra_tools = build_tools_with_mcp(&state.mcp_pool, &make_extra_tools()).await;
-    let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), make_extra_executor());
+    let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), make_extra_executor(state.clone()));
     match send_message(messages, build_ephemeral_system_prompt(), &model, &api_key, &state.cwd, None, CancellationToken::new(), &extra_tools, executor).await {
         Ok((text, cost_usd, _)) => {
             let elapsed = start.elapsed().as_millis();
@@ -193,7 +194,7 @@ fn spawn_turn(state: Arc<AppState>, text: String) {
         state.stream_state.lock().unwrap().buffer.clear();
 
         let extra_tools = build_tools_with_mcp(&state.mcp_pool, &make_extra_tools()).await;
-        let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), make_extra_executor());
+        let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), make_extra_executor(state.clone()));
 
         // Agent task: drives the model loop, terminates with Result/Interrupted/Error.
         tokio::spawn(async move {
@@ -457,77 +458,121 @@ fn message_lair_tool() -> AnthropicTool {
 }
 
 fn make_extra_tools() -> Vec<AnthropicTool> {
-    // Only add the tool if LAIR_URL is configured.
+    let mut tools = vec![run_background_task_tool()];
     if std::env::var("LAIR_URL").is_ok() {
-        vec![message_lair_tool()]
-    } else {
-        vec![]
+        tools.push(message_lair_tool());
     }
+    tools
 }
 
-fn make_extra_executor() -> Option<Arc<dyn Fn(String, serde_json::Value)
+fn make_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_json::Value)
     -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
     + Send + Sync>>
 {
-    let lair_url = match std::env::var("LAIR_URL") {
-        Ok(u) => u,
-        Err(_) => return None,
-    };
+    let lair_url = std::env::var("LAIR_URL").ok();
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
         .pool_idle_timeout(std::time::Duration::from_secs(30))
         .build()
-        .expect("failed to build message_lair HTTP client");
+        .expect("failed to build agent extra-tools HTTP client");
     Some(Arc::new(move |name: String, input: serde_json::Value| {
         let lair_url = lair_url.clone();
         let client = client.clone();
+        let state  = state.clone();
         Box::pin(async move {
-            if name != "message_lair" {
-                return format!("unknown tool: {name}");
-            }
-            let text = match input.get("text").and_then(|v| v.as_str()) {
-                Some(t) => t.to_string(),
-                None => return "error: missing 'text' field".to_string(),
-            };
-            let preview: String = text.chars().take(120).collect();
-            let url = format!("{}/message", lair_url.trim_end_matches('/'));
-            info!("[agent/message_lair] → POST {url} ({} chars): {preview}", text.len());
-            let start = Instant::now();
-            match client
-                .post(&url)
-                .json(&serde_json::json!({ "text": text }))
-                .send()
-                .await
-            {
-                Ok(resp) => {
-                    let status = resp.status();
-                    let elapsed = start.elapsed().as_millis();
-                    info!("[agent/message_lair] ← HTTP {status} in {elapsed}ms");
-                    match resp.json::<serde_json::Value>().await {
-                        Ok(body) => {
-                            let result = body
-                                .get("text")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("(no response text)")
-                                .to_string();
-                            let rpreview: String = result.chars().take(120).collect();
-                            info!("[agent/message_lair] response ({} chars): {rpreview}", result.len());
-                            result
+            match name.as_str() {
+                "run_background_task" => exec_run_background_task(state, input).await,
+                "message_lair" => {
+                    let lair_url = match lair_url {
+                        Some(u) => u,
+                        None => return "error: message_lair not configured (LAIR_URL unset)".to_string(),
+                    };
+                    let text = match input.get("text").and_then(|v| v.as_str()) {
+                        Some(t) => t.to_string(),
+                        None => return "error: missing 'text' field".to_string(),
+                    };
+                    let preview: String = text.chars().take(120).collect();
+                    let url = format!("{}/message", lair_url.trim_end_matches('/'));
+                    info!("[agent/message_lair] → POST {url} ({} chars): {preview}", text.len());
+                    let start = Instant::now();
+                    match client
+                        .post(&url)
+                        .json(&serde_json::json!({ "text": text }))
+                        .send()
+                        .await
+                    {
+                        Ok(resp) => {
+                            let status = resp.status();
+                            let elapsed = start.elapsed().as_millis();
+                            info!("[agent/message_lair] ← HTTP {status} in {elapsed}ms");
+                            match resp.json::<serde_json::Value>().await {
+                                Ok(body) => {
+                                    let result = body
+                                        .get("text")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("(no response text)")
+                                        .to_string();
+                                    let rpreview: String = result.chars().take(120).collect();
+                                    info!("[agent/message_lair] response ({} chars): {rpreview}", result.len());
+                                    result
+                                }
+                                Err(e) => {
+                                    error!("[agent/message_lair] parse error: {e}");
+                                    format!("error parsing parent response: {e}")
+                                }
+                            }
                         }
                         Err(e) => {
-                            error!("[agent/message_lair] parse error: {e}");
-                            format!("error parsing parent response: {e}")
+                            let elapsed = start.elapsed().as_millis();
+                            error!("[agent/message_lair] request failed in {elapsed}ms: {e}");
+                            format!("error contacting parent: {e}")
                         }
                     }
                 }
-                Err(e) => {
-                    let elapsed = start.elapsed().as_millis();
-                    error!("[agent/message_lair] request failed in {elapsed}ms: {e}");
-                    format!("error contacting parent: {e}")
-                }
+                other => format!("unknown tool: {other}"),
             }
         })
     }))
+}
+
+async fn exec_run_background_task(state: Arc<AppState>, input: serde_json::Value) -> String {
+    let task_description = match input.get("task_description").and_then(|v| v.as_str()) {
+        Some(s) if !s.trim().is_empty() => s.to_string(),
+        _ => return "error: missing or empty 'task_description'".to_string(),
+    };
+
+    let api_key = match resolve_api_key() {
+        Some(k) => k,
+        None    => return "error: no API key configured for background task".to_string(),
+    };
+    let model = resolve_model();
+
+    let task_id = format!("bg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+    info!("[agent/run_background_task] spawning {task_id} ({} chars)", task_description.len());
+
+    let extra_tools = build_tools_with_mcp(&state.mcp_pool, &make_extra_tools()).await;
+    let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), make_extra_executor(state.clone()));
+
+    let params = BackgroundTaskParams {
+        task_id:          task_id.clone(),
+        task_description,
+        system:           state.system.clone(),
+        model,
+        api_key,
+        cwd:              state.cwd.clone(),
+        extra_tools,
+        extra_executor:   executor,
+    };
+
+    let stream_state_arc = state.clone();
+    spawn_background_task(params, move |outcome| {
+        let event = completion_chat_event(&outcome);
+        if let Some(json) = chat_event_to_wire_json(&event) {
+            buffer_and_fanout(&stream_state_arc.stream_state, json.to_string());
+        }
+    });
+
+    format!("Background task {task_id} started. The user will be notified when it completes.")
 }
 
 // ── Entry ─────────────────────────────────────────────────────────────────────
@@ -713,7 +758,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
                     .cloned()
                     .collect();
                 let extra_tools = build_tools_with_mcp(&state_sp.mcp_pool, &make_extra_tools()).await;
-                let executor    = chain_executor_with_mcp(state_sp.mcp_pool.clone(), make_extra_executor());
+                let executor    = chain_executor_with_mcp(state_sp.mcp_pool.clone(), make_extra_executor(state_sp.clone()));
                 match send_message(
                     messages,
                     &state_sp.system,

@@ -53,16 +53,16 @@ async fn write_config(pod_name: &str, configs: &[McpServerConfig]) -> Result<()>
     k8s::write_pod_file(pod_name, MCP_PATH, &json).await
 }
 
-async fn running_pod(pod: &str) -> Result<String> {
+async fn running_pod(agent: &str) -> Result<String> {
     let client = k8s::build_client().await?;
-    k8s::get_running_pod(&client, pod).await
+    k8s::get_running_pod(&client, agent).await
 }
 
-pub async fn list(pod: &str) -> Result<()> {
-    let pod_name = running_pod(pod).await?;
+pub async fn list(agent: &str) -> Result<()> {
+    let pod_name = running_pod(agent).await?;
     let configs  = read_config(&pod_name).await?;
     if configs.is_empty() {
-        println!("No MCP servers configured in '{pod}'.");
+        println!("No MCP servers configured in '{agent}'.");
         return Ok(());
     }
     for c in &configs {
@@ -80,17 +80,17 @@ pub async fn list(pod: &str) -> Result<()> {
 }
 
 pub async fn add(
-    pod: &str,
+    agent: &str,
     name: &str,
     command: &str,
     args: &[String],
     env_pairs: &[String],
 ) -> Result<()> {
-    let pod_name = running_pod(pod).await?;
+    let pod_name = running_pod(agent).await?;
     let mut configs = read_config(&pod_name).await?;
 
     if configs.iter().any(|c| c.name == name) {
-        anyhow::bail!("MCP server '{name}' already exists in '{pod}'");
+        anyhow::bail!("MCP server '{name}' already exists in '{agent}'");
     }
 
     let mut env = HashMap::new();
@@ -109,7 +109,7 @@ pub async fn add(
         headers: HashMap::new(),
     });
 
-    println!("→ writing config to '{pod}'");
+    println!("→ writing config to '{agent}'");
     write_config(&pod_name, &configs).await?;
 
     let connected_marker  = format!("[mcp] '{name}' connected");
@@ -122,7 +122,7 @@ pub async fn add(
     let logs = loop {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         let logs = tokio::process::Command::new("kubectl")
-            .args(["logs", "-n", k8s::NAMESPACE, &format!("deployment/{pod}"), "--since=75s"])
+            .args(["logs", "-n", k8s::NAMESPACE, &format!("deployment/{agent}"), "--since=75s"])
             .output().await
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
             .unwrap_or_default();
@@ -146,7 +146,7 @@ pub async fn add(
 
     if !success {
         configs.retain(|c| c.name != name);
-        let current_pod_name = running_pod(pod).await.unwrap_or(pod_name);
+        let current_pod_name = running_pod(agent).await.unwrap_or(pod_name);
         write_config(&current_pod_name, &configs).await?;
     }
 
@@ -159,13 +159,13 @@ pub async fn add(
     } else if logs.contains(&init_fail_marker) {
         anyhow::bail!("MCP server '{name}' process started but MCP handshake failed.");
     } else {
-        anyhow::bail!("MCP server '{name}' did not confirm connection within timeout — entry not saved. Run `octo logs {pod}` to investigate.");
+        anyhow::bail!("MCP server '{name}' did not confirm connection within timeout — entry not saved. Run `octo logs {agent}` to investigate.");
     }
 
     Ok(())
 }
 
-pub async fn import_from_file(pod: &str, path: &std::path::Path) -> Result<()> {
+pub async fn import_from_file(agent: &str, path: &std::path::Path) -> Result<()> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read '{}'", path.display()))?;
     let entries: Vec<McpServerConfig> = serde_json::from_str(&text)
@@ -176,9 +176,9 @@ pub async fn import_from_file(pod: &str, path: &std::path::Path) -> Result<()> {
         return Ok(());
     }
 
-    let pod_name = running_pod(pod).await?;
+    let pod_name = running_pod(agent).await?;
 
-    // Expand ${VAR} references from the host environment before writing to the pod.
+    // Expand ${VAR} references from the host environment before writing to the agent.
     let resolved: Vec<McpServerConfig> = entries.into_iter().map(|mut e| {
         e.env     = e.env    .into_iter().map(|(k, v)| (k, expand_host_var(&v))).collect();
         e.headers = e.headers.into_iter().map(|(k, v)| (k, expand_host_var(&v))).collect();
@@ -186,21 +186,21 @@ pub async fn import_from_file(pod: &str, path: &std::path::Path) -> Result<()> {
     }).collect();
 
     // Replace the entire config with the contents of the file.
-    println!("Importing {} MCP server(s) into '{pod}' (replacing existing config)...", resolved.len());
+    println!("Importing {} MCP server(s) into '{agent}' (replacing existing config)...", resolved.len());
     write_config(&pod_name, &resolved).await?;
     println!("✓ imported successfully.");
     Ok(())
 }
 
-pub async fn remove(pod: &str, name: &str) -> Result<()> {
-    let pod_name = running_pod(pod).await?;
+pub async fn remove(agent: &str, name: &str) -> Result<()> {
+    let pod_name = running_pod(agent).await?;
     let mut configs = read_config(&pod_name).await?;
     let before = configs.len();
     configs.retain(|c| c.name != name);
     if configs.len() == before {
-        anyhow::bail!("MCP server '{name}' not found in '{pod}'");
+        anyhow::bail!("MCP server '{name}' not found in '{agent}'");
     }
     write_config(&pod_name, &configs).await?;
-    println!("Removed MCP server '{name}' from '{pod}'.");
+    println!("Removed MCP server '{name}' from '{agent}'.");
     Ok(())
 }
