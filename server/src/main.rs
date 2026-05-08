@@ -9,7 +9,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use axum::{
     extract::{
@@ -22,150 +22,37 @@ use axum::{
     Json, Router,
 };
 use octo_core::{
+    self,
     build_ephemeral_system_prompt, build_system_prompt, build_tools_with_mcp,
-    chain_executor_with_mcp, effective_repo, get_branches_for_repo,
+    chain_executor_with_mcp, data_dir, effective_repo, get_branches_for_repo,
     init_mcp_pool, init_shell_env, load_or_generate_keypair, read_config, resolve_api_key,
     resolve_model, run_noise_proxy, send_message, to_base32, write_config, ApiMessage, AnthropicTool,
     ChatEvent, Config, ContentBlock, McpPool, DEV_PUBKEY_BASE32, DEV_STATIC_PRIVATE, DEV_STATIC_PUBLIC,
     KEEPALIVE_INTERVAL, KEEPALIVE_MAX_MISSED,
+    StreamState, buffer_and_fanout, chat_event_to_wire_json, messages_to_history,
+    parse_ping_id, parse_pong_id,
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tower_http::cors::{Any, CorsLayer};
 
 const NOISE_KEY_FILE: &str = "/etc/octo/noise_key.bin";
 
 // ── Session persistence ───────────────────────────────────────────────────────
-
-fn data_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("OCTO_DATA_DIR") {
-        PathBuf::from(d)
-    } else {
-        PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".octo")
-    }
-}
-
-fn session_dir() -> PathBuf { data_dir().join("session") }
+//
+// Thin local wrappers that bind the shared `octo_core::app` helpers to this
+// binary's data dir and log prefix.
 
 fn save_messages(messages: &[ApiMessage]) {
-    let dir = session_dir();
-    fs::create_dir_all(&dir).ok();
-    if let Ok(json) = serde_json::to_string(messages) {
-        let path = dir.join("messages.json");
-        if let Err(e) = fs::write(&path, json) {
-            error!("[server] failed to save messages to {}: {e}", path.display());
-        } else {
-            debug!("[server] saved {} message(s) to {}", messages.len(), path.display());
-        }
-    }
+    octo_core::save_messages(&data_dir(), messages, "server");
 }
 
 fn load_messages() -> Vec<ApiMessage> {
-    let path = session_dir().join("messages.json");
-    match fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()) {
-        Some(msgs) => {
-            let v: Vec<ApiMessage> = msgs;
-            info!("[server] loaded {} message(s) from {}", v.len(), path.display());
-            v
-        }
-        None => {
-            debug!("[server] no saved messages at {}", path.display());
-            vec![]
-        }
-    }
-}
-
-// ── Wire types ────────────────────────────────────────────────────────────────
-
-#[derive(Serialize, Deserialize, Clone)]
-struct HistMsg {
-    role: String,
-    text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cost_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    output: Option<String>,
-}
-
-fn messages_to_history(messages: &[ApiMessage], last_cost_usd: Option<f64>) -> Vec<HistMsg> {
-    // Build tool_use_id → output text from ToolResult blocks in user messages.
-    let mut tool_outputs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for m in messages {
-        if m.role == "user" {
-            for block in &m.content {
-                if let ContentBlock::ToolResult { tool_use_id, content } = block {
-                    let text = content.first()
-                        .and_then(|v| v["text"].as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    tool_outputs.insert(tool_use_id.clone(), text);
-                }
-            }
-        }
-    }
-
-    let mut result = Vec::new();
-    for m in messages {
-        match m.role.as_str() {
-            "user" => {
-                let text: String = m.content.iter()
-                    .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
-                    .collect();
-                if !text.is_empty() { result.push(HistMsg { role: "user".to_string(), text, cost_usd: None, output: None }); }
-            }
-            "interrupted" => {
-                result.push(HistMsg { role: "interrupted".to_string(), text: "interrupted".to_string(), cost_usd: None, output: None });
-            }
-            "error" => {
-                let text: String = m.content.iter()
-                    .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
-                    .collect();
-                result.push(HistMsg { role: "error".to_string(), text, cost_usd: None, output: None });
-            }
-            "assistant" => {
-                let text: String = m.content.iter()
-                    .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
-                    .collect();
-                if !text.is_empty() { result.push(HistMsg { role: "assistant".to_string(), text, cost_usd: None, output: None }); }
-                for block in &m.content {
-                    if let ContentBlock::ToolUse { id, name, input } = block {
-                        let preview = input.as_object()
-                            .and_then(|map| map.values().next())
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.trim().to_string());
-                        let text = match preview {
-                            Some(p) => format!("{name}({p})"),
-                            None    => name.clone(),
-                        };
-                        let output = tool_outputs.get(id).cloned();
-                        result.push(HistMsg { role: "tool".to_string(), text, cost_usd: None, output });
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    // Attach cost to the last assistant message.
-    if let Some(cost) = last_cost_usd {
-        for msg in result.iter_mut().rev() {
-            if msg.role == "assistant" {
-                msg.cost_usd = Some(cost);
-                break;
-            }
-        }
-    }
-    result
+    octo_core::load_messages(&data_dir(), "server")
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
-
-// Holds the live streaming state shared between the active streaming loop and any watchers.
-// Events are buffered so that a watcher joining mid-turn can replay everything it missed.
-struct StreamState {
-    buffer: Vec<String>,
-    subs:   Vec<mpsc::UnboundedSender<String>>,
-}
 
 struct AppState {
     messages:      Arc<Mutex<Vec<ApiMessage>>>,
@@ -250,40 +137,6 @@ async fn stream_handler(
     ws.on_upgrade(move |socket| handle_stream(socket, state))
 }
 
-/// Render a `ChatEvent` to the JSON shape the wire schema (mobile/src/wire.ts)
-/// expects. Returns `None` for variants that aren't part of the /stream protocol.
-fn chat_event_to_wire_json(event: &ChatEvent) -> Option<serde_json::Value> {
-    match event {
-        ChatEvent::Text { text } =>
-            Some(serde_json::json!({"type":"text","text":text})),
-        ChatEvent::ToolUse { tool, input } =>
-            Some(serde_json::json!({"type":"tool_use","tool":tool,"input":input})),
-        ChatEvent::ToolOutput { line } =>
-            Some(serde_json::json!({"type":"tool_output","line":line})),
-        ChatEvent::ToolResult { tool_use_id, content } =>
-            Some(serde_json::json!({"type":"tool_result","tool_use_id":tool_use_id,"output":content})),
-        ChatEvent::Result { cost_usd, .. } =>
-            Some(serde_json::json!({"type":"done","cost_usd":cost_usd})),
-        ChatEvent::Interrupted { cost_usd } =>
-            Some(serde_json::json!({"type":"interrupted","cost_usd":cost_usd})),
-        ChatEvent::InterruptAck =>
-            Some(serde_json::json!({"type":"interrupt_ack"})),
-        ChatEvent::Error { message } =>
-            Some(serde_json::json!({"type":"error","message":message})),
-        ChatEvent::System { text } =>
-            Some(serde_json::json!({"type":"system","text":text})),
-        _ => None,
-    }
-}
-
-/// Push a JSON-serialized event to the per-turn buffer and fan it out to every
-/// live WS subscriber. Mirrors the previous in-line block but factored out so
-/// the spawn_turn task can call it without holding any other state.
-fn buffer_and_fanout(state: &AppState, json: String) {
-    let mut ss = state.stream_state.lock().unwrap();
-    ss.buffer.push(json.clone());
-    ss.subs.retain(|tx| tx.send(json.clone()).is_ok());
-}
 
 /// Spawn an agentic turn. Returns immediately; events are buffered + fanned out
 /// to all current /stream subscribers. The caller must have already verified
@@ -303,7 +156,7 @@ fn spawn_turn(state: Arc<AppState>, text: String) {
                     save_messages(&msgs);
                 }
                 let json = serde_json::json!({"type":"error","message": errmsg}).to_string();
-                buffer_and_fanout(&state, json);
+                buffer_and_fanout(&state.stream_state, json);
                 state.is_streaming.store(false, Ordering::Relaxed);
                 return;
             }
@@ -379,7 +232,7 @@ fn spawn_turn(state: Arc<AppState>, text: String) {
         // Relay task: drains the per-turn mpsc, buffers and fans out to all WS subs.
         while let Some(event) = event_rx.recv().await {
             if let Some(json) = chat_event_to_wire_json(&event) {
-                buffer_and_fanout(&state, json.to_string());
+                buffer_and_fanout(&state.stream_state, json.to_string());
             }
         }
         state.is_streaming.store(false, Ordering::Relaxed);
@@ -469,22 +322,6 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
     info!("[server/stream] connection closed");
 }
 
-/// Cheap parse for app-level `pong` frames (handled per-WS, not via dispatcher).
-/// Returns the echoed ping id if `raw` is a valid pong, else `None`.
-fn parse_pong_id(raw: &str) -> Option<u64> {
-    let v: serde_json::Value = serde_json::from_str(raw).ok()?;
-    if v.get("type").and_then(|x| x.as_str())? != "pong" { return None; }
-    v.get("id").and_then(|x| x.as_u64())
-}
-
-/// Parse client → server `ping { id }` frames so we can answer with a `pong`
-/// (mobile-side keepalive — symmetric to the server's outbound pings).
-fn parse_ping_id(raw: &str) -> Option<u64> {
-    let v: serde_json::Value = serde_json::from_str(raw).ok()?;
-    if v.get("type").and_then(|x| x.as_str())? != "ping" { return None; }
-    v.get("id").and_then(|x| x.as_u64())
-}
-
 /// Dispatch a client → server frame parsed from a /stream WS message.
 async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
     let v: serde_json::Value = match serde_json::from_str(raw) {
@@ -507,7 +344,7 @@ async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
                 .is_err()
             {
                 let json = serde_json::json!({"type":"error","message":"a turn is already running"}).to_string();
-                buffer_and_fanout(state, json);
+                buffer_and_fanout(&state.stream_state, json);
                 return;
             }
             let preview: String = text.chars().take(120).collect();
@@ -517,7 +354,7 @@ async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
         "interrupt" => {
             info!("[server/stream] interrupt frame received");
             state.cancel.lock().unwrap().cancel();
-            buffer_and_fanout(state, serde_json::json!({"type":"interrupt_ack"}).to_string());
+            buffer_and_fanout(&state.stream_state, serde_json::json!({"type":"interrupt_ack"}).to_string());
         }
         "pong" => {
             // App-level keepalive ack — handled per-WS in the future ping/pong work.

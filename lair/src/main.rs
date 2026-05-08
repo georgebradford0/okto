@@ -24,16 +24,19 @@ use axum::{
     Json, Router,
 };
 use octo_core::{
+    self,
     build_ephemeral_system_prompt, build_tools_with_mcp, chain_executor_with_mcp,
     init_mcp_pool, init_shell_env, load_or_generate_keypair,
     resolve_api_key, resolve_model, run_noise_proxy, send_message, to_base32, ApiMessage, AnthropicTool,
     ChatEvent, ContentBlock, McpPool, DEV_PUBKEY_BASE32, DEV_STATIC_PRIVATE, DEV_STATIC_PUBLIC,
     KEEPALIVE_INTERVAL, KEEPALIVE_MAX_MISSED,
+    StreamState, buffer_and_fanout, chat_event_to_wire_json, messages_to_history,
+    parse_ping_id, parse_pong_id,
 };
 use hex;
 use futures_util::{SinkExt, StreamExt};
 use octo_k8s_ops::Client;
-use tokio::sync::{broadcast, mpsc, watch, Notify};
+use tokio::sync::{mpsc, watch, Notify};
 use serde::{Deserialize, Serialize};
 use tower_http::cors::{Any, CorsLayer};
 
@@ -65,108 +68,16 @@ struct ContainerInfo {
 }
 
 // ── Session persistence ───────────────────────────────────────────────────────
-
-fn session_dir() -> PathBuf { data_dir().join("session") }
+//
+// Thin local wrappers that bind the shared `octo_core::app` helpers to this
+// binary's data dir and log prefix.
 
 fn save_messages(messages: &[ApiMessage]) {
-    let dir = session_dir();
-    fs::create_dir_all(&dir).ok();
-    if let Ok(json) = serde_json::to_string(messages) {
-        let path = dir.join("messages.json");
-        if let Err(e) = fs::write(&path, json) {
-            error!("[lair] failed to save messages to {}: {e}", path.display());
-        } else {
-            debug!("[lair] saved {} message(s) to {}", messages.len(), path.display());
-        }
-    }
+    octo_core::save_messages(&data_dir(), messages, "lair");
 }
 
 fn load_messages() -> Vec<ApiMessage> {
-    let path = session_dir().join("messages.json");
-    match fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()) {
-        Some(msgs) => {
-            let v: Vec<ApiMessage> = msgs;
-            info!("[lair] loaded {} message(s) from {}", v.len(), path.display());
-            v
-        }
-        None => {
-            debug!("[lair] no saved messages at {}", path.display());
-            vec![]
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct HistMsg {
-    role: String,
-    text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cost_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    output: Option<String>,
-}
-
-fn messages_to_history(messages: &[ApiMessage], last_cost_usd: Option<f64>) -> Vec<HistMsg> {
-    // Build tool_use_id → output text from ToolResult blocks in user messages.
-    let mut tool_outputs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for m in messages {
-        if m.role == "user" {
-            for block in &m.content {
-                if let ContentBlock::ToolResult { tool_use_id, content } = block {
-                    let text = content.first()
-                        .and_then(|v| v["text"].as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    tool_outputs.insert(tool_use_id.clone(), text);
-                }
-            }
-        }
-    }
-
-    let mut result = Vec::new();
-    for m in messages {
-        match m.role.as_str() {
-            "user" => {
-                let text: String = m.content.iter()
-                    .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
-                    .collect();
-                if !text.is_empty() { result.push(HistMsg { role: "user".to_string(), text, cost_usd: None, output: None }); }
-            }
-            "interrupted" => {
-                result.push(HistMsg { role: "interrupted".to_string(), text: "interrupted".to_string(), cost_usd: None, output: None });
-            }
-            "assistant" => {
-                let text: String = m.content.iter()
-                    .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
-                    .collect();
-                if !text.is_empty() { result.push(HistMsg { role: "assistant".to_string(), text, cost_usd: None, output: None }); }
-                for block in &m.content {
-                    if let ContentBlock::ToolUse { id, name, input } = block {
-                        let preview = input.as_object()
-                            .and_then(|map| map.values().next())
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.trim().to_string());
-                        let text = match preview {
-                            Some(p) => format!("{name}({p})"),
-                            None    => name.clone(),
-                        };
-                        let output = tool_outputs.get(id).cloned();
-                        result.push(HistMsg { role: "tool".to_string(), text, cost_usd: None, output });
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    if let Some(cost) = last_cost_usd {
-        for msg in result.iter_mut().rev() {
-            if msg.role == "assistant" {
-                msg.cost_usd = Some(cost);
-                break;
-            }
-        }
-    }
-    result
+    octo_core::load_messages(&data_dir(), "lair")
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
@@ -194,9 +105,10 @@ struct AppState {
     /// True while an agentic turn is actively running. Guards against concurrent
     /// `user_message` frames; the second one is rejected until the first completes.
     is_streaming:         AtomicBool,
-    /// Broadcast of JSON-serialized ChatEvents from the active turn. Each /stream
-    /// WS subscribes and forwards every event it receives.
-    events_tx:            broadcast::Sender<String>,
+    /// Buffered events for the current turn + live subscriber list. Late /stream
+    /// joiners replay the buffer so they don't miss events emitted before they
+    /// connected. Cleared at the start of each new turn.
+    stream_state:         Mutex<StreamState>,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -292,49 +204,16 @@ async fn stream_handler(
     ws.on_upgrade(move |socket| handle_stream(socket, state))
 }
 
-/// Render a `ChatEvent` to the JSON shape the wire schema (mobile/src/wire.ts)
-/// expects. Returns `None` for variants that aren't part of the /stream protocol.
-/// Variant→JSON shape is hand-coded rather than relying on serde's auto-derive
-/// because the wire uses `output` for tool_result content (not the auto-derived
-/// `content` field), and we want to keep that explicit.
-fn chat_event_to_wire_json(event: &ChatEvent) -> Option<serde_json::Value> {
-    match event {
-        ChatEvent::Text { text } =>
-            Some(serde_json::json!({"type":"text","text":text})),
-        ChatEvent::ToolUse { tool, input } =>
-            Some(serde_json::json!({"type":"tool_use","tool":tool,"input":input})),
-        ChatEvent::ToolOutput { line } =>
-            Some(serde_json::json!({"type":"tool_output","line":line})),
-        ChatEvent::ToolResult { tool_use_id, content } =>
-            Some(serde_json::json!({"type":"tool_result","tool_use_id":tool_use_id,"output":content})),
-        ChatEvent::Result { cost_usd, .. } =>
-            Some(serde_json::json!({"type":"done","cost_usd":cost_usd})),
-        ChatEvent::Interrupted { cost_usd } =>
-            Some(serde_json::json!({"type":"interrupted","cost_usd":cost_usd})),
-        ChatEvent::InterruptAck =>
-            Some(serde_json::json!({"type":"interrupt_ack"})),
-        ChatEvent::Error { message } =>
-            Some(serde_json::json!({"type":"error","message":message})),
-        ChatEvent::System { text } =>
-            Some(serde_json::json!({"type":"system","text":text})),
-        // Ready, Containers, Ping, Pong, UserMessage, Interrupt, StartContainer:
-        // these are emitted directly by the WS handler / poller, not by the agentic
-        // loop, and never travel through this conversion path.
-        _ => None,
-    }
-}
-
-/// Spawn an agentic turn. Returns immediately; events are broadcast via
-/// `state.events_tx` to all connected /stream subscribers. The caller must
+/// Spawn an agentic turn. Returns immediately; events are buffered + fanned out
+/// to all current /stream subscribers via `state.stream_state`. The caller must
 /// have already verified `is_streaming` was false and flipped it to true.
 fn spawn_turn(state: Arc<AppState>, text: String) {
     tokio::spawn(async move {
         let api_key = match resolve_api_key() {
             Some(k) => k,
             None => {
-                let _ = state.events_tx.send(
-                    serde_json::json!({"type":"error","message":"no API key configured"}).to_string()
-                );
+                let json = serde_json::json!({"type":"error","message":"no API key configured"}).to_string();
+                buffer_and_fanout(&state.stream_state, json);
                 state.is_streaming.store(false, Ordering::Relaxed);
                 return;
             }
@@ -357,7 +236,6 @@ fn spawn_turn(state: Arc<AppState>, text: String) {
         let system    = state.system.clone();
         let msgs_arc  = state.messages.clone();
         let state_arc = Arc::clone(&state);
-        let events_for_relay = state.events_tx.clone();
 
         let (event_tx, mut event_rx) = mpsc::channel::<ChatEvent>(256);
         let done_tx = event_tx.clone();
@@ -366,6 +244,9 @@ fn spawn_turn(state: Arc<AppState>, text: String) {
         // and incoming "interrupt" frames can reach it.
         let cancel = CancellationToken::new();
         *state.cancel.lock().unwrap() = cancel.clone();
+
+        // Clear the per-turn buffer; subscribers stay so live events still fan out.
+        state.stream_state.lock().unwrap().buffer.clear();
 
         let extra_tools = build_tools_with_mcp(&state.mcp_pool, &lair_extra_tools()).await;
         let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), lair_extra_executor(Arc::clone(&state)));
@@ -404,10 +285,11 @@ fn spawn_turn(state: Arc<AppState>, text: String) {
             }
         });
 
-        // Relay task: drains the per-turn mpsc and broadcasts JSON to all WS subs.
+        // Relay task: drains the per-turn mpsc, buffers JSON, and fans it out
+        // to every live /stream WS subscriber.
         while let Some(event) = event_rx.recv().await {
             if let Some(json) = chat_event_to_wire_json(&event) {
-                let _ = events_for_relay.send(json.to_string());
+                buffer_and_fanout(&state.stream_state, json.to_string());
             }
         }
         state.is_streaming.store(false, Ordering::Relaxed);
@@ -419,9 +301,18 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
     info!("[lair/stream] WebSocket connection opened");
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    // Greet the client. `resumed` reflects whether they're joining an in-flight
-    // turn (whose remaining events they'll receive via the broadcast channel).
-    let resumed = state.is_streaming.load(Ordering::Relaxed);
+    // Atomically snapshot the per-turn buffer (events from any in-flight turn)
+    // and register as a subscriber so no events are lost in the gap.
+    let (sub_tx, mut sub_rx) = mpsc::unbounded_channel::<String>();
+    let (replay, resumed) = {
+        let mut ss = state.stream_state.lock().unwrap();
+        let replay = ss.buffer.clone();
+        ss.subs.push(sub_tx);
+        (replay, state.is_streaming.load(Ordering::Relaxed))
+    };
+
+    // Greet the client. `resumed` indicates whether they're joining an in-flight
+    // turn; if so the buffer replay below catches them up to its current state.
     let ready = serde_json::json!({"type":"ready","session_id":"","resumed":resumed}).to_string();
     if ws_tx.send(WsMessage::Text(ready)).await.is_err() {
         return;
@@ -434,8 +325,13 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
             return;
         }
     }
+    if !replay.is_empty() {
+        info!("[lair/stream] replaying {} buffered event(s) to new connection", replay.len());
+        for event in replay {
+            if ws_tx.send(WsMessage::Text(event)).await.is_err() { return; }
+        }
+    }
 
-    let mut events_rx     = state.events_tx.subscribe();
     let mut containers_rx = state.containers_rx.clone();
 
     // App-level keepalive: server emits `ping` every KEEPALIVE_INTERVAL; client
@@ -451,15 +347,12 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
 
     loop {
         tokio::select! {
-            // Outgoing: agentic-turn events broadcast from spawn_turn.
-            res = events_rx.recv() => match res {
-                Ok(json) => {
+            // Outgoing: agentic-turn events fanned out from spawn_turn / buffer.
+            msg = sub_rx.recv() => match msg {
+                Some(json) => {
                     if ws_tx.send(WsMessage::Text(json)).await.is_err() { break; }
                 }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!("[lair/stream] subscriber lagged by {n} events");
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
+                None => break,
             },
 
             // Outgoing: container list updates from the K8s poller.
@@ -506,22 +399,6 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
     info!("[lair/stream] connection closed");
 }
 
-/// Cheap parse for app-level `pong` frames (handled per-WS, not via dispatcher).
-/// Returns the echoed ping id if `raw` is a valid pong, else `None`.
-fn parse_pong_id(raw: &str) -> Option<u64> {
-    let v: serde_json::Value = serde_json::from_str(raw).ok()?;
-    if v.get("type").and_then(|x| x.as_str())? != "pong" { return None; }
-    v.get("id").and_then(|x| x.as_u64())
-}
-
-/// Parse client → server `ping { id }` frames so we can answer with a `pong`
-/// (mobile-side keepalive — symmetric to the server's outbound pings).
-fn parse_ping_id(raw: &str) -> Option<u64> {
-    let v: serde_json::Value = serde_json::from_str(raw).ok()?;
-    if v.get("type").and_then(|x| x.as_str())? != "ping" { return None; }
-    v.get("id").and_then(|x| x.as_u64())
-}
-
 /// Dispatch a client → server frame parsed from a /stream WS message.
 async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
     let v: serde_json::Value = match serde_json::from_str(raw) {
@@ -545,9 +422,8 @@ async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
                 .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                 .is_err()
             {
-                let _ = state.events_tx.send(
-                    serde_json::json!({"type":"error","message":"a turn is already running"}).to_string()
-                );
+                let json = serde_json::json!({"type":"error","message":"a turn is already running"}).to_string();
+                buffer_and_fanout(&state.stream_state, json);
                 return;
             }
             let preview: String = text.chars().take(120).collect();
@@ -558,9 +434,7 @@ async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
             info!("[lair/stream] interrupt frame received");
             state.cancel.lock().unwrap().cancel();
             // Optimistic ack — the agentic loop will follow up with Interrupted.
-            let _ = state.events_tx.send(
-                serde_json::json!({"type":"interrupt_ack"}).to_string()
-            );
+            buffer_and_fanout(&state.stream_state, serde_json::json!({"type":"interrupt_ack"}).to_string());
         }
         "start_container" => {
             let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
@@ -573,9 +447,8 @@ async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
             tokio::spawn(async move {
                 if let Err(e) = start_container_by_id(&state, &id).await {
                     error!("[lair/stream] start_container failed: {e}");
-                    let _ = state.events_tx.send(
-                        serde_json::json!({"type":"error","message":format!("start_container: {e}")}).to_string()
-                    );
+                    let json = serde_json::json!({"type":"error","message":format!("start_container: {e}")}).to_string();
+                    buffer_and_fanout(&state.stream_state, json);
                 }
             });
         }
@@ -1118,10 +991,6 @@ async fn main() {
     let mcp_pool     = init_mcp_pool().await;
     let poll_trigger = Arc::new(Notify::new());
     let (containers_tx, containers_rx) = watch::channel(Vec::<ContainerInfo>::new());
-    // Buffer ample for a slow client: a typical turn fits well under 256 events,
-    // and each subscriber catches up with `recv()` independently. Lagged
-    // subscribers drop oldest events and surface a warning, never block sends.
-    let (events_tx, _) = broadcast::channel::<String>(512);
 
     let state = Arc::new(AppState {
         messages:              Arc::new(Mutex::new(messages)),
@@ -1138,7 +1007,7 @@ async fn main() {
         mcp_pool,
         cancel:                Mutex::new(CancellationToken::new()),
         is_streaming:          AtomicBool::new(false),
-        events_tx,
+        stream_state:          Mutex::new(StreamState::new()),
     });
 
     tokio::spawn(poll_containers(state.clone()));

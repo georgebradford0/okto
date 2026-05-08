@@ -16,6 +16,14 @@ pub use noise::{
     load_or_generate_keypair, run_noise_proxy, to_base32,
 };
 
+pub mod app;
+pub use app::{
+    StreamState, buffer_and_fanout,
+    HistMsg, messages_to_history, chat_event_to_wire_json,
+    save_messages, load_messages, session_dir,
+    parse_ping_id, parse_pong_id,
+};
+
 // ── Shared HTTP client ────────────────────────────────────────────────────────
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
