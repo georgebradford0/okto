@@ -22,18 +22,23 @@ kubectl create secret generic k3s-join-token \
 
 ## 4. Store API keys as a K8s Secret
 
+The Secret must be named `lair-secrets` and use UPPER_SNAKE_CASE keys; both
+the lair Deployment and every child pod consume it via `envFrom`, so each
+key becomes an env var of the same name verbatim. See
+`k8s-ops/src/k8s.rs::upsert_secret` for the runtime mutation path lair uses.
+
 ```sh
-kubectl create secret generic octo-secrets \
-  --from-literal=anthropic-api-key="<key>" \
-  --from-literal=gh-token="<token>" \
+kubectl create secret generic lair-secrets \
+  --from-literal=ANTHROPIC_API_KEY="<key>" \
+  --from-literal=GH_TOKEN="<token>" \
   -n octo
 ```
 
 For remote EC2 provisioning also add:
 
 ```sh
-kubectl patch secret octo-secrets -n octo \
-  --patch='{"stringData":{"aws-access-key-id":"<id>","aws-secret-access-key":"<secret>"}}'
+kubectl patch secret lair-secrets -n octo \
+  --patch='{"stringData":{"AWS_ACCESS_KEY_ID":"<id>","AWS_SECRET_ACCESS_KEY":"<secret>"}}'
 ```
 
 ## 5. Create AWS prerequisites (if using remote provisioning)

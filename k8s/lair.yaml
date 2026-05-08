@@ -34,18 +34,14 @@ spec:
               name: http
             - containerPort: 9000
               name: noise
+          envFrom:
+            # All secret keys (ANTHROPIC_API_KEY, GH_TOKEN, NOISE_PRIVATE_KEY,
+            # MCP_CONFIG_JSON, MODEL, OPENAI_BASE_URL, OPENAI_API_KEY, …) become
+            # env vars verbatim. Same shape child pods use, so adding a key here
+            # automatically propagates to children. See k8s-ops::upsert_secret.
+            - secretRef:
+                name: lair-secrets
           env:
-            - name: ANTHROPIC_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: octo-secrets
-                  key: anthropic-api-key
-            - name: GH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: octo-secrets
-                  key: gh-token
-                  optional: true
             - name: PUBLIC_PORT
               value: "30090"
           volumeMounts:

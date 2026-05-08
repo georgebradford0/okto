@@ -27,10 +27,14 @@ kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/rbac.yaml
 
 # ── Secret ─────────────────────────────────────────────────────────────────────
-echo "▸ Creating/updating secret..."
-kubectl create secret generic octo-secrets \
-    --from-literal=anthropic-api-key="${ANTHROPIC_API_KEY_OCTO}" \
-    --from-literal=gh-token="${GH_TOKEN:-}" \
+# Single Secret used by both the parent lair Deployment (via secretKeyRef) and
+# every child pod created via lair's k8s tooling (via envFrom: lair-secrets).
+# Keep these in sync if you add new keys: see k8s-ops/src/k8s.rs::upsert_secret
+# for the production codepath that lair uses to mutate this same Secret.
+echo "▸ Creating/updating lair-secrets..."
+kubectl create secret generic lair-secrets \
+    --from-literal=ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY_OCTO}" \
+    --from-literal=GH_TOKEN="${GH_TOKEN:-}" \
     -n octo \
     --dry-run=client -o yaml | kubectl apply -f -
 
