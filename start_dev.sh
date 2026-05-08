@@ -54,13 +54,32 @@ kubectl set env deployment/lair OCTO_DEV=1 -n octo
 echo "▸ Waiting for lair pod to be ready..."
 kubectl rollout status deployment/lair -n octo --timeout=120s
 
-# ── Port-forward lair (background) ──────────────────────────────────────────
+# ── Port-forward lair (background, auto-respawn) ───────────────────────────
 # Docker Desktop on Mac exposes NodePorts natively — no port-forward needed for
 # child containers. We only forward lair's Noise port because DEV_CONN uses
 # port 9000 rather than the NodePort (30090).
+#
+# `kubectl port-forward svc/...` glues to ONE backing pod at start time and dies
+# when that pod terminates (e.g. when lair gets rolled). The loop below
+# respawns it so dev sessions survive `kubectl rollout restart` etc. The PID
+# saved is the supervisor loop, not the inner kubectl — stop_dev.sh kills the
+# loop AND any orphaned `kubectl port-forward` processes for safety.
 PID_FILE="/tmp/octo-dev-portforward.pid"
+PF_LOG="/tmp/octo-portforward.log"
+: >"${PF_LOG}"
 
-kubectl port-forward -n octo svc/lair-noise 9000:9000 >"/tmp/octo-portforward.log" 2>&1 &
+(
+    # If our supervisor gets SIGTERM/SIGINT, kill the inner kubectl too —
+    # otherwise it'd be orphaned and keep holding port 9000.
+    trap 'kill $PF_PID 2>/dev/null; exit 0' TERM INT
+    while :; do
+        kubectl port-forward -n octo svc/lair-noise 9000:9000 >>"${PF_LOG}" 2>&1 &
+        PF_PID=$!
+        wait "$PF_PID"
+        echo "[$(date '+%H:%M:%S')] port-forward exited (rc=$?), respawning in 2s..." >>"${PF_LOG}"
+        sleep 2
+    done
+) &
 echo $! > "${PID_FILE}"
 
 echo ""
