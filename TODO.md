@@ -1,5 +1,6 @@
 # TODO
 
+- [ ] Bug in chat that shows duplicate messages when returning from foreground
 - [ ] check if api keys used for starting up lair are visible in deployment data, move to secrets
 - [ ] Setup background tasks
 - [ ] More robust pod readiness waiting — child pods have no readiness probe so `wait_for_deployment_ready` returns as soon as the process starts, not when the server is actually listening. Add a `/health` readiness probe to child deployments (same as lair) so reload and create reliably wait until the pod is ready to accept connections.

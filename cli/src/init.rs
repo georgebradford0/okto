@@ -4,13 +4,14 @@ use data_encoding::BASE32_NOPAD;
 use tokio::process::Command;
 
 pub async fn run(
-    api_key:    &str,
-    gh_token:   Option<&str>,
-    noise_port: u16,
-    public_port: u16,
-    mcp_config: Option<&std::path::Path>,
-    model:      Option<&str>,
-    base_url:   Option<&str>,
+    api_key:        &str,
+    gh_token:       Option<&str>,
+    noise_port:     u16,
+    public_port:    u16,
+    mcp_config:     Option<&std::path::Path>,
+    model:          Option<&str>,
+    base_url:       Option<&str>,
+    openai_api_key: Option<&str>,
 ) -> Result<()> {
     ensure_kubernetes().await?;
 
@@ -51,7 +52,7 @@ pub async fn run(
     println!("Configuring RBAC...");
     k8s::ensure_rbac(&client).await?;
     println!("Storing API keys and keypair in cluster secret...");
-    k8s::upsert_secret(&client, api_key, gh_token, &noise_private_key_hex, mcp_config_json.as_deref(), model, base_url, None).await?;
+    k8s::upsert_secret(&client, api_key, gh_token, &noise_private_key_hex, mcp_config_json.as_deref(), model, base_url, openai_api_key).await?;
     println!("Configuring GHCR image pull credentials...");
     k8s::ensure_ghcr_pull_secret(&client, gh_token).await?;
     println!("Provisioning lair data volume...");

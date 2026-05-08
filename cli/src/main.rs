@@ -11,6 +11,46 @@ fn mask(s: &str) -> String {
     if s.len() <= 8 { return "*".repeat(s.len()); }
     format!("{}...{}", &s[..4], &s[s.len()-4..])
 }
+
+/// Validate the effective config that will be written to lair-secrets.
+/// Runs before any cluster mutation in both `init` and `reload`.
+fn validate_resolved_config(
+    api_key:        &str,
+    openai_api_key: Option<&str>,
+    base_url:       Option<&str>,
+    model:          Option<&str>,
+) -> Result<(), String> {
+    let api_key        = api_key.trim();
+    let openai_api_key = openai_api_key.map(str::trim).filter(|s| !s.is_empty());
+    let base_url       = base_url      .map(str::trim).filter(|s| !s.is_empty());
+    let model          = model         .map(str::trim).filter(|s| !s.is_empty());
+
+    match base_url {
+        Some(url) => {
+            if !(url.starts_with("http://") || url.starts_with("https://")) {
+                return Err(format!("base_url must start with http:// or https:// (got: {url})"));
+            }
+            if openai_api_key.is_none() && api_key.is_empty() {
+                return Err(
+                    "OpenAI-compatible setup requires openai_api_key (or api_key as a fallback) for the bearer token".into()
+                );
+            }
+            if model.is_none() {
+                return Err(
+                    "OpenAI-compatible setup requires model to be set — the default 'claude-sonnet-4-6' won't work against OpenAI endpoints".into()
+                );
+            }
+        }
+        None => {
+            if api_key.is_empty() {
+                return Err(
+                    "api_key is required for the Anthropic backend (or set base_url for an OpenAI-compatible endpoint)".into()
+                );
+            }
+        }
+    }
+    Ok(())
+}
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
 
@@ -392,9 +432,9 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Init { api_key, gh_token, noise_port, public_port, mcp_config, config } => {
-            // Read config file if provided.
-            let cfg_json: Option<serde_json::Value> = match &config {
-                None => None,
+            // Explicit --config errors hard if missing/invalid; otherwise fall back to
+            // ~/.octo/config.json, which read_config() returns as default if absent or malformed.
+            let cfg = match &config {
                 Some(path) => {
                     if !path.exists() {
                         eprintln!("error: config file not found: {}", path.display());
@@ -402,20 +442,28 @@ async fn main() -> Result<()> {
                     }
                     let text = std::fs::read_to_string(path)
                         .map_err(|e| anyhow::anyhow!("failed to read config file {}: {e}", path.display()))?;
-                    Some(serde_json::from_str(&text)
-                        .map_err(|e| anyhow::anyhow!("invalid JSON in config file {}: {e}", path.display()))?)
+                    serde_json::from_str::<octo_k8s_ops::Config>(&text)
+                        .map_err(|e| anyhow::anyhow!("invalid JSON in config file {}: {e}", path.display()))?
                 }
+                None => octo_k8s_ops::read_config(),
             };
 
             // api_key: --api-key flag > config file > error
             let resolved_api_key = api_key
-                .or_else(|| cfg_json.as_ref().and_then(|c| c["api_key"].as_str().map(str::to_string)))
+                .or(cfg.api_key)
                 .ok_or_else(|| anyhow::anyhow!(
-                    "API key is required: pass --api-key, set ANTHROPIC_API_KEY, or include api_key in --config"
+                    "API key is required: pass --api-key, set ANTHROPIC_API_KEY, or include api_key in --config or ~/.octo/config.json"
                 ))?;
 
-            let model    = cfg_json.as_ref().and_then(|c| c["model"].as_str().map(str::to_string));
-            let base_url = cfg_json.as_ref().and_then(|c| c["base_url"].as_str().map(str::to_string));
+            if let Err(e) = validate_resolved_config(
+                &resolved_api_key,
+                cfg.openai_api_key.as_deref(),
+                cfg.base_url.as_deref(),
+                cfg.model.as_deref(),
+            ) {
+                eprintln!("error: invalid config: {e}");
+                std::process::exit(1);
+            }
 
             init::run(
                 &resolved_api_key,
@@ -423,8 +471,9 @@ async fn main() -> Result<()> {
                 noise_port,
                 public_port,
                 mcp_config.as_deref(),
-                model.as_deref(),
-                base_url.as_deref(),
+                cfg.model.as_deref(),
+                cfg.base_url.as_deref(),
+                cfg.openai_api_key.as_deref(),
             ).await?;
         }
         Command::Destroy { yes } => {
@@ -488,6 +537,17 @@ async fn main() -> Result<()> {
                     let model          = local.model         .or(current.model);
                     let base_url       = local.base_url      .or(current.base_url);
                     let openai_api_key = local.openai_api_key.or(current.openai_api_key);
+
+                    if let Err(e) = validate_resolved_config(
+                        &api_key,
+                        openai_api_key.as_deref(),
+                        base_url.as_deref(),
+                        model.as_deref(),
+                    ) {
+                        eprintln!("error: invalid config: {e}");
+                        std::process::exit(1);
+                    }
+
                     k8s::upsert_secret(
                         &client,
                         &api_key,
