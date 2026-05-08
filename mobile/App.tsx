@@ -585,6 +585,16 @@ const ChatPane = memo(function ChatPane({
   const closingRef        = useRef(false)
   const streamingIdRef    = useRef<string>(uid())
   const hasAssistantMsgRef = useRef<boolean>(false)
+  // True for the duration of an agentic turn after the user message has been
+  // scrolled into view: suppresses content-grew auto-scroll so streaming text
+  // doesn't drag the viewport down while the user is reading. Released only
+  // when the turn ends (done / interrupted / error). User scroll never
+  // releases — they can read or peek freely without forfeiting the lock.
+  const streamingLockRef    = useRef<boolean>(false)
+  // One-shot flag set in sendMessage and consumed by onContentSizeChange the
+  // very next time it auto-scrolls — engages streamingLockRef immediately
+  // after the user message is on screen.
+  const scrollOnceAndLockRef = useRef<boolean>(false)
   const listRef           = useRef<FlatList<Message>>(null)
   const isAtBottomRef     = useRef(true)
   const contentHeightRef  = useRef(0)
@@ -689,6 +699,7 @@ const ChatPane = memo(function ChatPane({
       case 'done':
         log(`[chat] stream done cost_usd=${event.cost_usd}`)
         lastToolIdRef.current = null
+        streamingLockRef.current = false
         // WS stays open across turns now; reconcile with /history for cost stamp etc.
         loadHistoryRef.current()
         break
@@ -702,11 +713,13 @@ const ChatPane = memo(function ChatPane({
       case 'interrupted':
         log(`[chat] stream interrupted cost_usd=${event.cost_usd}`)
         lastToolIdRef.current = null
+        streamingLockRef.current = false
         loadHistoryRef.current()
         break
       case 'error':
         logE(`[chat] stream error: ${event.message}`)
         lastToolIdRef.current = null
+        streamingLockRef.current = false
         setMessages(prev => appendMsg(prev, { id: uid(), role: 'error' as const, text: event.message }))
         updateStatus('ready')
         break
@@ -928,6 +941,11 @@ const ChatPane = memo(function ChatPane({
     // streaming message id rather than appending onto the previous turn's tail.
     streamingIdRef.current = uid()
     hasAssistantMsgRef.current = false
+    // Release any lingering lock from a previous turn, then arm the one-shot
+    // so the user msg auto-scrolls into view and the lock re-engages right
+    // after — see onContentSizeChange.
+    streamingLockRef.current = false
+    scrollOnceAndLockRef.current = true
 
     if (!sendFrame({ type: 'user_message', text })) {
       logE('[chat] sendMessage: WS not open, surfacing error')
@@ -984,9 +1002,20 @@ const ChatPane = memo(function ChatPane({
           }
           onContentSizeChange={(_, h) => {
             contentHeightRef.current = h
+            if (streamingLockRef.current) {
+              if (isAtBottomRef.current && h > listHeightRef.current) {
+                isAtBottomRef.current = false
+                setShowScrollBtn(true)
+              }
+              return
+            }
             if (isAtBottomRef.current) {
               const offset = Math.max(0, h - listHeightRef.current)
               listRef.current?.scrollToOffset({ offset, animated: false })
+              if (scrollOnceAndLockRef.current) {
+                scrollOnceAndLockRef.current = false
+                streamingLockRef.current = true
+              }
             }
           }}
           onLayout={e => { listHeightRef.current = e.nativeEvent.layout.height }}
