@@ -11,7 +11,7 @@
 export type ServerEvent =
   | { type: 'ready';         session_id: string; resumed: boolean }
   | { type: 'text';          text: string }
-  | { type: 'tool_use';      tool: string; input: unknown }
+  | { type: 'tool_use';      tool: string; input: unknown; display?: string }
   | { type: 'tool_output';   line: string }
   // NB: wire field is `output` (hand-coded in lair/server), not `content` as
   // the auto-derived ChatEvent::ToolResult would produce. Keep this aligned.

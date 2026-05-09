@@ -164,8 +164,13 @@ pub fn chat_event_to_wire_json(event: &ChatEvent) -> Option<serde_json::Value> {
     match event {
         ChatEvent::Text { text } =>
             Some(serde_json::json!({"type":"text","text":text})),
-        ChatEvent::ToolUse { tool, input } =>
-            Some(serde_json::json!({"type":"tool_use","tool":tool,"input":input})),
+        ChatEvent::ToolUse { tool, input, display } => {
+            let mut v = serde_json::json!({"type":"tool_use","tool":tool,"input":input});
+            if let Some(d) = display {
+                v["display"] = serde_json::Value::String(d.clone());
+            }
+            Some(v)
+        }
         ChatEvent::ToolOutput { line } =>
             Some(serde_json::json!({"type":"tool_output","line":line})),
         ChatEvent::ToolResult { tool_use_id, content } =>

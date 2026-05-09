@@ -194,6 +194,51 @@ pub struct AnthropicTool {
     pub name:         String,
     pub description:  String,
     pub input_schema: serde_json::Value,
+    /// Human-readable phrase shown by clients when the model invokes this tool
+    /// (e.g. "Creating agent", "Reading file"). Skipped on the wire — it never
+    /// leaves core. Built-ins set it inline; MCP tools get a derived fallback.
+    #[serde(skip)]
+    pub display_label: Option<String>,
+}
+
+/// Look up a human-readable label for `name` in the active tool list, falling
+/// back to a name-derived label so MCP tools without a curated `display_label`
+/// still get a friendly phrase.
+pub fn lookup_display_label(tools: &[AnthropicTool], name: &str) -> Option<String> {
+    if let Some(t) = tools.iter().find(|t| t.name == name) {
+        if let Some(label) = &t.display_label {
+            return Some(label.clone());
+        }
+    }
+    Some(derive_display_label(name))
+}
+
+/// Best-effort human-readable label for a tool name we don't have a curated
+/// label for (e.g. an MCP tool we discovered at runtime). Strips an optional
+/// `server__` MCP prefix, then turns the first underscore-separated word into
+/// a present-continuous verb: `create_pull_request` → "Creating pull request".
+pub fn derive_display_label(name: &str) -> String {
+    let bare = name.rsplit("__").next().unwrap_or(name);
+    let mut parts = bare.split('_').filter(|s| !s.is_empty());
+    let Some(first) = parts.next() else {
+        return name.to_string();
+    };
+    let verb = if first.ends_with('e') && first.len() > 1 {
+        format!("{}ing", &first[..first.len() - 1])
+    } else {
+        format!("{first}ing")
+    };
+    let mut out = String::with_capacity(name.len() + 4);
+    let mut chars = verb.chars();
+    if let Some(c) = chars.next() {
+        out.extend(c.to_uppercase());
+        out.push_str(chars.as_str());
+    }
+    for w in parts {
+        out.push(' ');
+        out.push_str(w);
+    }
+    out
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -230,7 +275,15 @@ pub const KEEPALIVE_MAX_MISSED: u64 = 2;
 pub enum ChatEvent {
     Ready              { session_id: String, resumed: bool },
     Text               { text: String },
-    ToolUse            { tool: String, input: serde_json::Value },
+    ToolUse            {
+        tool:  String,
+        input: serde_json::Value,
+        /// Human-readable phrase clients should show in place of `tool` (e.g.
+        /// "Creating agent" rather than `create_agent`). Optional for backward
+        /// compatibility — older clients fall back to `tool`.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        display: Option<String>,
+    },
     ToolOutput         { line: String },
     ToolResult         { tool_use_id: String, content: serde_json::Value },
     Result             { cost_usd: f64, turns: usize, session_id: String, result: Option<String> },
@@ -377,30 +430,38 @@ pub fn tool_definitions() -> Vec<AnthropicTool> {
     let mut tools = vec![
         AnthropicTool { name: "bash".into(),
             description: "Run a shell command in the repository directory. Returns stdout/stderr.".into(),
-            input_schema: serde_json::json!({ "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] }) },
+            input_schema: serde_json::json!({ "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] }),
+            display_label: Some("Running command".into()) },
         AnthropicTool { name: "read_file".into(),
             description: "Read a file. Always use offset+limit to read only the section you need — never read the whole file if you already know the relevant line numbers from grep. offset is 0-based (first line = 0). Lines are returned with 1-based line numbers.".into(),
-            input_schema: serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" }, "offset": { "type": "integer", "description": "0-based line index to start reading from" }, "limit": { "type": "integer", "description": "number of lines to return" } }, "required": ["path"] }) },
+            input_schema: serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" }, "offset": { "type": "integer", "description": "0-based line index to start reading from" }, "limit": { "type": "integer", "description": "number of lines to return" } }, "required": ["path"] }),
+            display_label: Some("Reading file".into()) },
         AnthropicTool { name: "edit_file".into(),
             description: "Replace an exact string in a file. PREFER this over write_file for modifying existing files. old_str must match exactly once.".into(),
-            input_schema: serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" }, "old_str": { "type": "string" }, "new_str": { "type": "string" } }, "required": ["path", "old_str", "new_str"] }) },
+            input_schema: serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" }, "old_str": { "type": "string" }, "new_str": { "type": "string" } }, "required": ["path", "old_str", "new_str"] }),
+            display_label: Some("Editing file".into()) },
         AnthropicTool { name: "write_file".into(),
             description: "Write a file. Use for creating new files only; prefer edit_file for existing files.".into(),
-            input_schema: serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" }, "content": { "type": "string" } }, "required": ["path", "content"] }) },
+            input_schema: serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" }, "content": { "type": "string" } }, "required": ["path", "content"] }),
+            display_label: Some("Writing file".into()) },
         AnthropicTool { name: "glob".into(),
             description: "Find files matching a glob pattern (e.g. src/**/*.rs).".into(),
-            input_schema: serde_json::json!({ "type": "object", "properties": { "pattern": { "type": "string" } }, "required": ["pattern"] }) },
+            input_schema: serde_json::json!({ "type": "object", "properties": { "pattern": { "type": "string" } }, "required": ["pattern"] }),
+            display_label: Some("Finding files".into()) },
         AnthropicTool { name: "grep".into(),
             description: "Search file contents for a regex pattern. Returns matching lines with file:line numbers. Use context to include surrounding lines. Pass the returned line numbers to read_file offset+limit to read more of that section.".into(),
-            input_schema: serde_json::json!({ "type": "object", "properties": { "pattern": { "type": "string" }, "path": { "type": "string" }, "context": { "type": "integer", "description": "number of lines to show before and after each match (like grep -C)" } }, "required": ["pattern"] }) },
+            input_schema: serde_json::json!({ "type": "object", "properties": { "pattern": { "type": "string" }, "path": { "type": "string" }, "context": { "type": "integer", "description": "number of lines to show before and after each match (like grep -C)" } }, "required": ["pattern"] }),
+            display_label: Some("Searching files".into()) },
         AnthropicTool { name: "web_fetch".into(),
             description: "Fetch a URL and return its text content (HTML stripped). Truncated at 50 000 chars.".into(),
-            input_schema: serde_json::json!({ "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"] }) },
+            input_schema: serde_json::json!({ "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"] }),
+            display_label: Some("Fetching URL".into()) },
     ];
     if std::env::var("BRAVE_API_KEY").ok().filter(|s| !s.is_empty()).is_some() {
         tools.push(AnthropicTool { name: "web_search".into(),
             description: "Search the web via Brave Search.".into(),
-            input_schema: serde_json::json!({ "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"] }) });
+            input_schema: serde_json::json!({ "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"] }),
+            display_label: Some("Searching the web".into()) });
     }
     tools
 }
@@ -869,6 +930,7 @@ async fn stream_anthropic(
     response: reqwest::Response,
     cancel:   &CancellationToken,
     tx:       &mpsc::Sender<ChatEvent>,
+    tools:    &[AnthropicTool],
 ) -> Result<(Vec<ContentBlock>, String, StreamUsage), String> {
     let mut bytes_stream = response.bytes_stream();
     let mut buffer       = String::new();
@@ -941,8 +1003,9 @@ async fn stream_anthropic(
                                 };
                                 info!("[core/stream/anthropic] tool_use name={} id={}", cur.name, cur.id);
                                 tx.send(ChatEvent::ToolUse {
-                                    tool:  cur.name.clone(),
-                                    input: input.clone(),
+                                    tool:    cur.name.clone(),
+                                    input:   input.clone(),
+                                    display: lookup_display_label(tools, &cur.name),
                                 }).await.ok();
                                 blocks.push(ContentBlock::ToolUse {
                                     id: cur.id, name: cur.name, input,
@@ -978,6 +1041,7 @@ async fn stream_openai(
     response: reqwest::Response,
     cancel:   &CancellationToken,
     tx:       &mpsc::Sender<ChatEvent>,
+    tools:    &[AnthropicTool],
 ) -> Result<(Vec<ContentBlock>, String, StreamUsage), String> {
     let mut bytes_stream = response.bytes_stream();
     let mut buffer       = String::new();
@@ -1055,7 +1119,11 @@ async fn stream_openai(
             serde_json::from_str(&tc.args).unwrap_or(serde_json::json!({}))
         };
         info!("[core/stream/openai] tool_use name={} id={}", tc.name, tc.id);
-        tx.send(ChatEvent::ToolUse { tool: tc.name.clone(), input: input.clone() }).await.ok();
+        tx.send(ChatEvent::ToolUse {
+            tool:    tc.name.clone(),
+            input:   input.clone(),
+            display: lookup_display_label(tools, &tc.name),
+        }).await.ok();
         blocks.push(ContentBlock::ToolUse { id: tc.id, name: tc.name, input });
     }
     Ok((blocks, stop_reason, usage))
@@ -1135,7 +1203,7 @@ pub async fn call_turn(
             }
             if cancel.is_cancelled() { return Err("__interrupted__".to_string()); }
 
-            let (blocks, stop_reason, stream_usage) = stream_anthropic(response, cancel, tx).await?;
+            let (blocks, stop_reason, stream_usage) = stream_anthropic(response, cancel, tx, &all_tools).await?;
             info!(
                 "[core/call_turn] stop_reason={stop_reason} in={} out={} cache_create={} cache_read={}",
                 stream_usage.input_tokens,
@@ -1177,7 +1245,7 @@ pub async fn call_turn(
             }
             if cancel.is_cancelled() { return Err("__interrupted__".to_string()); }
 
-            let (blocks, stop_reason, stream_usage) = stream_openai(response, cancel, tx).await?;
+            let (blocks, stop_reason, stream_usage) = stream_openai(response, cancel, tx, &all_tools).await?;
             info!(
                 "[core/call_turn/openai] stop_reason={stop_reason} in={} out={}",
                 stream_usage.input_tokens, stream_usage.output_tokens,
@@ -1276,7 +1344,7 @@ pub async fn send_message(
                     let text   = response.text().await.unwrap_or_default();
                     return Err((format!("API error {status}: {text}"), messages));
                 }
-                let (blocks, stop_reason, usage) = match stream_anthropic(response, &cancel, &tx).await {
+                let (blocks, stop_reason, usage) = match stream_anthropic(response, &cancel, &tx, &all_tools).await {
                     Ok(v) => v,
                     Err(e) if e == "__interrupted__" => {
                         tx.send(ChatEvent::InterruptAck).await.ok();
@@ -1326,7 +1394,7 @@ pub async fn send_message(
                     let text   = response.text().await.unwrap_or_default();
                     return Err((format!("API error {status}: {text}"), messages));
                 }
-                let (blocks, stop_reason, usage) = match stream_openai(response, &cancel, &tx).await {
+                let (blocks, stop_reason, usage) = match stream_openai(response, &cancel, &tx, &all_tools).await {
                     Ok(v) => v,
                     Err(e) if e == "__interrupted__" => {
                         tx.send(ChatEvent::InterruptAck).await.ok();
@@ -1564,7 +1632,7 @@ pub async fn run_startup_prompt(
     while let Some(event) = rx.recv().await {
         match &event {
             ChatEvent::Text { text } => print!("{text}"),
-            ChatEvent::ToolUse { tool, input } => {
+            ChatEvent::ToolUse { tool, input, .. } => {
                 tracing::info!("[startup] tool_use tool={tool} input={input}");
             }
             ChatEvent::ToolResult { content, .. } => {

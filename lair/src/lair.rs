@@ -666,6 +666,7 @@ fn message_child_tool() -> AnthropicTool {
             },
             "required": ["container_name", "text"]
         }),
+        display_label: Some("Messaging agent".into()),
     }
 }
 
@@ -701,6 +702,7 @@ fn create_agent_tool() -> AnthropicTool {
             },
             "required": []
         }),
+        display_label: Some("Creating agent".into()),
     }
 }
 
@@ -720,6 +722,7 @@ fn terminate_agent_tool() -> AnthropicTool {
             },
             "required": ["name"]
         }),
+        display_label: Some("Terminating agent".into()),
     }
 }
 
@@ -732,6 +735,7 @@ fn list_agents_tool() -> AnthropicTool {
             "properties": {},
             "required": []
         }),
+        display_label: Some("Listing agents".into()),
     }
 }
 
@@ -747,6 +751,7 @@ fn restart_all_containers_tool() -> AnthropicTool {
             "properties": {},
             "required": []
         }),
+        display_label: Some("Restarting containers".into()),
     }
 }
 

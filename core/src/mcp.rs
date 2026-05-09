@@ -463,7 +463,8 @@ fn parse_tools(server_name: &str, result: &Value) -> Vec<AnthropicTool> {
             serde_json::json!({ "type": "object", "properties": {} })
         };
         let prefixed = format!("{server_name}__{name}");
-        Some(AnthropicTool { name: prefixed, description, input_schema })
+        let display_label = Some(crate::derive_display_label(&prefixed));
+        Some(AnthropicTool { name: prefixed, description, input_schema, display_label })
     }).collect::<Vec<_>>()
     .tap_warn_empty(server_name)
 }

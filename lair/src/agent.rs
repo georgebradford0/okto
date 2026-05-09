@@ -454,6 +454,7 @@ fn message_lair_tool() -> AnthropicTool {
             },
             "required": ["text"]
         }),
+        display_label: Some("Messaging lair".into()),
     }
 }
 

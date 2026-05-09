@@ -712,7 +712,8 @@ const ChatPane = memo(function ChatPane({
         const firstVal = event.input && typeof event.input === 'object'
           ? String(Object.values(event.input as Record<string, unknown>)[0] ?? '').trim()
           : ''
-        const toolText = firstVal ? `${event.tool}(${firstVal})` : event.tool
+        const label = event.display ?? event.tool
+        const toolText = firstVal ? `${label} (${firstVal})` : label
         log(`[chat] tool_use tool=${event.tool}`)
         const toolId = uid()
         lastToolIdRef.current = toolId

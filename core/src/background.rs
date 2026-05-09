@@ -37,6 +37,7 @@ pub fn run_background_task_tool() -> AnthropicTool {
             },
             "required": ["task_description"]
         }),
+        display_label: Some("Spawning background task".into()),
     }
 }
 
