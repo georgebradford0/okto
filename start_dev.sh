@@ -26,13 +26,22 @@ echo "▸ Applying namespace and RBAC..."
 kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/rbac.yaml
 
-# ── Secret ─────────────────────────────────────────────────────────────────────
-# Single Secret used by both the parent lair Deployment (via secretKeyRef) and
-# every child pod created via lair's k8s tooling (via envFrom: lair-secrets).
-# Keep these in sync if you add new keys: see k8s-ops/src/k8s.rs::upsert_secret
-# for the production codepath that lair uses to mutate this same Secret.
+# ── Secrets ────────────────────────────────────────────────────────────────────
+# `lair-secrets` is consumed by the parent lair Deployment via envFrom.
+# `child-secrets` is consumed by every child agent Deployment via envFrom — a
+# strict subset of lair-secrets. In production both are created by
+# `octo init`/`octo reload`; in dev we create them here so child Pods don't
+# fail with CreateContainerConfigError. Keep keys in sync with
+# k8s-ops/src/k8s.rs::upsert_secret and ::upsert_child_secret.
 echo "▸ Creating/updating lair-secrets..."
 kubectl create secret generic lair-secrets \
+    --from-literal=ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY_OCTO}" \
+    --from-literal=GH_TOKEN="${GH_TOKEN:-}" \
+    -n octo \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+echo "▸ Creating/updating child-secrets..."
+kubectl create secret generic child-secrets \
     --from-literal=ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY_OCTO}" \
     --from-literal=GH_TOKEN="${GH_TOKEN:-}" \
     -n octo \
