@@ -2,6 +2,7 @@ import UIKit
 import React
 import React_RCTAppDelegate
 import ReactAppDependencyProvider
+import UserNotifications
 
 @main
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -28,6 +29,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
       in: window,
       launchOptions: launchOptions
     )
+
+    // Make Push the UNUserNotificationCenter delegate so foreground pushes
+    // surface as banners instead of being silently dropped.
+    UNUserNotificationCenter.current().delegate = Push.shared
 
     return true
   }

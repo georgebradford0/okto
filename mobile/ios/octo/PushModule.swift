@@ -15,7 +15,13 @@ import UserNotifications
 // `Push.handleRegistration(token:)` / `Push.handleRegistrationError(_:)`.
 
 @objc(Push)
-final class Push: NSObject {
+final class Push: NSObject, UNUserNotificationCenterDelegate {
+
+    // Single shared instance so AppDelegate can install us as the
+    // UNUserNotificationCenterDelegate at launch — that delegate must be a
+    // real object reference, not the class. RN bridge calls still work
+    // through the same shared instance.
+    @objc static let shared = Push()
 
     // Pending JS promise for an in-flight requestPermissionAndRegister().
     // Cleared as soon as APNs returns success or error. Guarded by `lock`
@@ -25,6 +31,18 @@ final class Push: NSObject {
     private static let lock = NSLock()
 
     @objc static func requiresMainQueueSetup() -> Bool { false }
+
+    // Show banner + play sound even when the app is foregrounded. Without
+    // this iOS silently delivers the push to the app and suppresses any UI,
+    // which makes a "task complete" notification invisible to the user
+    // sitting in the chat waiting for it.
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound, .badge])
+    }
 
     // Called by AppDelegate when APNs returns the device token.
     @objc static func handleRegistration(token: Data) {
