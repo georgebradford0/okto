@@ -1270,7 +1270,7 @@ function ChildChatScreen({ child, tunnelPort, tunnelError, onClose, initialDraft
             </TouchableOpacity>
             <View style={[s.connStatusPill, { backgroundColor: statusColor(chatStatus) + '22' }]}>
               <View style={[s.connDot, { backgroundColor: statusColor(chatStatus) }]} />
-              <Text style={[s.connPillLabel, { color: statusColor(chatStatus) }]}>{chatStatus === 'ready' ? 'live' : chatStatus}</Text>
+              <Text style={[s.connPillLabel, { color: statusColor(chatStatus) }]}>{chatStatus === 'ready' || chatStatus === 'streaming' ? 'live' : chatStatus}</Text>
             </View>
             <Text style={s.headerTitle}>{containerDisplayName(child.name)}</Text>
           </View>
@@ -1671,7 +1671,7 @@ function AppInner() {
             </TouchableOpacity>
             <View style={[s.connStatusPill, { backgroundColor: statusColor(chatStatus) + '22' }]}>
               <View style={[s.connDot, { backgroundColor: statusColor(chatStatus) }]} />
-              <Text style={[s.connPillLabel, { color: statusColor(chatStatus) }]}>{chatStatus === 'ready' ? 'live' : chatStatus}</Text>
+              <Text style={[s.connPillLabel, { color: statusColor(chatStatus) }]}>{chatStatus === 'ready' || chatStatus === 'streaming' ? 'live' : chatStatus}</Text>
             </View>
           </View>
           <View style={s.headerRight}>
