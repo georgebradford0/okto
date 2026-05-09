@@ -603,11 +603,6 @@ const ChatPane = memo(function ChatPane({
   const [completions,    setCompletions]    = useState<string[]>([])
   const [showScrollBtn,  setShowScrollBtn]  = useState(false)
   const [inputAreaH,     setInputAreaH]     = useState(0)
-  // Tracks the multiline TextInput's intrinsic content height. We set the
-  // height explicitly so a `setInput('')` on send collapses the box back to
-  // one line immediately — without this, iOS keeps the previous (multiline)
-  // intrinsic size for ~a second until the next remeasure fires.
-  const [inputHeight,    setInputHeight]    = useState(0)
   const [stopSent,       setStopSent]       = useState(false)
   // Holds the baseUrl that /history has successfully loaded for. Used by the
   // persistent /stream effect to gate WS open until history is in place — if
@@ -1056,7 +1051,6 @@ const ChatPane = memo(function ChatPane({
     setMessages(prev => appendMsg(prev, { id: uid(), role: 'user' as const, text }))
     isAtBottomRef.current = true
     setInput('')
-    setInputHeight(0)
     AsyncStorage.removeItem(draftKey).catch(() => {})
     updateStatus('streaming')
 
@@ -1172,10 +1166,14 @@ const ChatPane = memo(function ChatPane({
         <View style={s.inputFloat} onLayout={e => setInputAreaH(e.nativeEvent.layout.height)}>
           <View style={s.inputRow}>
             <TextInput
-              style={[s.input, { height: Math.min(140, Math.max(56, inputHeight)) }]}
+              // Lock height to one line when empty so a `setInput('')` on send
+              // collapses the box immediately — without this, iOS keeps the
+              // previous multiline intrinsic size for ~a second. With a value
+              // present we omit `height` so RN's intrinsic sizing handles
+              // multiline auto-grow (clamped by minHeight/maxHeight in s.input).
+              style={[s.input, !input && { height: 56 }]}
               value={input}
               onChangeText={setInput}
-              onContentSizeChange={e => setInputHeight(e.nativeEvent.contentSize.height)}
               placeholder="message…"
               placeholderTextColor={C.textMuted}
               multiline
