@@ -4,6 +4,15 @@ metadata:
   name: lair
   namespace: octo
 ---
+# Used by every child agent Deployment. Intentionally has no Role/RoleBinding —
+# children should not have any k8s API access. Mirrors `ensure_child_rbac` in
+# k8s-ops/src/k8s.rs (the production codepath used by `octo init`).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: child
+  namespace: octo
+---
 # Namespace-scoped role for workload resources
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

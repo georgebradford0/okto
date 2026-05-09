@@ -1046,6 +1046,14 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to initialize K8s client: {e}"))?;
     info!("[lair] K8s client initialized");
 
+    // Defense in depth: child Deployments reference the `child` ServiceAccount,
+    // which is normally created by `octo init`. Ensure it exists at startup so
+    // bootstraps that bypass the CLI (dev `start_dev.sh`, manual cluster setup)
+    // don't silently fail with FailedCreate when the agent tool is invoked.
+    if let Err(e) = k8s::ensure_child_rbac(&kube_client).await {
+        warn!("[lair] could not ensure child ServiceAccount: {e}");
+    }
+
     // Stamp our own version onto the deployment annotation so `octo reload`
     // can display the version transition without the CLI hardcoding it.
     if let Err(e) = k8s::stamp_deployment_version(&kube_client, &lair_name, env!("CARGO_PKG_VERSION")).await {
