@@ -440,12 +440,21 @@ async fn main() -> Result<()> {
                         eprintln!("error: config file not found: {}", path.display());
                         std::process::exit(1);
                     }
+                    println!("Loading config from {}...", path.display());
                     let text = std::fs::read_to_string(path)
                         .map_err(|e| anyhow::anyhow!("failed to read config file {}: {e}", path.display()))?;
                     serde_json::from_str::<octo_k8s_ops::Config>(&text)
                         .map_err(|e| anyhow::anyhow!("invalid JSON in config file {}: {e}", path.display()))?
                 }
-                None => octo_k8s_ops::read_config(),
+                None => {
+                    let p = octo_k8s_ops::config_path();
+                    if p.exists() {
+                        println!("Loading config from {}...", p.display());
+                    } else {
+                        println!("No config file found at {}; using built-in defaults.", p.display());
+                    }
+                    octo_k8s_ops::read_config()
+                }
             };
 
             // api_key: --api-key flag > config file > error
@@ -524,12 +533,21 @@ async fn main() -> Result<()> {
             // If --config is given, load from that file; otherwise use ~/.octo/config.json.
             let local = match config {
                 Some(path) => {
+                    println!("Loading config from {}...", path.display());
                     let text = std::fs::read_to_string(&path)
                         .map_err(|e| anyhow::anyhow!("failed to read config file {}: {e}", path.display()))?;
                     serde_json::from_str::<octo_k8s_ops::Config>(&text)
                         .map_err(|e| anyhow::anyhow!("invalid JSON in config file {}: {e}", path.display()))?
                 }
-                None => octo_k8s_ops::read_config(),
+                None => {
+                    let p = octo_k8s_ops::config_path();
+                    if p.exists() {
+                        println!("Loading config from {}...", p.display());
+                    } else {
+                        println!("No config file found at {}; using cluster values only.", p.display());
+                    }
+                    octo_k8s_ops::read_config()
+                }
             };
             match k8s::read_lair_secrets(&client).await {
                 Ok(current) => {
