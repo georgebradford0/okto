@@ -26,8 +26,9 @@ pub use app::{
 
 pub mod background;
 pub use background::{
-    BackgroundTaskParams, BackgroundTaskResult,
-    completion_chat_event, run_background_task_tool, spawn_background_task,
+    BackgroundTaskParams, BackgroundTaskResult, TaskRecord, TaskStatus,
+    completion_chat_event, finalize_task, register_task, run_background_task_tool,
+    spawn_background_task, tasks_wire_json,
 };
 
 pub mod relay;
@@ -300,6 +301,10 @@ pub enum ChatEvent {
     /// Server → client push of the current child-container list. Lair sends this
     /// on every poller state change. Replaces the deprecated GET /containers.
     Containers         { containers: serde_json::Value },
+    /// Server → client push of the per-chat background-task registry. Both lair
+    /// and agent send this on /stream open and after every spawn / completion.
+    /// Payload is a JSON array of `TaskRecord`-shaped objects.
+    Tasks              { tasks: serde_json::Value },
     /// Server → client liveness probe. Client must reply with a Pong within the
     /// keepalive window or the server will drop the connection.
     Ping               { id: u64 },

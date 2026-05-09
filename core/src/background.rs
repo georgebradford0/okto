@@ -6,12 +6,44 @@
 //! event out to its own /stream subscribers.
 
 use crate::{
-    send_message, AnthropicTool, ApiMessage, ChatEvent, ContentBlock,
+    now_secs, send_message, AnthropicTool, ApiMessage, ChatEvent, ContentBlock,
 };
+use crate::app::StreamState;
+use serde::Serialize;
 use serde_json::json;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
+
+/// Most recent N tasks retained per chat. Older entries are dropped when this
+/// cap is exceeded so the registry can't grow unbounded across a long-lived
+/// session.
+pub const MAX_TASKS_RETAINED: usize = 50;
+
+/// Per-task summary text stored in the registry is capped at this many chars.
+/// Keeps the `tasks` wire frame small even when a background task produces a
+/// very long final response. Mirrors the truncation in `completion_chat_event`.
+pub const MAX_TASK_SUMMARY: usize = 800;
+
+/// Lifecycle state of a tracked background task.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus { Running, Done, Error }
+
+/// Per-chat record of a background task — created when the task is spawned
+/// and updated when it completes. Serialised straight into the `tasks` wire
+/// frame so the field names here are part of the public schema.
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskRecord {
+    pub task_id:          String,
+    pub task_description: String,
+    pub status:           TaskStatus,
+    /// Unix epoch seconds.
+    pub started_at:       u64,
+    pub completed_at:     Option<u64>,
+    pub summary:          Option<String>,
+    pub cost_usd:         Option<f64>,
+}
 
 /// Build the AnthropicTool spec for `run_background_task`.
 pub fn run_background_task_tool() -> AnthropicTool {
@@ -126,6 +158,44 @@ where
 
         deliver(outcome);
     });
+}
+
+/// Append a freshly-spawned task's record to the per-chat registry, evicting
+/// the oldest entries when the cap is exceeded.
+pub fn register_task(state: &Mutex<StreamState>, record: TaskRecord) {
+    let mut ss = state.lock().unwrap();
+    ss.tasks.push(record);
+    if ss.tasks.len() > MAX_TASKS_RETAINED {
+        let drop = ss.tasks.len() - MAX_TASKS_RETAINED;
+        ss.tasks.drain(0..drop);
+    }
+}
+
+/// Mark a task complete in the registry. No-op if the id has fallen out of
+/// the retention window.
+pub fn finalize_task(state: &Mutex<StreamState>, outcome: &BackgroundTaskResult) {
+    let mut ss = state.lock().unwrap();
+    if let Some(t) = ss.tasks.iter_mut().find(|t| t.task_id == outcome.task_id) {
+        t.status = match outcome.status {
+            "done" => TaskStatus::Done,
+            _      => TaskStatus::Error,
+        };
+        t.completed_at = Some(now_secs());
+        let summary: String = outcome.summary.chars().take(MAX_TASK_SUMMARY).collect();
+        t.summary  = Some(summary);
+        t.cost_usd = Some(outcome.cost_usd);
+    }
+}
+
+/// Build the JSON wire frame for a tasks snapshot. Caller pushes this through
+/// `buffer_and_fanout` (live update) or sends it directly to a freshly-opened
+/// /stream WS so the client has the registry without an extra HTTP round-trip.
+pub fn tasks_wire_json(state: &Mutex<StreamState>) -> String {
+    let payload = {
+        let ss = state.lock().unwrap();
+        serde_json::to_value(&ss.tasks).unwrap_or(serde_json::Value::Array(vec![]))
+    };
+    serde_json::json!({"type":"tasks","tasks":payload}).to_string()
 }
 
 /// Render the system event a background task emits when complete.

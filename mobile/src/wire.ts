@@ -22,6 +22,7 @@ export type ServerEvent =
   | { type: 'interrupt_ack' }
   | { type: 'system';        text: string }
   | { type: 'containers';    containers: ContainerInfo[] }
+  | { type: 'tasks';         tasks: TaskRecord[] }
   | { type: 'ping';          id: number }
   | { type: 'pong';          id: number }
 
@@ -50,6 +51,19 @@ export interface ContainerInfo {
   host:    string
   port:    number
   pubkey:  string
+}
+
+/** Mirrors octo_core::TaskRecord. The per-chat background-task registry is
+ *  pushed as a `tasks` event on /stream open and after every spawn / completion.
+ *  `started_at` and `completed_at` are Unix-epoch seconds. */
+export interface TaskRecord {
+  task_id:          string
+  task_description: string
+  status:           'running' | 'done' | 'error'
+  started_at:       number
+  completed_at:     number | null
+  summary:          string | null
+  cost_usd:         number | null
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

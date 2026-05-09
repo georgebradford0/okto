@@ -5,6 +5,7 @@
 //! and the small ping/pong frame parsers.
 
 use crate::{ApiMessage, ChatEvent, ContentBlock};
+use crate::background::TaskRecord;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
@@ -17,13 +18,18 @@ use tracing::{debug, error, info};
 /// subscribers. Events are buffered for the current turn so a watcher joining
 /// mid-turn replays everything they missed; the buffer is cleared at the start
 /// of each new turn.
+///
+/// Also owns the per-chat background-task registry (`tasks`). Each lair / agent
+/// process has exactly one StreamState — i.e. one chat — so a task spawned from
+/// this chat is recorded here and only here. There is no cross-chat aggregation.
 pub struct StreamState {
     pub buffer: Vec<String>,
     pub subs:   Vec<mpsc::UnboundedSender<String>>,
+    pub tasks:  Vec<TaskRecord>,
 }
 
 impl StreamState {
-    pub fn new() -> Self { Self { buffer: Vec::new(), subs: Vec::new() } }
+    pub fn new() -> Self { Self { buffer: Vec::new(), subs: Vec::new(), tasks: Vec::new() } }
 }
 
 impl Default for StreamState {

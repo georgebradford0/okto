@@ -25,6 +25,7 @@ use octo_core::{
     self,
     build_agent_system_prompt, build_ephemeral_system_prompt, build_system_prompt,
     build_tools_with_mcp, chain_executor_with_mcp, completion_chat_event, data_dir,
+    finalize_task, now_secs, register_task, tasks_wire_json, TaskRecord, TaskStatus,
     get_branches_for_repo, init_mcp_pool, init_shell_env, load_or_generate_keypair, read_config,
     resolve_api_key, resolve_model, run_background_task_tool, run_noise_proxy, send_message,
     spawn_background_task, to_base32, write_config, ApiMessage, AnthropicTool,
@@ -267,6 +268,10 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
     // turn; if so the buffer replay below catches them up to its current state.
     let ready = serde_json::json!({"type":"ready","session_id":"","resumed":resumed}).to_string();
     if ws_tx.send(WsMessage::Text(ready)).await.is_err() {
+        return;
+    }
+    // One-shot tasks snapshot so the modal renders without waiting for a change.
+    if ws_tx.send(WsMessage::Text(tasks_wire_json(&state.stream_state))).await.is_err() {
         return;
     }
     if !replay.is_empty() {
@@ -554,6 +559,20 @@ async fn exec_run_background_task(state: Arc<AppState>, input: serde_json::Value
     let extra_tools = build_tools_with_mcp(&state.mcp_pool, &make_extra_tools()).await;
     let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), make_extra_executor(state.clone()));
 
+    // Register the task in the per-chat registry BEFORE spawning so a /stream
+    // subscriber that reconnects between the spawn call and the API roundtrip
+    // still sees the running task.
+    register_task(&state.stream_state, TaskRecord {
+        task_id:          task_id.clone(),
+        task_description: task_description.clone(),
+        status:           TaskStatus::Running,
+        started_at:       now_secs(),
+        completed_at:     None,
+        summary:          None,
+        cost_usd:         None,
+    });
+    buffer_and_fanout(&state.stream_state, tasks_wire_json(&state.stream_state));
+
     let params = BackgroundTaskParams {
         task_id:          task_id.clone(),
         task_description,
@@ -567,6 +586,9 @@ async fn exec_run_background_task(state: Arc<AppState>, input: serde_json::Value
 
     let stream_state_arc = state.clone();
     spawn_background_task(params, move |outcome| {
+        finalize_task(&stream_state_arc.stream_state, &outcome);
+        buffer_and_fanout(&stream_state_arc.stream_state, tasks_wire_json(&stream_state_arc.stream_state));
+
         let event = completion_chat_event(&outcome);
         if let Some(json) = chat_event_to_wire_json(&event) {
             buffer_and_fanout(&stream_state_arc.stream_state, json.to_string());
@@ -704,7 +726,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
         last_cost_usd: Mutex::new(None),
         system,
         cwd,
-        stream_state:  Mutex::new(StreamState { buffer: Vec::new(), subs: Vec::new() }),
+        stream_state:  Mutex::new(StreamState::new()),
         is_streaming:  AtomicBool::new(false),
         cancel:        Mutex::new(CancellationToken::new()),
         mcp_pool,

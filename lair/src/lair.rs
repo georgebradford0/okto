@@ -26,7 +26,8 @@ use axum::{
 use octo_core::{
     self,
     build_ephemeral_system_prompt, build_tools_with_mcp, chain_executor_with_mcp,
-    completion_chat_event, init_mcp_pool, init_shell_env, load_or_generate_keypair,
+    completion_chat_event, finalize_task, init_mcp_pool, init_shell_env, load_or_generate_keypair,
+    now_secs, register_task, tasks_wire_json, TaskRecord, TaskStatus,
     relay as relay_client, RelaySigner,
     resolve_api_key, resolve_model, run_noise_proxy, run_background_task_tool, send_message,
     spawn_background_task, to_base32, ApiMessage, AnthropicTool, BackgroundTaskParams, ChatEvent,
@@ -424,6 +425,10 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
         if ws_tx.send(WsMessage::Text(json)).await.is_err() {
             return;
         }
+    }
+    // One-shot tasks snapshot so the modal renders without waiting for a change.
+    if ws_tx.send(WsMessage::Text(tasks_wire_json(&state.stream_state))).await.is_err() {
+        return;
     }
     if !replay.is_empty() {
         info!("[lair/stream] replaying {} buffered event(s) to new connection", replay.len());
@@ -1037,6 +1042,20 @@ async fn exec_run_background_task(state: Arc<AppState>, input: serde_json::Value
     let extra_tools = build_tools_with_mcp(&state.mcp_pool, &lair_extra_tools()).await;
     let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), lair_extra_executor(state.clone()));
 
+    // Register the task in the per-chat registry before spawning so a
+    // /stream subscriber that reconnects mid-roundtrip still sees the running
+    // task. See agent.rs for the symmetric child-side wiring.
+    register_task(&state.stream_state, TaskRecord {
+        task_id:          task_id.clone(),
+        task_description: task_description.clone(),
+        status:           TaskStatus::Running,
+        started_at:       now_secs(),
+        completed_at:     None,
+        summary:          None,
+        cost_usd:         None,
+    });
+    buffer_and_fanout(&state.stream_state, tasks_wire_json(&state.stream_state));
+
     let params = BackgroundTaskParams {
         task_id:          task_id.clone(),
         task_description,
@@ -1050,6 +1069,8 @@ async fn exec_run_background_task(state: Arc<AppState>, input: serde_json::Value
 
     let stream_state_arc = state.clone();
     spawn_background_task(params, move |outcome| {
+        finalize_task(&stream_state_arc.stream_state, &outcome);
+        buffer_and_fanout(&stream_state_arc.stream_state, tasks_wire_json(&stream_state_arc.stream_state));
         // Persist a `bg_complete` row so the model sees the result on its next
         // turn (auto-triggered below if no foreground turn is mid-stream).
         // Translated to user-role text at API serialisation time so providers
