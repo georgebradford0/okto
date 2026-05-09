@@ -1,6 +1,6 @@
 [package]
 name        = "octo"
-version     = "0.0.60"
+version     = "0.0.61"
 edition     = "2021"
 description = "octo cluster management CLI"
 

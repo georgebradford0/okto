@@ -1701,7 +1701,7 @@ dependencies = [
 
 [[package]]
 name = "octo"
-version = "0.0.60"
+version = "0.0.61"
 dependencies = [
  "anyhow",
  "clap",
