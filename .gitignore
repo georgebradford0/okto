@@ -12,3 +12,5 @@ down.sh
 scripts/restart-all.sh
 scripts/restart_lair.sh
 .claude/
+
+*.mobileprovision
