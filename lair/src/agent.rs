@@ -24,8 +24,9 @@ use axum::{
 use octo_core::{
     self,
     build_agent_system_prompt, build_ephemeral_system_prompt, build_system_prompt,
-    build_tools_with_mcp, chain_executor_with_mcp, completion_chat_event, data_dir,
-    finalize_task, now_secs, register_task, tasks_wire_json, TaskRecord, TaskStatus,
+    build_tools_with_mcp, cancel_task as core_cancel_task, chain_executor_with_mcp,
+    completion_chat_event, data_dir, finalize_task, now_secs, register_task, tasks_wire_json,
+    TaskRecord, TaskStatus,
     get_branches_for_repo, init_mcp_pool, init_shell_env, load_or_generate_keypair, read_config,
     resolve_api_key, resolve_model, run_background_task_tool, run_noise_proxy, send_message,
     spawn_background_task, to_base32, write_config, ApiMessage, AnthropicTool,
@@ -143,7 +144,13 @@ async fn stream_handler(
 /// Spawn an agentic turn. Returns immediately; events are buffered + fanned out
 /// to all current /stream subscribers. The caller must have already verified
 /// `is_streaming` was false and flipped it to true.
-fn spawn_turn(state: Arc<AppState>, text: String) {
+///
+/// `user_text = Some(text)` is a normal user-initiated turn (the text is pushed
+/// as a `user` message before the turn runs). `user_text = None` is an
+/// autonomous follow-up — typically triggered by a `bg_complete` row that
+/// already sits at the tail of `state.messages`, so no fresh user message is
+/// pushed; the model just sees the existing history.
+fn spawn_turn(state: Arc<AppState>, user_text: Option<String>) {
     tokio::spawn(async move {
         let api_key = match resolve_api_key() {
             Some(k) => k,
@@ -165,11 +172,11 @@ fn spawn_turn(state: Arc<AppState>, text: String) {
         };
         let model = resolve_model();
 
-        {
+        if let Some(text) = user_text {
             let mut msgs = state.messages.lock().unwrap();
             msgs.push(ApiMessage {
                 role:    "user".to_string(),
-                content: vec![ContentBlock::Text { text: text.clone() }],
+                content: vec![ContentBlock::Text { text }],
             });
             save_messages(&msgs);
         }
@@ -243,7 +250,32 @@ fn spawn_turn(state: Arc<AppState>, text: String) {
         // assistant message client-side).
         state.stream_state.lock().unwrap().buffer.clear();
         info!("[agent/stream] turn complete, is_streaming=false");
+
+        // If a `bg_complete` arrived during this turn (tail of state.messages),
+        // kick off another auto-turn so the model picks it up. No-op when the
+        // tail isn't a bg_complete row.
+        try_continue_auto(state.clone());
     });
+}
+
+/// Atomically check whether the persisted history's tail is an unprocessed
+/// `bg_complete` row, and if so, kick off an auto-turn so the model reacts.
+/// Mirrors lair::try_continue_auto. Idempotent — losing the compare_exchange
+/// race means the other caller will run the turn instead.
+fn try_continue_auto(state: Arc<AppState>) {
+    let needs_turn = matches!(
+        state.messages.lock().unwrap().last().map(|m| m.role.as_str()),
+        Some("bg_complete")
+    );
+    if !needs_turn { return; }
+    if state.is_streaming
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        return; // a turn is already running; it'll re-check on completion
+    }
+    info!("[agent/stream] auto-turn triggered by bg_complete");
+    spawn_turn(state, None);
 }
 
 async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
@@ -363,12 +395,21 @@ async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
             }
             let preview: String = text.chars().take(120).collect();
             info!("[agent/stream] user_message ({} chars): {preview}", text.len());
-            spawn_turn(state.clone(), text);
+            spawn_turn(state.clone(), Some(text));
         }
         "interrupt" => {
             info!("[agent/stream] interrupt frame received");
             state.cancel.lock().unwrap().cancel();
             buffer_and_fanout(&state.stream_state, serde_json::json!({"type":"interrupt_ack"}).to_string());
+        }
+        "cancel_task" => {
+            let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            if id.is_empty() {
+                warn!("[agent/stream] cancel_task frame missing id");
+                return;
+            }
+            let fired = core_cancel_task(&state.stream_state, &id);
+            info!("[agent/stream] cancel_task id={id} fired={fired}");
         }
         "pong" => {
             // App-level keepalive ack — handled per-WS in the future ping/pong work.
@@ -559,10 +600,11 @@ async fn exec_run_background_task(state: Arc<AppState>, input: serde_json::Value
     let extra_tools = build_tools_with_mcp(&state.mcp_pool, &make_extra_tools()).await;
     let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), make_extra_executor(state.clone()));
 
-    // Register the task in the per-chat registry BEFORE spawning so a /stream
-    // subscriber that reconnects between the spawn call and the API roundtrip
-    // still sees the running task.
-    register_task(&state.stream_state, TaskRecord {
+    // Register the task *before* spawning so the per-chat registry is in place
+    // by the time the deliver closure can possibly run. See lair.rs for the
+    // symmetric parent-side wiring.
+    let cancel = CancellationToken::new();
+    register_task(&state.stream_state, &data_dir(), TaskRecord {
         task_id:          task_id.clone(),
         task_description: task_description.clone(),
         status:           TaskStatus::Running,
@@ -570,7 +612,7 @@ async fn exec_run_background_task(state: Arc<AppState>, input: serde_json::Value
         completed_at:     None,
         summary:          None,
         cost_usd:         None,
-    });
+    }, cancel.clone());
     buffer_and_fanout(&state.stream_state, tasks_wire_json(&state.stream_state));
 
     let params = BackgroundTaskParams {
@@ -585,14 +627,48 @@ async fn exec_run_background_task(state: Arc<AppState>, input: serde_json::Value
     };
 
     let stream_state_arc = state.clone();
-    spawn_background_task(params, move |outcome| {
-        finalize_task(&stream_state_arc.stream_state, &outcome);
+    spawn_background_task(params, cancel, move |outcome| {
+        finalize_task(&stream_state_arc.stream_state, &data_dir(), &outcome);
         buffer_and_fanout(&stream_state_arc.stream_state, tasks_wire_json(&stream_state_arc.stream_state));
 
+        // Persist a `bg_complete` row so the model sees the result on its next
+        // turn (auto-triggered below if no foreground turn is in flight).
+        // Translated to user-role text at API serialisation time so providers
+        // see it as ordinary input. Mirrors the lair-side wiring.
+        let injection = format!(
+            "Background task {} completed (status={}). Original task: {}\n\nResult:\n{}",
+            outcome.task_id, outcome.status, outcome.task_description, outcome.summary
+        );
+        {
+            let mut msgs = stream_state_arc.messages.lock().unwrap();
+            msgs.push(ApiMessage {
+                role:    "bg_complete".to_string(),
+                content: vec![ContentBlock::Text { text: injection.clone() }],
+            });
+            save_messages(&msgs);
+        }
+
+        // Live `bg_complete` wire frame so connected clients render the chip
+        // between assistant turns. /history reload would surface the same row;
+        // this makes it visible immediately. Stable task_id keys deduplicate.
+        let bg_event = ChatEvent::BgComplete {
+            task_id: outcome.task_id.clone(),
+            text:    injection,
+        };
+        if let Some(json) = chat_event_to_wire_json(&bg_event) {
+            buffer_and_fanout(&stream_state_arc.stream_state, json.to_string());
+        }
+
+        // Transient system-event fan-out (kept for status banner display).
         let event = completion_chat_event(&outcome);
         if let Some(json) = chat_event_to_wire_json(&event) {
             buffer_and_fanout(&stream_state_arc.stream_state, json.to_string());
         }
+
+        // Kick off an auto-turn so the model can react. If a foreground turn
+        // is in flight this is a no-op; the post-turn `try_continue_auto` in
+        // spawn_turn will pick the row up.
+        try_continue_auto(stream_state_arc.clone());
     });
 
     format!("Background task {task_id} started. The user will be notified when it completes.")
@@ -726,7 +802,11 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
         last_cost_usd: Mutex::new(None),
         system,
         cwd,
-        stream_state:  Mutex::new(StreamState::new()),
+        stream_state:  Mutex::new({
+            let mut ss = StreamState::new();
+            ss.tasks = octo_core::load_tasks(&data_dir(), "agent");
+            ss
+        }),
         is_streaming:  AtomicBool::new(false),
         cancel:        Mutex::new(CancellationToken::new()),
         mcp_pool,

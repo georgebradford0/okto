@@ -31,6 +31,7 @@ import {
   type ClientFrame,
   type ContainerInfo as WireContainerInfo,
   type ServerEvent,
+  type TaskRecord,
   encodeClientFrame,
   parseServerEvent,
 } from './src/wire'
@@ -542,6 +543,146 @@ const MessageBubble = memo(function MessageBubble({
   )
 })
 
+// ── Tasks UI helpers ──────────────────────────────────────────────────────────
+
+function relativeTime(epochSecs: number): string {
+  const delta = Math.max(0, Math.floor(Date.now() / 1000) - epochSecs)
+  if (delta < 60)        return `${delta}s ago`
+  if (delta < 3600)      return `${Math.floor(delta / 60)}m ago`
+  if (delta < 86400)     return `${Math.floor(delta / 3600)}h ago`
+  return `${Math.floor(delta / 86400)}d ago`
+}
+
+function taskStatusColor(status: TaskRecord['status']): string {
+  if (status === 'running')   return C.accent
+  if (status === 'done')      return C.green
+  if (status === 'cancelled') return C.textMuted
+  return C.red
+}
+
+function TasksHeaderButton({ tasks, onPress }: { tasks: TaskRecord[]; onPress: () => void }) {
+  const runningCount = tasks.filter(t => t.status === 'running').length
+  return (
+    <TouchableOpacity
+      style={s.tasksBtn}
+      onPress={onPress}
+      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+    >
+      <View style={[s.tasksBtnDot, runningCount > 0 ? { backgroundColor: C.accent } : { backgroundColor: C.textMuted }]} />
+      <Text style={s.tasksBtnText}>
+        {runningCount > 0 ? `TASKS · ${runningCount}` : 'TASKS'}
+      </Text>
+    </TouchableOpacity>
+  )
+}
+
+const TaskRow = memo(function TaskRow({ task, onCancel }: { task: TaskRecord; onCancel: () => void }) {
+  const [expanded, setExpanded] = useState(false)
+  const isRunning = task.status === 'running'
+  const ts = task.completed_at != null ? relativeTime(task.completed_at) : relativeTime(task.started_at)
+  return (
+    <View style={s.taskRow}>
+      <View style={s.taskRowHeader}>
+        <View style={[s.taskStatusTag, { borderColor: taskStatusColor(task.status) }]}>
+          <View style={[s.taskStatusDot, { backgroundColor: taskStatusColor(task.status) }]} />
+          <Text style={[s.taskStatusLabel, { color: taskStatusColor(task.status) }]}>
+            {task.status.toUpperCase()}
+          </Text>
+        </View>
+        <Text style={s.taskTimestamp}>{ts}</Text>
+        {isRunning && (
+          <TouchableOpacity style={s.taskStopBtn} onPress={onCancel} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+            <Text style={s.taskStopText}>STOP</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+      <TouchableOpacity activeOpacity={0.7} onPress={() => setExpanded(v => !v)}>
+        <Text style={s.taskDescription} numberOfLines={expanded ? undefined : 2} selectable>
+          {task.task_description}
+        </Text>
+        {task.summary != null && task.summary.length > 0 && (
+          <Text style={s.taskSummary} numberOfLines={expanded ? undefined : 2} selectable>
+            {task.summary}
+          </Text>
+        )}
+        {task.cost_usd != null && task.cost_usd > 0 && (
+          <Text style={s.taskCost}>{formatCost(task.cost_usd)}</Text>
+        )}
+      </TouchableOpacity>
+    </View>
+  )
+})
+
+function TasksModal({ visible, tasks, onClose, onCancel }: {
+  visible:  boolean
+  tasks:    TaskRecord[]
+  onClose:  () => void
+  onCancel: (taskId: string) => void
+}) {
+  const insets = useSafeAreaInsets()
+  const slide  = useRef(new Animated.Value(0)).current
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => {
+    if (visible) setMounted(true)
+    Animated.timing(slide, {
+      toValue:        visible ? 1 : 0,
+      duration:       240,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished && !visible) setMounted(false)
+    })
+  }, [visible])
+
+  if (!mounted) return null
+
+  // Sort: running first, then most-recently started
+  const sorted = tasks.slice().sort((a, b) => {
+    if (a.status === 'running' && b.status !== 'running') return -1
+    if (b.status === 'running' && a.status !== 'running') return 1
+    return b.started_at - a.started_at
+  })
+
+  return (
+    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+      <Animated.View
+        style={[s.tasksBackdrop, { opacity: slide }]}
+        pointerEvents={visible ? 'auto' : 'none'}
+      >
+        <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onClose} />
+      </Animated.View>
+      <Animated.View
+        style={[
+          s.tasksSheet,
+          { paddingBottom: insets.bottom + 16,
+            transform: [{ translateY: slide.interpolate({ inputRange: [0, 1], outputRange: [600, 0] }) }] },
+        ]}
+      >
+        <View style={s.tasksHandle} />
+        <View style={s.tasksHeader}>
+          <Text style={s.tasksHeaderTitle}>Background Tasks</Text>
+          <TouchableOpacity onPress={onClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Text style={s.sidebarCloseIcon}>✕</Text>
+          </TouchableOpacity>
+        </View>
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={{ paddingBottom: 20 }}
+          showsVerticalScrollIndicator={false}
+        >
+          {sorted.length === 0 ? (
+            <View style={s.tasksEmptyWrap}>
+              <Text style={s.tasksEmptyText}>No background tasks</Text>
+            </View>
+          ) : sorted.map(t => (
+            <TaskRow key={t.task_id} task={t} onCancel={() => onCancel(t.task_id)} />
+          ))}
+        </ScrollView>
+      </Animated.View>
+    </View>
+  )
+}
+
 // ── AppIcon ───────────────────────────────────────────────────────────────────
 
 function AppIcon({ pulse = false }: { pulse?: boolean }) {
@@ -615,7 +756,7 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
 
 const ChatPane = memo(function ChatPane({
   baseUrl, onStatusChange, clearRef, initialDraft, onDraftChange, reconnectingRef, reloadRef, closeWsRef,
-  sendFrameRef, onContainersUpdate,
+  sendFrameRef, onContainersUpdate, onTasksUpdate,
 }: {
   baseUrl:             string
   onStatusChange:      (s: ConnStatus) => void
@@ -632,6 +773,10 @@ const ChatPane = memo(function ChatPane({
   /// Push hook for `containers` events. Lair sends one immediately after Ready
   /// and again on every poller state-change. Children never send containers.
   onContainersUpdate?: (containers: WireContainerInfo[]) => void
+  /// Push hook for `tasks` events. Both lair and agent send one on /stream
+  /// open and after every spawn / completion / cancellation. The list is the
+  /// per-chat background-task registry — see core::TaskRecord.
+  onTasksUpdate?:      (tasks: TaskRecord[]) => void
 }) {
   const insets                     = useSafeAreaInsets()
   const { height: keyboardHeight } = useReanimatedKeyboardAnimation()
@@ -795,6 +940,11 @@ const ChatPane = memo(function ChatPane({
           }
           return prev
         })
+        // Turn boundary — anything streamed after this (auto-turn from a
+        // bg_complete, or the next user turn) must start a fresh assistant
+        // bubble, not append to the one we just sealed.
+        hasAssistantMsgRef.current = false
+        streamingIdRef.current = uid()
         break
       }
       case 'interrupt_ack':
@@ -821,6 +971,8 @@ const ChatPane = memo(function ChatPane({
           }
           return appendMsg(stamped, { id: uid(), role: 'interrupted' as const, text: 'interrupted' })
         })
+        hasAssistantMsgRef.current = false
+        streamingIdRef.current = uid()
         break
       }
       case 'error':
@@ -829,6 +981,8 @@ const ChatPane = memo(function ChatPane({
         streamingLockRef.current = false
         setMessages(prev => appendMsg(prev, { id: uid(), role: 'error' as const, text: event.message }))
         updateStatus('ready')
+        hasAssistantMsgRef.current = false
+        streamingIdRef.current = uid()
         break
       case 'system':
         log(`[chat] system: ${event.text}`)
@@ -836,6 +990,19 @@ const ChatPane = memo(function ChatPane({
       case 'containers':
         if (onContainersUpdate) onContainersUpdate(event.containers)
         break
+      case 'tasks':
+        if (onTasksUpdate) onTasksUpdate(event.tasks)
+        break
+      case 'bg_complete': {
+        // Live insertion of the bg_complete chip between assistant turns. The
+        // id is stable per task so a subsequent /history reload (which also
+        // contains this row) is a no-op rather than a duplicate.
+        const id = `bg_${event.task_id}`
+        setMessages(prev => prev.some(m => m.id === id)
+          ? prev
+          : appendMsg(prev, { id, role: 'bg_complete' as const, text: event.text }))
+        break
+      }
       case 'ping':
         sendFrame({ type: 'pong', id: event.id })
         break
@@ -847,7 +1014,7 @@ const ChatPane = memo(function ChatPane({
         }
         break
     }
-  }, [updateStatus, sendFrame, onContainersUpdate])
+  }, [updateStatus, sendFrame, onContainersUpdate, onTasksUpdate])
 
   // Keep a stable ref to loadHistory so reattachStream can call it without
   // being listed as a dependency (avoids circular dep: loadHistory → reattachStream → loadHistory).
@@ -1309,7 +1476,10 @@ function ChildChatScreen({ child, tunnelPort, tunnelError, onClose, initialDraft
   closeWsRef?:       React.MutableRefObject<() => void>
 }) {
   const [chatStatus, setChatStatus] = useState<ConnStatus>('connecting')
-  const clearRef = useRef<() => void>(() => {})
+  const [tasks,      setTasks]      = useState<TaskRecord[]>([])
+  const [showTasksModal, setShowTasksModal] = useState(false)
+  const clearRef     = useRef<() => void>(() => {})
+  const sendFrameRef = useRef<(frame: ClientFrame) => boolean>(() => false)
 
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
@@ -1329,14 +1499,17 @@ function ChildChatScreen({ child, tunnelPort, tunnelError, onClose, initialDraft
             </View>
             <Text style={s.headerTitle}>{containerDisplayName(child.name)}</Text>
           </View>
-          <TouchableOpacity
-            style={s.clearBtn}
-            onPress={() => clearRef.current()}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            disabled={chatStatus !== 'ready'}
-          >
-            <Text style={[s.clearBtnText, chatStatus !== 'ready' && { opacity: 0.3 }]}>clear</Text>
-          </TouchableOpacity>
+          <View style={s.headerRight}>
+            <TasksHeaderButton tasks={tasks} onPress={() => setShowTasksModal(true)} />
+            <TouchableOpacity
+              style={s.clearBtn}
+              onPress={() => clearRef.current()}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              disabled={chatStatus !== 'ready'}
+            >
+              <Text style={[s.clearBtnText, chatStatus !== 'ready' && { opacity: 0.3 }]}>clear</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {tunnelPort ? (
@@ -1349,12 +1522,24 @@ function ChildChatScreen({ child, tunnelPort, tunnelError, onClose, initialDraft
             reconnectingRef={reconnectingRef}
             reloadRef={reloadRef}
             closeWsRef={closeWsRef}
+            sendFrameRef={sendFrameRef}
+            onTasksUpdate={setTasks}
           />
         ) : tunnelError ? (
           <View style={s.setupCenter}>
             <Text style={[s.setupError, { color: C.red }]}>{tunnelError}</Text>
           </View>
         ) : null}
+
+        <TasksModal
+          visible={showTasksModal}
+          tasks={tasks}
+          onClose={() => setShowTasksModal(false)}
+          onCancel={(id) => {
+            log(`[child] cancel_task id=${id}`)
+            sendFrameRef.current({ type: 'cancel_task', id })
+          }}
+        />
       </View>
     </SafeAreaView>
   )
@@ -1397,6 +1582,10 @@ function AppInner() {
   const [chatStatus,  setChatStatus]  = useState<ConnStatus>('connecting')
   const [containers,          setContainers]          = useState<ContainerInfo[]>([])
   const [activeChild,         setActiveChild]         = useState<ContainerInfo | null>(null)
+  // Per-chat background-task registry for the master chat. Pushed by lair on
+  // /stream open and after every spawn / completion / cancellation.
+  const [masterTasks,         setMasterTasks]         = useState<TaskRecord[]>([])
+  const [showTasksModal,      setShowTasksModal]      = useState(false)
   const [showSidebar,    setShowSidebar]    = useState(false)
   const sidebarAnim = useRef(new Animated.Value(0)).current
   const [startingContainerId, setStartingContainerId] = useState<string | null>(null)
@@ -1739,6 +1928,7 @@ function AppInner() {
             </View>
           </View>
           <View style={s.headerRight}>
+            <TasksHeaderButton tasks={masterTasks} onPress={() => setShowTasksModal(true)} />
             <TouchableOpacity
               style={s.clearBtn}
               onPress={() => clearChatRef.current()}
@@ -1762,8 +1952,19 @@ function AppInner() {
             closeWsRef={closeWsRef}
             sendFrameRef={masterSendFrameRef}
             onContainersUpdate={handleContainersUpdate}
+            onTasksUpdate={setMasterTasks}
           />
         )}
+
+        <TasksModal
+          visible={showTasksModal}
+          tasks={masterTasks}
+          onClose={() => setShowTasksModal(false)}
+          onCancel={(id) => {
+            log(`[app] cancel_task id=${id} (master)`)
+            masterSendFrameRef.current({ type: 'cancel_task', id })
+          }}
+        />
 
         {reconnecting && (
           <View style={s.startingOverlay} pointerEvents="none">
@@ -2017,6 +2218,33 @@ const s = StyleSheet.create({
 
   // Header right buttons
   headerRight:              { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  // Tasks header button — typographic tag with a small status dot. Mirrors the
+  // monospace + hairline-border treatment used by clearBtn / connStatusPill.
+  tasksBtn:                 { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 5, paddingHorizontal: 10, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderRadius: 0 },
+  tasksBtnDot:              { width: 6, height: 6, borderRadius: 0 },
+  tasksBtnText:             { fontSize: 10, color: C.textSecondary, fontWeight: '800', fontFamily: MONO, letterSpacing: 1.6 },
+
+  // Tasks slide-up modal
+  tasksBackdrop:            { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(14,26,36,0.42)', zIndex: 300 },
+  tasksSheet:               { position: 'absolute', left: 0, right: 0, bottom: 0, maxHeight: '78%', backgroundColor: C.bg, zIndex: 301, borderTopWidth: 1, borderTopColor: C.border, paddingTop: 8, shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 20, shadowOffset: { width: 0, height: -4 }, elevation: 18 },
+  tasksHandle:              { alignSelf: 'center', width: 44, height: 4, borderRadius: 2, backgroundColor: C.border, marginBottom: 8 },
+  tasksHeader:              { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
+  tasksHeaderTitle:         { fontSize: 13, fontWeight: '800', color: C.textPrimary, fontFamily: ARIMO, letterSpacing: 2.5, textTransform: 'uppercase' },
+  tasksEmptyWrap:           { paddingVertical: 60, alignItems: 'center' },
+  tasksEmptyText:           { fontSize: 11, color: C.textMuted, fontFamily: MONO, letterSpacing: 2.4, textTransform: 'uppercase', fontWeight: '700' },
+
+  // A single task row inside the modal
+  taskRow:                  { paddingHorizontal: 18, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
+  taskRowHeader:            { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 },
+  taskStatusTag:            { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 6, paddingVertical: 3, borderWidth: StyleSheet.hairlineWidth },
+  taskStatusDot:            { width: 5, height: 5, borderRadius: 0 },
+  taskStatusLabel:          { fontSize: 9, fontWeight: '800', fontFamily: MONO, letterSpacing: 1.6 },
+  taskTimestamp:            { fontSize: 10, color: C.textMuted, fontFamily: MONO, letterSpacing: 1, flex: 1 },
+  taskStopBtn:              { borderWidth: 1, borderColor: C.red, paddingVertical: 4, paddingHorizontal: 10, borderRadius: 0 },
+  taskStopText:             { fontSize: 10, color: C.red, fontWeight: '800', fontFamily: ARIMO, letterSpacing: 2.2, textTransform: 'uppercase' },
+  taskDescription:          { fontSize: 14, color: C.textPrimary, fontFamily: ARIMO, lineHeight: 20 },
+  taskSummary:              { fontSize: 12, color: C.textSecondary, fontFamily: MONO, lineHeight: 17, marginTop: 6 },
+  taskCost:                 { fontSize: 10, color: C.textMuted, fontFamily: MONO, marginTop: 6, letterSpacing: 0.6 },
   // Hamburger as three deliberate bars (replaces the typographic glyph)
   hamburgerBtn:             { paddingVertical: 8, paddingHorizontal: 6, marginRight: 4 },
   hamburgerBars:            { width: 18, height: 12, justifyContent: 'space-between' },

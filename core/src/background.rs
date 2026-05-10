@@ -9,8 +9,9 @@ use crate::{
     now_secs, send_message, AnthropicTool, ApiMessage, ChatEvent, ContentBlock,
 };
 use crate::app::StreamState;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
@@ -26,14 +27,16 @@ pub const MAX_TASKS_RETAINED: usize = 50;
 pub const MAX_TASK_SUMMARY: usize = 800;
 
 /// Lifecycle state of a tracked background task.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum TaskStatus { Running, Done, Error }
+pub enum TaskStatus { Running, Done, Error, Cancelled }
 
 /// Per-chat record of a background task — created when the task is spawned
 /// and updated when it completes. Serialised straight into the `tasks` wire
-/// frame so the field names here are part of the public schema.
-#[derive(Debug, Clone, Serialize)]
+/// frame so the field names here are part of the public schema. Also
+/// persisted to disk (`<data_dir>/session/tasks.json`) so a process restart
+/// preserves the per-chat history.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskRecord {
     pub task_id:          String,
     pub task_description: String,
@@ -97,13 +100,23 @@ pub struct BackgroundTaskResult {
     pub cost_usd: f64,
 }
 
-/// Spawn the background task as a detached tokio task. `deliver` is invoked on
-/// completion (success or failure) so the caller can fan a system event into
-/// its /stream and fire a push webhook.
-pub fn spawn_background_task<F>(params: BackgroundTaskParams, deliver: F)
+/// Spawn the background task as a detached tokio task. The caller supplies the
+/// `cancel` token so it can register the task in the per-chat registry *before*
+/// spawning — closing the small race where the tokio task could deliver before
+/// the record exists.
+///
+/// `deliver` is invoked on completion (success, failure, *or* cancellation) so
+/// the caller can fan a system event into its /stream and fire a push webhook.
+pub fn spawn_background_task<F>(
+    params:  BackgroundTaskParams,
+    cancel:  CancellationToken,
+    deliver: F,
+)
 where
     F: FnOnce(BackgroundTaskResult) + Send + 'static,
 {
+    let cancel_inner = cancel.clone();
+
     tokio::spawn(async move {
         let BackgroundTaskParams {
             task_id, task_description, system, model, api_key, cwd, extra_tools, extra_executor,
@@ -116,8 +129,6 @@ where
             content: vec![ContentBlock::Text { text: task_description.clone() }],
         }];
 
-        let cancel = CancellationToken::new();
-
         let result = send_message(
             messages,
             &system,
@@ -125,7 +136,7 @@ where
             &api_key,
             &cwd,
             None,             // No live event stream — it's a background turn.
-            cancel,
+            cancel_inner.clone(),
             &extra_tools,
             extra_executor,
         ).await;
@@ -142,6 +153,16 @@ where
                     status: "done",
                     summary: text,
                     cost_usd,
+                }
+            }
+            Err((e, _)) if cancel_inner.is_cancelled() => {
+                info!("[background/{task_id}] cancelled");
+                BackgroundTaskResult {
+                    task_id: task_id.clone(),
+                    task_description,
+                    status: "cancelled",
+                    summary: format!("cancelled by user: {e}"),
+                    cost_usd: 0.0,
                 }
             }
             Err((e, _)) => {
@@ -161,29 +182,64 @@ where
 }
 
 /// Append a freshly-spawned task's record to the per-chat registry, evicting
-/// the oldest entries when the cap is exceeded.
-pub fn register_task(state: &Mutex<StreamState>, record: TaskRecord) {
-    let mut ss = state.lock().unwrap();
-    ss.tasks.push(record);
-    if ss.tasks.len() > MAX_TASKS_RETAINED {
-        let drop = ss.tasks.len() - MAX_TASKS_RETAINED;
-        ss.tasks.drain(0..drop);
-    }
+/// the oldest entries when the cap is exceeded. Persists the snapshot to disk
+/// at `<data_dir>/session/tasks.json` so a process restart preserves the list.
+pub fn register_task(
+    state:    &Mutex<StreamState>,
+    data_dir: &Path,
+    record:   TaskRecord,
+    cancel:   CancellationToken,
+) {
+    let snapshot = {
+        let mut ss = state.lock().unwrap();
+        ss.task_cancellers.insert(record.task_id.clone(), cancel);
+        ss.tasks.push(record);
+        if ss.tasks.len() > MAX_TASKS_RETAINED {
+            let drop = ss.tasks.len() - MAX_TASKS_RETAINED;
+            ss.tasks.drain(0..drop);
+        }
+        ss.tasks.clone()
+    };
+    crate::app::save_tasks(data_dir, &snapshot, "tasks");
 }
 
-/// Mark a task complete in the registry. No-op if the id has fallen out of
-/// the retention window.
-pub fn finalize_task(state: &Mutex<StreamState>, outcome: &BackgroundTaskResult) {
-    let mut ss = state.lock().unwrap();
-    if let Some(t) = ss.tasks.iter_mut().find(|t| t.task_id == outcome.task_id) {
-        t.status = match outcome.status {
-            "done" => TaskStatus::Done,
-            _      => TaskStatus::Error,
-        };
-        t.completed_at = Some(now_secs());
-        let summary: String = outcome.summary.chars().take(MAX_TASK_SUMMARY).collect();
-        t.summary  = Some(summary);
-        t.cost_usd = Some(outcome.cost_usd);
+/// Mark a task complete in the registry, persist the result, and drop its
+/// cancel-token entry. No-op if the id has fallen out of the retention window.
+pub fn finalize_task(
+    state:    &Mutex<StreamState>,
+    data_dir: &Path,
+    outcome:  &BackgroundTaskResult,
+) {
+    let snapshot = {
+        let mut ss = state.lock().unwrap();
+        ss.task_cancellers.remove(&outcome.task_id);
+        if let Some(t) = ss.tasks.iter_mut().find(|t| t.task_id == outcome.task_id) {
+            t.status = match outcome.status {
+                "done"      => TaskStatus::Done,
+                "cancelled" => TaskStatus::Cancelled,
+                _           => TaskStatus::Error,
+            };
+            t.completed_at = Some(now_secs());
+            let summary: String = outcome.summary.chars().take(MAX_TASK_SUMMARY).collect();
+            t.summary  = Some(summary);
+            t.cost_usd = Some(outcome.cost_usd);
+        }
+        ss.tasks.clone()
+    };
+    crate::app::save_tasks(data_dir, &snapshot, "tasks");
+}
+
+/// Trigger cancellation of a running task by id. Returns true if a live cancel
+/// token was found and fired. The deliver closure registered at spawn time
+/// will run shortly after, marking the record `Cancelled` and pushing the
+/// updated tasks frame.
+pub fn cancel_task(state: &Mutex<StreamState>, task_id: &str) -> bool {
+    let token = state.lock().unwrap().task_cancellers.get(task_id).cloned();
+    if let Some(token) = token {
+        token.cancel();
+        true
+    } else {
+        false
     }
 }
 

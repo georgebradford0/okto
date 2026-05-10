@@ -4,12 +4,14 @@
 //! subscriber fanout for /stream, session persistence, wire-format conversion,
 //! and the small ping/pong frame parsers.
 
-use crate::{ApiMessage, ChatEvent, ContentBlock};
-use crate::background::TaskRecord;
+use crate::{now_secs, ApiMessage, ChatEvent, ContentBlock};
+use crate::background::{TaskRecord, TaskStatus};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 // ── Buffer + subscriber fanout ────────────────────────────────────────────────
@@ -19,17 +21,31 @@ use tracing::{debug, error, info};
 /// mid-turn replays everything they missed; the buffer is cleared at the start
 /// of each new turn.
 ///
-/// Also owns the per-chat background-task registry (`tasks`). Each lair / agent
-/// process has exactly one StreamState — i.e. one chat — so a task spawned from
-/// this chat is recorded here and only here. There is no cross-chat aggregation.
+/// Also owns the per-chat background-task registry (`tasks`) and the live
+/// cancel-token map (`task_cancellers`). Each lair / agent process has exactly
+/// one StreamState — i.e. one chat — so a task spawned from this chat is
+/// recorded here and only here. There is no cross-chat aggregation.
 pub struct StreamState {
-    pub buffer: Vec<String>,
-    pub subs:   Vec<mpsc::UnboundedSender<String>>,
-    pub tasks:  Vec<TaskRecord>,
+    pub buffer:           Vec<String>,
+    pub subs:             Vec<mpsc::UnboundedSender<String>>,
+    pub tasks:            Vec<TaskRecord>,
+    /// Live cancel tokens keyed by task_id. Populated at spawn, removed when
+    /// the deliver closure runs. Firing a token aborts the inner agentic loop
+    /// and marks the record `Cancelled`. Tokens are runtime-only — they never
+    /// outlive a process restart, which is why loaded `Running` records are
+    /// rewritten to `Error` in `load_tasks`.
+    pub task_cancellers:  HashMap<String, CancellationToken>,
 }
 
 impl StreamState {
-    pub fn new() -> Self { Self { buffer: Vec::new(), subs: Vec::new(), tasks: Vec::new() } }
+    pub fn new() -> Self {
+        Self {
+            buffer:          Vec::new(),
+            subs:            Vec::new(),
+            tasks:           Vec::new(),
+            task_cancellers: HashMap::new(),
+        }
+    }
 }
 
 impl Default for StreamState {
@@ -78,6 +94,48 @@ pub fn load_messages(data_dir: &Path, log_prefix: &str) -> Vec<ApiMessage> {
             vec![]
         }
     }
+}
+
+/// Persist the per-chat task registry to `<data_dir>/session/tasks.json`. The
+/// full vector is rewritten on every change. Both lair and agent call this
+/// whenever they mutate `StreamState.tasks` so a process restart can reload the
+/// list (cancel tokens themselves are runtime-only — see `load_tasks`).
+pub fn save_tasks(data_dir: &Path, tasks: &[TaskRecord], log_prefix: &str) {
+    let dir = session_dir(data_dir);
+    std::fs::create_dir_all(&dir).ok();
+    if let Ok(json) = serde_json::to_string(tasks) {
+        let path = dir.join("tasks.json");
+        if let Err(e) = std::fs::write(&path, json) {
+            error!("[{log_prefix}] failed to save tasks to {}: {e}", path.display());
+        } else {
+            debug!("[{log_prefix}] saved {} task(s) to {}", tasks.len(), path.display());
+        }
+    }
+}
+
+/// Load the per-chat task registry from disk. Any record still marked
+/// `Running` is rewritten to `Error` with an explanatory summary because its
+/// cancel token (and the inner tokio task) didn't survive the process restart.
+pub fn load_tasks(data_dir: &Path, log_prefix: &str) -> Vec<TaskRecord> {
+    let path = session_dir(data_dir).join("tasks.json");
+    let raw: Vec<TaskRecord> = match std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()) {
+        Some(t) => t,
+        None    => {
+            debug!("[{log_prefix}] no saved tasks at {}", path.display());
+            return vec![];
+        }
+    };
+    let now = now_secs();
+    let mut tasks = raw;
+    for t in tasks.iter_mut() {
+        if t.status == TaskStatus::Running {
+            t.status       = TaskStatus::Error;
+            t.completed_at = Some(now);
+            t.summary      = Some("interrupted by server restart".to_string());
+        }
+    }
+    info!("[{log_prefix}] loaded {} task(s) from {}", tasks.len(), path.display());
+    tasks
 }
 
 // ── Wire types ────────────────────────────────────────────────────────────────
@@ -197,6 +255,8 @@ pub fn chat_event_to_wire_json(event: &ChatEvent) -> Option<serde_json::Value> {
             Some(serde_json::json!({"type":"error","message":message})),
         ChatEvent::System { text } =>
             Some(serde_json::json!({"type":"system","text":text})),
+        ChatEvent::BgComplete { task_id, text } =>
+            Some(serde_json::json!({"type":"bg_complete","task_id":task_id,"text":text})),
         _ => None,
     }
 }

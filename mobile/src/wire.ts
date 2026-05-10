@@ -23,6 +23,7 @@ export type ServerEvent =
   | { type: 'system';        text: string }
   | { type: 'containers';    containers: ContainerInfo[] }
   | { type: 'tasks';         tasks: TaskRecord[] }
+  | { type: 'bg_complete';   task_id: string; text: string }
   | { type: 'ping';          id: number }
   | { type: 'pong';          id: number }
 
@@ -35,6 +36,7 @@ export type ClientFrame =
   | { type: 'pong';            id: number }
   | { type: 'start_container'; id: string }
   | { type: 'terminate_agent'; id: string }
+  | { type: 'cancel_task';     id: string }
   // Legacy: child server's "watch" mode and the original first-frame `{text}`
   // shape are still accepted server-side; remove these when the persistent
   // /stream rewrite lands.
@@ -59,7 +61,7 @@ export interface ContainerInfo {
 export interface TaskRecord {
   task_id:          string
   task_description: string
-  status:           'running' | 'done' | 'error'
+  status:           'running' | 'done' | 'error' | 'cancelled'
   started_at:       number
   completed_at:     number | null
   summary:          string | null

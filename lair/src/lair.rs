@@ -26,8 +26,9 @@ use axum::{
 use octo_core::{
     self,
     build_ephemeral_system_prompt, build_tools_with_mcp, chain_executor_with_mcp,
-    completion_chat_event, finalize_task, init_mcp_pool, init_shell_env, load_or_generate_keypair,
-    now_secs, register_task, tasks_wire_json, TaskRecord, TaskStatus,
+    cancel_task as core_cancel_task, completion_chat_event, finalize_task, init_mcp_pool,
+    init_shell_env, load_or_generate_keypair, now_secs, register_task, tasks_wire_json,
+    TaskRecord, TaskStatus,
     relay as relay_client, RelaySigner,
     resolve_api_key, resolve_model, run_noise_proxy, run_background_task_tool, send_message,
     spawn_background_task, to_base32, ApiMessage, AnthropicTool, BackgroundTaskParams, ChatEvent,
@@ -573,6 +574,17 @@ async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
                 }
             });
         }
+        "cancel_task" => {
+            let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            if id.is_empty() {
+                warn!("[lair/stream] cancel_task frame missing id");
+                return;
+            }
+            let fired = core_cancel_task(&state.stream_state, &id);
+            info!("[lair/stream] cancel_task id={id} fired={fired}");
+            // No ack frame — the spawn's deliver closure will push a tasks
+            // snapshot once the inner agentic loop honours the cancellation.
+        }
         "pong" => {
             // App-level keepalive ack — handled per-WS in the future ping/pong work.
             // For now just no-op so unknown clients don't see it as an error.
@@ -1042,10 +1054,11 @@ async fn exec_run_background_task(state: Arc<AppState>, input: serde_json::Value
     let extra_tools = build_tools_with_mcp(&state.mcp_pool, &lair_extra_tools()).await;
     let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), lair_extra_executor(state.clone()));
 
-    // Register the task in the per-chat registry before spawning so a
-    // /stream subscriber that reconnects mid-roundtrip still sees the running
-    // task. See agent.rs for the symmetric child-side wiring.
-    register_task(&state.stream_state, TaskRecord {
+    // Register the task *before* spawning so the per-chat registry is in place
+    // by the time the deliver closure can possibly run. The cancel token is
+    // shared between the registry (so the user can stop it) and the spawn.
+    let cancel = CancellationToken::new();
+    register_task(&state.stream_state, &data_dir(), TaskRecord {
         task_id:          task_id.clone(),
         task_description: task_description.clone(),
         status:           TaskStatus::Running,
@@ -1053,7 +1066,7 @@ async fn exec_run_background_task(state: Arc<AppState>, input: serde_json::Value
         completed_at:     None,
         summary:          None,
         cost_usd:         None,
-    });
+    }, cancel.clone());
     buffer_and_fanout(&state.stream_state, tasks_wire_json(&state.stream_state));
 
     let params = BackgroundTaskParams {
@@ -1068,8 +1081,8 @@ async fn exec_run_background_task(state: Arc<AppState>, input: serde_json::Value
     };
 
     let stream_state_arc = state.clone();
-    spawn_background_task(params, move |outcome| {
-        finalize_task(&stream_state_arc.stream_state, &outcome);
+    spawn_background_task(params, cancel, move |outcome| {
+        finalize_task(&stream_state_arc.stream_state, &data_dir(), &outcome);
         buffer_and_fanout(&stream_state_arc.stream_state, tasks_wire_json(&stream_state_arc.stream_state));
         // Persist a `bg_complete` row so the model sees the result on its next
         // turn (auto-triggered below if no foreground turn is mid-stream).
@@ -1083,14 +1096,24 @@ async fn exec_run_background_task(state: Arc<AppState>, input: serde_json::Value
             let mut msgs = stream_state_arc.messages.lock().unwrap();
             msgs.push(ApiMessage {
                 role:    "bg_complete".to_string(),
-                content: vec![ContentBlock::Text { text: injection }],
+                content: vec![ContentBlock::Text { text: injection.clone() }],
             });
             save_messages(&msgs);
         }
 
-        // Live UI signal: existing transient system-event fan-out. Connected
-        // mobile clients see this immediately; cold-starts pick the row up
-        // from /history.
+        // Live UI signal: emit a `bg_complete` wire frame so connected clients
+        // can render the chip between assistant turns. /history reload would
+        // surface the same row eventually; this just makes it visible
+        // immediately. Stable task_id keys deduplicate against /history.
+        let bg_event = ChatEvent::BgComplete {
+            task_id: outcome.task_id.clone(),
+            text:    injection,
+        };
+        if let Some(json) = chat_event_to_wire_json(&bg_event) {
+            buffer_and_fanout(&stream_state_arc.stream_state, json.to_string());
+        }
+
+        // Transient system-event fan-out (kept for status banner display).
         let event = completion_chat_event(&outcome);
         if let Some(json) = chat_event_to_wire_json(&event) {
             buffer_and_fanout(&stream_state_arc.stream_state, json.to_string());
@@ -1261,7 +1284,11 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
         mcp_pool,
         cancel:                Mutex::new(CancellationToken::new()),
         is_streaming:          AtomicBool::new(false),
-        stream_state:          Mutex::new(StreamState::new()),
+        stream_state:          Mutex::new({
+            let mut ss = StreamState::new();
+            ss.tasks = octo_core::load_tasks(&data_dir(), "lair");
+            ss
+        }),
         ready_rx,
         relay_signer,
         relay_url:             relay_url_str,

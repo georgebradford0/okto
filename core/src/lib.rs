@@ -20,15 +20,15 @@ pub mod app;
 pub use app::{
     StreamState, buffer_and_fanout,
     HistMsg, messages_to_history, chat_event_to_wire_json,
-    save_messages, load_messages, session_dir,
+    save_messages, load_messages, save_tasks, load_tasks, session_dir,
     parse_ping_id, parse_pong_id,
 };
 
 pub mod background;
 pub use background::{
     BackgroundTaskParams, BackgroundTaskResult, TaskRecord, TaskStatus,
-    completion_chat_event, finalize_task, register_task, run_background_task_tool,
-    spawn_background_task, tasks_wire_json,
+    cancel_task, completion_chat_event, finalize_task, register_task,
+    run_background_task_tool, spawn_background_task, tasks_wire_json,
 };
 
 pub mod relay;
@@ -305,6 +305,12 @@ pub enum ChatEvent {
     /// and agent send this on /stream open and after every spawn / completion.
     /// Payload is a JSON array of `TaskRecord`-shaped objects.
     Tasks              { tasks: serde_json::Value },
+    /// Server → client live notification that a background task's `bg_complete`
+    /// row has just been persisted. Mobile renders it as the same chip it would
+    /// show after a /history reload, so the user sees the marker between the
+    /// pre-spawn and post-completion assistant turns. `task_id` is the stable
+    /// dedupe key in case the row also arrives via /history.
+    BgComplete         { task_id: String, text: String },
     /// Server → client liveness probe. Client must reply with a Pong within the
     /// keepalive window or the server will drop the connection.
     Ping               { id: u64 },
@@ -317,6 +323,9 @@ pub enum ChatEvent {
     /// Client → server request to scale a child Deployment to 1 replica.
     /// Replaces the deprecated POST /containers/start.
     StartContainer     { id: String },
+    /// Client → server request to cancel a running background task by id.
+    /// Both lair and agent honour this against their per-chat task registry.
+    CancelTask         { id: String },
 }
 
 // ── Branch ────────────────────────────────────────────────────────────────────
