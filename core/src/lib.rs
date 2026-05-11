@@ -88,6 +88,9 @@ pub struct Config {
     /// Full chat-completions URL (e.g. `https://api.openai.com/v1/chat/completions`).
     /// Sent verbatim — no path is appended.
     pub api_url:           Option<String>,
+    /// GitHub token forwarded to lair (and from there, to child agents that
+    /// need to clone private repos or open PRs).
+    pub gh_token:          Option<String>,
 }
 
 // ── API Backend ───────────────────────────────────────────────────────────────

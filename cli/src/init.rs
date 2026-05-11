@@ -50,8 +50,13 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
     if opts.openai_api_key.is_some() { cfg.openai_api_key = opts.openai_api_key.map(str::to_string); }
     if opts.model.is_some()          { cfg.model          = opts.model.map(str::to_string); }
     if opts.api_url.is_some()        { cfg.api_url        = opts.api_url.map(str::to_string); }
+    if opts.gh_token.is_some()       { cfg.gh_token       = opts.gh_token.map(str::to_string); }
     octo_core::write_config(&cfg);
     println!("Wrote operator config to {}.", octo_core::config_path().display());
+
+    // Resolve gh_token: explicit flag wins; otherwise fall back to whatever was
+    // persisted previously so repeat `octo init` doesn't quietly drop it.
+    let gh_token = opts.gh_token.map(str::to_string).or_else(|| cfg.gh_token.clone());
 
     // Seed mcp.json if the operator provided one. `${VAR}` references are
     // expanded against the *host* env so the operator can use the same file
@@ -106,7 +111,7 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
     fs::create_dir_all(env_path.parent().unwrap()).ok();
     let env_text = build_env_file(&EnvFileInput {
         api_key:           opts.api_key,
-        gh_token:          opts.gh_token,
+        gh_token:          gh_token.as_deref(),
         model:             opts.model,
         api_url:           opts.api_url,
         openai_api_key:    opts.openai_api_key,

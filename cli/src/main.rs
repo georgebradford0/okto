@@ -393,6 +393,8 @@ async fn main() -> Result<()> {
                     "Anthropic API key is required: pass --anthropic-api-key, set ANTHROPIC_API_KEY, or include anthropic_api_key in --config or ~/.octo/config.json"
                 ))?;
 
+            let gh_token = gh_token.or(cfg.gh_token.clone());
+
             if let Err(e) = validate_resolved_config(
                 &api_key,
                 cfg.openai_api_key.as_deref(),
@@ -554,6 +556,7 @@ async fn main() -> Result<()> {
                     let cfg = octo_core::read_config();
                     println!("anthropic_api_key: {}", cfg.anthropic_api_key.as_deref().map(mask).unwrap_or_else(|| "(not set)".into()));
                     println!("openai_api_key:    {}", cfg.openai_api_key.as_deref().map(mask).unwrap_or_else(|| "(not set)".into()));
+                    println!("gh_token:          {}", cfg.gh_token.as_deref().map(mask).unwrap_or_else(|| "(not set)".into()));
                     println!("model:             {}", cfg.model.as_deref().unwrap_or("(default)"));
                     println!("api_url:           {}", cfg.api_url.as_deref().unwrap_or("(Anthropic)"));
                 }
@@ -563,6 +566,7 @@ async fn main() -> Result<()> {
                     if openai_api_key.is_some()    { cfg.openai_api_key    = openai_api_key; }
                     if model.is_some()             { cfg.model             = model; }
                     if api_url.is_some()           { cfg.api_url           = api_url; }
+                    if gh_token.is_some()          { cfg.gh_token          = gh_token; }
                     octo_core::write_config(&cfg);
 
                     // Rewrite the env file with the merged values so the next
@@ -579,7 +583,7 @@ async fn main() -> Result<()> {
 
                         let env_text = init::build_env_file(&init::EnvFileInput {
                             api_key,
-                            gh_token:          gh_token.as_deref(),
+                            gh_token:          cfg.gh_token.as_deref(),
                             model:             cfg.model.as_deref(),
                             api_url:           cfg.api_url.as_deref(),
                             openai_api_key:    cfg.openai_api_key.as_deref(),
