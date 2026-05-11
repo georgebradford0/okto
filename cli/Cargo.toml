@@ -1,6 +1,6 @@
 [package]
 name        = "octo"
-version     = "0.0.61"
+version     = "0.1.0"
 edition     = "2021"
 description = "octo lair management CLI"
 
