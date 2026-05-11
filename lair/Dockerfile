@@ -20,7 +20,20 @@ RUN mkdir -p core/src lair/src && \
     echo '' > core/src/lib.rs && \
     echo 'fn main() {}' > lair/src/main.rs
 
-RUN cargo fetch
+# QEMU-emulated arm64 builds frequently lose crates.io HTTPS connections
+# mid-`cargo fetch` (SSL_ERROR_SYSCALL). Crank cargo's own retry knobs and
+# wrap the fetch in a shell retry — each attempt resumes from the cached
+# crates the previous run did manage to download, so it converges fast.
+ENV CARGO_NET_RETRY=10 \
+    CARGO_HTTP_TIMEOUT=120 \
+    CARGO_HTTP_MULTIPLEXING=false
+
+RUN i=0; until cargo fetch; do \
+        i=$((i+1)); \
+        if [ "$i" -ge 5 ]; then echo "[cargo fetch] giving up after 5 attempts" >&2; exit 1; fi; \
+        echo "[cargo fetch] attempt $i failed; retrying in 10s..." >&2; \
+        sleep 10; \
+    done
 
 COPY core/src    core/src
 COPY lair/src    lair/src
