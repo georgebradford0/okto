@@ -90,8 +90,9 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
         }
 
         let dest = lair_dir.join("mcp.json");
-        fs::write(&dest, serde_json::to_string_pretty(&servers)?)
-            .with_context(|| format!("write {}", dest.display()))?;
+        // mode 0600 because env values are now resolved literals — secret
+        // material for MCP servers ends up plaintext in this file.
+        write_secret_file(&dest, &serde_json::to_string_pretty(&servers)?)?;
         println!("Seeded MCP config: {}", dest.display());
     }
 
@@ -194,7 +195,7 @@ pub fn build_env_file(i: &EnvFileInput) -> String {
     out
 }
 
-fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
+pub fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
     fs::write(path, contents)
         .with_context(|| format!("write {}", path.display()))?;
     #[cfg(unix)]

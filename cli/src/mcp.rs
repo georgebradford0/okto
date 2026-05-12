@@ -80,8 +80,9 @@ async fn write_mcp(d: &Docker, agent: &str, configs: &[McpServerConfig]) -> Resu
     if agent == LAIR_AGENT_NAME {
         let path = lair_mcp_path();
         std::fs::create_dir_all(path.parent().unwrap()).ok();
-        std::fs::write(&path, json)
-            .with_context(|| format!("write {}", path.display()))?;
+        // mode 0600 — env / header values are resolved literals and contain
+        // secret material (API keys, bearer tokens).
+        crate::init::write_secret_file(&path, &json)?;
     } else {
         use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
         use bollard::container::DownloadFromContainerOptions;
