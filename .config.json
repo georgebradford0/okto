@@ -1,6 +1,7 @@
 {
   "repo": "/path/to/your/repo",
   "anthropic_api_key": "sk-ant-...",
+  "gh_token": "ghp_...",
   "model": "claude-sonnet-4-6",
   "api_url": "https://your-openai-compatible-endpoint.com/v1/chat/completions"
 }

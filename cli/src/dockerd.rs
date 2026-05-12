@@ -12,7 +12,7 @@ use bollard::{
     container::{
         Config as ContainerConfig, CreateContainerOptions, ListContainersOptions,
         LogOutput, LogsOptions, RemoveContainerOptions, StartContainerOptions,
-        StopContainerOptions,
+        StopContainerOptions, WaitContainerOptions,
     },
     image::CreateImageOptions,
     secret::{HostConfig, Mount, MountTypeEnum, PortBinding, RestartPolicy, RestartPolicyNameEnum},
@@ -343,6 +343,65 @@ pub async fn stop_named(d: &Docker, name: &str) -> Result<()> {
     d.stop_container(name, Some(StopContainerOptions { t: 10 }))
         .await
         .with_context(|| format!("docker stop_container {name}"))?;
+    Ok(())
+}
+
+/// Empty the contents of a host directory by running a throwaway container
+/// that has the dir bind-mounted. Lair writes session/agents/etc. into its
+/// bind-mounted `/data` as the container's root user, so those files end up
+/// owned by host root and the operator's user can't unlink them directly. The
+/// container shares the same uid (root) and *can*, so we delegate.
+///
+/// Leaves `host_dir` itself in place but empty; callers can `remove_dir` it
+/// afterwards (which doesn't need root, since the dir itself was created by
+/// the host operator).
+pub async fn wipe_dir_via_container(d: &Docker, image: &str, host_dir: &Path) -> Result<()> {
+    let host_config = HostConfig {
+        mounts: Some(vec![Mount {
+            target: Some("/wipe".to_string()),
+            source: Some(host_dir.to_string_lossy().to_string()),
+            typ:    Some(MountTypeEnum::BIND),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let config = ContainerConfig::<String> {
+        image:      Some(image.to_string()),
+        entrypoint: Some(vec!["/bin/sh".to_string()]),
+        // `find -delete` implies -depth so it removes contents before parents,
+        // and -mindepth 1 spares /wipe itself.
+        cmd:        Some(vec!["-c".to_string(), "find /wipe -mindepth 1 -delete".to_string()]),
+        host_config: Some(host_config),
+        ..Default::default()
+    };
+
+    let created = d
+        .create_container(None::<CreateContainerOptions<String>>, config)
+        .await
+        .context("docker create_container (wipe)")?;
+
+    d.start_container(&created.id, None::<StartContainerOptions<String>>)
+        .await
+        .context("docker start_container (wipe)")?;
+
+    let mut waiter = d.wait_container(
+        &created.id,
+        Some(WaitContainerOptions { condition: "not-running".to_string() }),
+    );
+    while let Some(item) = waiter.next().await {
+        if let Err(e) = item {
+            tracing::warn!("[dockerd] wait wipe container: {e}");
+            break;
+        }
+    }
+
+    let _ = d
+        .remove_container(
+            &created.id,
+            Some(RemoveContainerOptions { force: true, ..Default::default() }),
+        )
+        .await;
+
     Ok(())
 }
 

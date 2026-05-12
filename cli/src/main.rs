@@ -443,12 +443,23 @@ async fn main() -> Result<()> {
                 eprintln!("warning: remove lair: {e:#}");
             }
 
-            // Wipe host data dir.
+            // Wipe host data dir. Files lair persisted from inside the container
+            // (session/, agents.json, etc.) are owned by the container's root user
+            // on the host, so a plain `std::fs::remove_dir_all` from the operator
+            // shell would fail with EACCES. Delegate the actual unlinking to a
+            // throwaway container that has the dir bind-mounted.
             let data_dir = dockerd::lair_data_dir();
             if data_dir.exists() {
                 println!("Removing {}...", data_dir.display());
-                if let Err(e) = std::fs::remove_dir_all(&data_dir) {
-                    eprintln!("warning: remove {}: {e}", data_dir.display());
+                if let Err(e) = dockerd::wipe_dir_via_container(
+                    &docker,
+                    dockerd::LAIR_DEFAULT_IMAGE,
+                    &data_dir,
+                ).await {
+                    eprintln!("warning: wipe {} via container: {e:#}", data_dir.display());
+                }
+                if let Err(e) = std::fs::remove_dir(&data_dir) {
+                    eprintln!("warning: remove empty {}: {e}", data_dir.display());
                 }
             }
             // Wipe env file too.
