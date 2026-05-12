@@ -44,6 +44,37 @@ pub fn env_file_path() -> PathBuf {
     config_dir().join("lair-env")
 }
 
+/// Path of the launch-config record used to recreate lair on `octo reload` and
+/// `octo env set/unset` without re-prompting the operator for ports/image.
+pub fn launch_config_path() -> PathBuf {
+    config_dir().join("lair-launch.json")
+}
+
+/// What `octo init` decided about how to launch the lair container. Persisted
+/// so subsequent commands that need to *recreate* (not just restart) lair —
+/// because they changed something only `docker run` consumes, like
+/// `--env-file` — don't have to ask the operator for ports/image again.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct LaunchRecord {
+    pub image:           String,
+    pub host_noise_port: u16,
+    pub host_http_port:  u16,
+}
+
+pub fn write_launch(rec: &LaunchRecord) -> Result<()> {
+    let path = launch_config_path();
+    std::fs::create_dir_all(path.parent().unwrap()).ok();
+    let body = serde_json::to_string_pretty(rec).context("encode lair-launch.json")?;
+    std::fs::write(&path, body).with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
+pub fn read_launch() -> Option<LaunchRecord> {
+    std::fs::read_to_string(launch_config_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+}
+
 fn home_dir() -> PathBuf {
     std::env::var("HOME").map(PathBuf::from).unwrap_or_default()
 }

@@ -3,7 +3,7 @@ mod dockerd;
 mod init;
 mod mcp;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
 use octo_core::Config;
@@ -12,38 +12,6 @@ use octo_core::Config;
 fn mask(s: &str) -> String {
     if s.len() <= 8 { return "*".repeat(s.len()); }
     format!("{}...{}", &s[..4], &s[s.len()-4..])
-}
-
-/// Parse `--env KEY=VALUE` pairs from `octo init`. Rejects malformed pairs,
-/// invalid key names, and reserved keys (the runtime knobs octo writes into
-/// lair-env itself).
-fn parse_extra_env(raw: &[String]) -> Result<Vec<(String, String)>> {
-    const RESERVED: &[&str] = &[
-        "NOISE_PORT", "PUBLIC_PORT", "OCTO_DATA_DIR",
-        "NOISE_KEY_FILE", "OCTO_SKIP_SHELL_ENV",
-    ];
-    let mut out = Vec::with_capacity(raw.len());
-    for pair in raw {
-        let (k, v) = pair.split_once('=').ok_or_else(|| {
-            anyhow::anyhow!("--env value '{pair}' must be KEY=VALUE")
-        })?;
-        let k = k.trim();
-        if k.is_empty() {
-            anyhow::bail!("--env '{pair}': empty KEY");
-        }
-        let first = k.chars().next().unwrap();
-        if !(first.is_ascii_alphabetic() || first == '_') {
-            anyhow::bail!("--env '{pair}': KEY must start with letter or underscore");
-        }
-        if !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            anyhow::bail!("--env '{pair}': KEY may only contain letters, digits, and underscores");
-        }
-        if RESERVED.contains(&k) {
-            anyhow::bail!("--env '{k}': reserved name managed by octo; remove the flag");
-        }
-        out.push((k.to_string(), v.to_string()));
-    }
-    Ok(out)
 }
 
 /// Validate the resolved config before persisting it.
@@ -194,6 +162,15 @@ enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+
+    /// View or update extra env vars passed to lair's process. Distinct from
+    /// `octo config` (which is for credentials read live from config.json) —
+    /// values here end up in `docker inspect lair` and require a container
+    /// recreate, which this command does automatically.
+    Env {
+        #[command(subcommand)]
+        action: EnvAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -223,6 +200,16 @@ enum ConfigAction {
         #[arg(long)]
         gh_token: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum EnvAction {
+    /// Show the operator-supplied env vars currently passed to lair (values masked)
+    Show,
+    /// Add or update one or more env vars (each as KEY=VALUE). Recreates lair.
+    Set { vars: Vec<String> },
+    /// Remove one or more env var keys. Recreates lair.
+    Unset { keys: Vec<String> },
 }
 
 #[derive(Subcommand)]
@@ -425,7 +412,7 @@ async fn main() -> Result<()> {
             anthropic_api_key, openai_api_key, api_url, model, gh_token,
             env, noise_port, http_port, image, mcp_config, config,
         } => {
-            let extra_env = parse_extra_env(&env)?;
+            let extra_env = init::parse_extra_env(&env)?;
             // Merge flag values onto the loaded config (flag wins). Result is
             // the effective Config that will be persisted to ~/.octo/config.json
             // and bind-mounted into /data/config.json inside lair.
@@ -527,16 +514,16 @@ async fn main() -> Result<()> {
             let docker = dockerd::build_client()?;
             dockerd::ensure_docker_reachable(&docker).await?;
 
-            // Pull the same image lair was started with (re-derive from cfg).
-            let image = dockerd::LAIR_DEFAULT_IMAGE; // TODO: persist image tag at init time
-            println!("Pulling {image}...");
-            dockerd::pull_image(&docker, image).await?;
-
-            // Always restart lair.
-            println!("Restarting lair...");
-            dockerd::restart_container(&docker, dockerd::LAIR_CONTAINER_NAME).await?;
-            dockerd::wait_for_health(8000, std::time::Duration::from_secs(60)).await?;
-            println!("lair ready.");
+            // Pull the image lair was launched with, then recreate the
+            // container. `docker restart` silently keeps the old image and the
+            // old `--env-file` snapshot, so we go all the way through
+            // `start_lair`.
+            let rec = dockerd::read_launch().ok_or_else(|| anyhow::anyhow!(
+                "~/.octo/lair-launch.json is missing — re-run `octo init` once so reload knows which image / ports to use"
+            ))?;
+            println!("Pulling {}...", rec.image);
+            dockerd::pull_image(&docker, &rec.image).await?;
+            init::recreate_lair("reload").await?;
 
             // Optionally restart agents.
             let targets: Vec<String> = if all {
@@ -620,6 +607,60 @@ async fn main() -> Result<()> {
                     // which lair sees live via a bind mount at /data/config.json
                     // and re-reads on each model call.
                     println!("Config updated.");
+                }
+            }
+        }
+        Command::Env { action } => {
+            let path = dockerd::env_file_path();
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("read {}", path.display()))?;
+            let mut entries = init::parse_env_file(&text);
+
+            match action {
+                EnvAction::Show => {
+                    let operator: Vec<_> = entries.iter()
+                        .filter(|(k, _)| !init::MANAGED_ENV_KEYS.contains(&k.as_str()))
+                        .collect();
+                    if operator.is_empty() {
+                        println!("(no operator env vars set — use `octo env set KEY=VALUE`)");
+                    } else {
+                        for (k, v) in operator {
+                            println!("{k}={}", mask(v));
+                        }
+                    }
+                }
+                EnvAction::Set { vars } => {
+                    let new_pairs = init::parse_extra_env(&vars)?;
+                    if new_pairs.is_empty() {
+                        anyhow::bail!("no KEY=VALUE pairs supplied");
+                    }
+                    for (k, v) in new_pairs {
+                        if let Some(slot) = entries.iter_mut().find(|(ek, _)| ek == &k) {
+                            slot.1 = v;
+                        } else {
+                            entries.push((k, v));
+                        }
+                    }
+                    init::write_secret_file(&path, &init::serialize_env_file(&entries))?;
+                    init::recreate_lair("env set").await?;
+                }
+                EnvAction::Unset { keys } => {
+                    if keys.is_empty() {
+                        anyhow::bail!("no keys supplied");
+                    }
+                    for k in &keys {
+                        if init::MANAGED_ENV_KEYS.contains(&k.as_str()) {
+                            anyhow::bail!("'{k}' is managed by octo and can't be unset");
+                        }
+                    }
+                    let before = entries.len();
+                    entries.retain(|(k, _)| !keys.contains(k));
+                    if entries.len() == before {
+                        println!("No matching keys to remove.");
+                    } else {
+                        init::write_secret_file(&path, &init::serialize_env_file(&entries))?;
+                        init::recreate_lair("env unset").await?;
+                    }
                 }
             }
         }

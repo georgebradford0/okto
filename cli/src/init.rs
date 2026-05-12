@@ -130,6 +130,14 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
     println!("Starting lair container...");
     dockerd::start_lair(&docker, &launch).await?;
 
+    // Persist launch parameters so `octo reload` and `octo env set/unset` can
+    // recreate lair with the same image + ports without re-prompting.
+    dockerd::write_launch(&dockerd::LaunchRecord {
+        image:           opts.image.to_string(),
+        host_noise_port: opts.noise_port,
+        host_http_port:  opts.http_port,
+    })?;
+
     println!("Waiting for lair to be ready...");
     dockerd::wait_for_health(opts.http_port, std::time::Duration::from_secs(60)).await?;
 
@@ -219,6 +227,95 @@ pub fn build_env_file(i: &EnvFileInput) -> String {
         out.push_str(&format!("{k}={v}\n"));
     }
     out
+}
+
+/// Env keys octo manages itself (set by `build_env_file`). The `octo env`
+/// subcommand refuses to add or remove these.
+pub const MANAGED_ENV_KEYS: &[&str] = &[
+    "NOISE_PORT", "PUBLIC_PORT", "OCTO_DATA_DIR",
+    "NOISE_KEY_FILE", "OCTO_SKIP_SHELL_ENV",
+];
+
+/// Parse `--env KEY=VALUE` pairs. Used by both `octo init` and
+/// `octo env set`. Rejects malformed pairs and reserved keys.
+pub fn parse_extra_env(raw: &[String]) -> Result<Vec<(String, String)>> {
+    let mut out = Vec::with_capacity(raw.len());
+    for pair in raw {
+        let (k, v) = pair.split_once('=').ok_or_else(|| {
+            anyhow::anyhow!("'{pair}' must be KEY=VALUE")
+        })?;
+        let k = k.trim();
+        if k.is_empty() {
+            anyhow::bail!("'{pair}': empty KEY");
+        }
+        let first = k.chars().next().unwrap();
+        if !(first.is_ascii_alphabetic() || first == '_') {
+            anyhow::bail!("'{pair}': KEY must start with letter or underscore");
+        }
+        if !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            anyhow::bail!("'{pair}': KEY may only contain letters, digits, and underscores");
+        }
+        if MANAGED_ENV_KEYS.contains(&k) {
+            anyhow::bail!("'{k}': reserved name managed by octo");
+        }
+        out.push((k.to_string(), v.to_string()));
+    }
+    Ok(out)
+}
+
+/// Parse an env-file body into an ordered list of (KEY, VALUE) pairs.
+/// Blank lines and `#`-comments are skipped. Useful for round-tripping
+/// `~/.octo/lair-env` from the env subcommand.
+pub fn parse_env_file(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+        .collect()
+}
+
+/// Serialize (KEY, VALUE) pairs to env-file form. Order is preserved so
+/// re-writing after an edit doesn't churn the file unnecessarily.
+pub fn serialize_env_file(entries: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (k, v) in entries {
+        out.push_str(&format!("{k}={v}\n"));
+    }
+    out
+}
+
+/// Recreate the lair container (remove + create + start) using the launch
+/// record persisted at `~/.octo/lair-launch.json`. Used by `octo env set/unset`
+/// and `octo reload`, both of which change something `docker restart` doesn't
+/// pick up (`--env-file` and the image, respectively).
+pub async fn recreate_lair(reason: &str) -> Result<()> {
+    let docker = dockerd::build_client()?;
+    dockerd::ensure_docker_reachable(&docker).await?;
+
+    let rec = dockerd::read_launch().ok_or_else(|| {
+        anyhow::anyhow!(
+            "~/.octo/lair-launch.json is missing. Re-run `octo init` once to record \
+             launch parameters; subsequent `{reason}` calls won't need flags."
+        )
+    })?;
+
+    let lair_dir = dockerd::lair_data_dir();
+    let env_path = dockerd::env_file_path();
+    let launch = dockerd::LairLaunch {
+        image:           &rec.image,
+        host_noise_port: rec.host_noise_port,
+        host_http_port:  rec.host_http_port,
+        data_dir:        &lair_dir,
+        env_file:        &env_path,
+        docker_socket:   resolve_docker_socket(),
+        operator_config: &octo_core::config_path(),
+    };
+    println!("Recreating lair ({reason})...");
+    dockerd::start_lair(&docker, &launch).await?;
+    println!("Waiting for lair to be ready...");
+    dockerd::wait_for_health(rec.host_http_port, std::time::Duration::from_secs(60)).await?;
+    println!("lair ready.");
+    Ok(())
 }
 
 pub fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
