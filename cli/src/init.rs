@@ -47,8 +47,6 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
         Err(e) => eprintln!("warning: could not ensure SSH keypair: {e:#}"),
     }
 
-    let (noise_private_key_hex, pubkey_b32) = generate_keypair()?;
-
     // main.rs::Command::Init merged flags onto cfg and called write_config
     // before invoking us — config.json is already on disk and will be
     // bind-mounted into /data/config.json when the lair container starts.
@@ -96,24 +94,11 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
         println!("Seeded MCP config: {}", dest.display());
     }
 
-    // Drop a copy of the Noise keypair into the bind-mounted dir so lair can
-    // load it without an env var. Same 32-byte format `load_or_generate_keypair`
-    // expects.
+    // Ensure /data/noise_key.bin (priv || pub, 64 bytes) exists and pull the
+    // pubkey that will go in the QR. Same format `load_or_generate_keypair`
+    // expects, so lair doesn't silently regenerate at boot and break the QR.
     let key_file = lair_dir.join("noise_key.bin");
-    if !key_file.exists() {
-        let private_bytes = hex::decode(&noise_private_key_hex[..64])
-            .context("decode noise private key")?;
-        fs::write(&key_file, &private_bytes)
-            .with_context(|| format!("write {}", key_file.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&key_file)?.permissions();
-            perms.set_mode(0o600);
-            fs::set_permissions(&key_file, perms).ok();
-        }
-        println!("Wrote Noise keypair to {}.", key_file.display());
-    }
+    let pubkey_b32 = ensure_noise_keypair(&key_file)?;
 
     // Compose the env file fed to `docker run --env-file`.
     let env_path = dockerd::env_file_path();
@@ -165,7 +150,24 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
     Ok(())
 }
 
-fn generate_keypair() -> Result<(String, String)> {
+/// Ensure a 64-byte (priv || pub) Noise keypair exists at `path`, returning
+/// the base32-encoded pubkey for the QR. If `path` already holds a valid
+/// 64-byte keypair, reuse it so a re-run of `octo init` preserves whatever
+/// pinned-key state mobile clients have cached. If it's a different length
+/// (older CLIs only wrote the 32-byte private half, which lair silently
+/// regenerated on boot and broke the QR), regenerate and overwrite.
+fn ensure_noise_keypair(path: &Path) -> Result<String> {
+    if let Ok(bytes) = fs::read(path) {
+        if bytes.len() == 64 {
+            println!("Reusing existing Noise keypair at {}.", path.display());
+            return Ok(BASE32_NOPAD.encode(&bytes[32..]));
+        }
+        eprintln!(
+            "warning: {} is {} bytes (expected 64) — regenerating Noise keypair.",
+            path.display(),
+            bytes.len(),
+        );
+    }
     println!("Generating Noise_XX_25519 keypair...");
     let builder = snow::Builder::new(
         "Noise_XX_25519_ChaChaPoly_SHA256".parse().context("parse noise params")?,
@@ -173,7 +175,20 @@ fn generate_keypair() -> Result<(String, String)> {
     let kp = builder.generate_keypair().context("generate keypair")?;
     let mut combined = kp.private.clone();
     combined.extend_from_slice(&kp.public);
-    Ok((hex::encode(&combined), BASE32_NOPAD.encode(&kp.public)))
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    fs::write(path, &combined)
+        .with_context(|| format!("write {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(path, perms).ok();
+    }
+    println!("Wrote Noise keypair to {}.", path.display());
+    Ok(BASE32_NOPAD.encode(&kp.public))
 }
 
 pub struct EnvFileInput {
