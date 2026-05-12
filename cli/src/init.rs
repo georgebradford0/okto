@@ -12,15 +12,10 @@ use octo_core::{ensure_ssh_keypair, Config};
 use crate::dockerd;
 
 pub struct InitOptions<'a> {
-    pub api_key:        &'a str,
-    pub gh_token:       Option<&'a str>,
-    pub noise_port:     u16,
-    pub http_port:      u16,
-    pub image:          &'a str,
-    pub mcp_config:     Option<&'a Path>,
-    pub model:          Option<&'a str>,
-    pub api_url:        Option<&'a str>,
-    pub openai_api_key: Option<&'a str>,
+    pub noise_port: u16,
+    pub http_port:  u16,
+    pub image:      &'a str,
+    pub mcp_config: Option<&'a Path>,
 }
 
 pub async fn run(opts: InitOptions<'_>) -> Result<()> {
@@ -43,16 +38,10 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
 
     let (noise_private_key_hex, pubkey_b32) = generate_keypair()?;
 
-    // Persist the operator's config (model, API key, etc.) so subsequent
-    // CLI invocations have a sensible default.
-    let mut cfg = octo_core::read_config();
-    cfg.anthropic_api_key = Some(opts.api_key.to_string());
-    if opts.openai_api_key.is_some() { cfg.openai_api_key = opts.openai_api_key.map(str::to_string); }
-    if opts.model.is_some()          { cfg.model          = opts.model.map(str::to_string); }
-    if opts.api_url.is_some()        { cfg.api_url        = opts.api_url.map(str::to_string); }
-    if opts.gh_token.is_some()       { cfg.gh_token       = opts.gh_token.map(str::to_string); }
-    octo_core::write_config(&cfg);
-    println!("Wrote operator config to {}.", octo_core::config_path().display());
+    // main.rs::Command::Init merged flags onto cfg and called write_config
+    // before invoking us — config.json is already on disk and will be
+    // bind-mounted into /data/config.json when the lair container starts.
+    println!("Operator config: {}.", octo_core::config_path().display());
 
     // Seed mcp.json if the operator provided one. Written through verbatim —
     // any secret values must be inlined directly in the file.

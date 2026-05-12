@@ -14,40 +14,25 @@ fn mask(s: &str) -> String {
     format!("{}...{}", &s[..4], &s[s.len()-4..])
 }
 
-/// Validate the effective config that will be written to the lair env file.
-fn validate_resolved_config(
-    api_key:        &str,
-    openai_api_key: Option<&str>,
-    api_url:        Option<&str>,
-    model:          Option<&str>,
-) -> Result<(), String> {
-    let api_key        = api_key.trim();
-    let openai_api_key = openai_api_key.map(str::trim).filter(|s| !s.is_empty());
-    let api_url        = api_url       .map(str::trim).filter(|s| !s.is_empty());
-    let model          = model         .map(str::trim).filter(|s| !s.is_empty());
+/// Validate the resolved config before persisting it.
+fn validate_resolved_config(cfg: &Config) -> Result<(), String> {
+    let anthropic = cfg.anthropic_api_key.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let openai    = cfg.openai_api_key   .as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let api_url   = cfg.api_url          .as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let model     = cfg.model            .as_deref().map(str::trim).filter(|s| !s.is_empty());
 
-    match api_url {
-        Some(url) => {
-            if !(url.starts_with("http://") || url.starts_with("https://")) {
-                return Err(format!("api_url must start with http:// or https:// (got: {url})"));
-            }
-            if openai_api_key.is_none() && api_key.is_empty() {
-                return Err(
-                    "OpenAI-compatible setup requires openai_api_key (or anthropic_api_key as a fallback) for the bearer token".into()
-                );
-            }
-            if model.is_none() {
-                return Err(
-                    "OpenAI-compatible setup requires model to be set — the default 'claude-sonnet-4-6' won't work against OpenAI endpoints".into()
-                );
-            }
+    if anthropic.is_none() && openai.is_none() {
+        return Err("at least one of anthropic_api_key or openai_api_key is required (pass --anthropic-api-key / --openai-api-key, or set the field in ~/.octo/config.json)".into());
+    }
+    if model.is_none() {
+        return Err("model is required (pass --model or set it in ~/.octo/config.json)".into());
+    }
+    if let Some(url) = api_url {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err(format!("api_url must start with http:// or https:// (got: {url})"));
         }
-        None => {
-            if api_key.is_empty() {
-                return Err(
-                    "anthropic_api_key is required for the Anthropic backend (or set api_url for an OpenAI-compatible endpoint)".into()
-                );
-            }
+        if openai.is_none() && anthropic.is_none() {
+            return Err("api_url is set so an API key is required (openai_api_key preferred, anthropic_api_key accepted)".into());
         }
     }
     Ok(())
@@ -64,9 +49,21 @@ struct Cli {
 enum Command {
     /// Bootstrap lair as a Docker container on this host
     Init {
-        /// Anthropic API key
+        /// Anthropic API key (either this or --openai-api-key is required)
         #[arg(long)]
         anthropic_api_key: Option<String>,
+
+        /// OpenAI-compatible API key (either this or --anthropic-api-key is required)
+        #[arg(long)]
+        openai_api_key: Option<String>,
+
+        /// Full OpenAI-compatible chat-completions URL
+        #[arg(long)]
+        api_url: Option<String>,
+
+        /// Model name (required — e.g. claude-sonnet-4-6, gpt-4o)
+        #[arg(long)]
+        model: Option<String>,
 
         /// GitHub token (optional, for private repos)
         #[arg(long)]
@@ -88,7 +85,7 @@ enum Command {
         #[arg(long)]
         mcp_config: Option<std::path::PathBuf>,
 
-        /// Path to a config.json file (sets model, api_url, anthropic_api_key)
+        /// Path to a config.json file (overrides anything in ~/.octo/config.json)
         #[arg(long)]
         config: Option<std::path::PathBuf>,
     },
@@ -384,37 +381,34 @@ async fn uninstall(yes: bool) -> Result<()> {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Init { anthropic_api_key, gh_token, noise_port, http_port, image, mcp_config, config } => {
-            let cfg: Config = init::load_config(config.as_deref())?;
+        Command::Init {
+            anthropic_api_key, openai_api_key, api_url, model, gh_token,
+            noise_port, http_port, image, mcp_config, config,
+        } => {
+            // Merge flag values onto the loaded config (flag wins). Result is
+            // the effective Config that will be persisted to ~/.octo/config.json
+            // and bind-mounted into /data/config.json inside lair.
+            let mut cfg: Config = init::load_config(config.as_deref())?;
+            if anthropic_api_key.is_some() { cfg.anthropic_api_key = anthropic_api_key; }
+            if openai_api_key.is_some()    { cfg.openai_api_key    = openai_api_key; }
+            if api_url.is_some()           { cfg.api_url           = api_url; }
+            if model.is_some()             { cfg.model             = model; }
+            if gh_token.is_some()          { cfg.gh_token          = gh_token; }
 
-            let api_key = anthropic_api_key
-                .or(cfg.anthropic_api_key.clone())
-                .ok_or_else(|| anyhow::anyhow!(
-                    "Anthropic API key is required: pass --anthropic-api-key or include anthropic_api_key in --config or ~/.octo/config.json"
-                ))?;
-
-            let gh_token = gh_token.or(cfg.gh_token.clone());
-
-            if let Err(e) = validate_resolved_config(
-                &api_key,
-                cfg.openai_api_key.as_deref(),
-                cfg.api_url.as_deref(),
-                cfg.model.as_deref(),
-            ) {
+            if let Err(e) = validate_resolved_config(&cfg) {
                 eprintln!("error: invalid config: {e}");
                 std::process::exit(1);
             }
 
+            // Persist before launching lair — the container reads this file
+            // via a bind mount, so it must exist on disk first.
+            octo_core::write_config(&cfg);
+
             init::run(init::InitOptions {
-                api_key:        &api_key,
-                gh_token:       gh_token.as_deref(),
                 noise_port,
                 http_port,
-                image:          &image,
-                mcp_config:     mcp_config.as_deref(),
-                model:          cfg.model.as_deref(),
-                api_url:        cfg.api_url.as_deref(),
-                openai_api_key: cfg.openai_api_key.as_deref(),
+                image:      &image,
+                mcp_config: mcp_config.as_deref(),
             }).await?;
         }
         Command::Destroy { yes } => {
