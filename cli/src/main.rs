@@ -65,15 +65,12 @@ enum Command {
         #[arg(long)]
         model: Option<String>,
 
-        /// GitHub token (optional, for private repos)
-        #[arg(long)]
-        gh_token: Option<String>,
-
         /// Extra env var passed to the lair container (KEY=VALUE). Repeatable.
         /// Operator-supplied; these end up in `docker inspect lair`, so use it
-        /// only for values that have to be in lair's process env (e.g. so an
-        /// MCP server or a `bash` tool call can read $GH_TOKEN). Reserved
-        /// names managed by octo are rejected.
+        /// only for values that have to be in lair's process env. The most
+        /// common use is `--env GH_TOKEN=ghp_…` so `bash gh …`, `git clone
+        /// https://…`, and MCP servers spawned by lair pick the token up.
+        /// Reserved names managed by octo are rejected.
         #[arg(long = "env", short = 'e', value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
         env: Vec<String>,
 
@@ -195,10 +192,6 @@ enum ConfigAction {
         /// API key for the OpenAI-compatible provider set via --api-url
         #[arg(long)]
         openai_api_key: Option<String>,
-
-        /// GitHub token
-        #[arg(long)]
-        gh_token: Option<String>,
     },
 }
 
@@ -409,7 +402,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Init {
-            anthropic_api_key, openai_api_key, api_url, model, gh_token,
+            anthropic_api_key, openai_api_key, api_url, model,
             env, noise_port, http_port, image, mcp_config, config,
         } => {
             let extra_env = init::parse_extra_env(&env)?;
@@ -421,7 +414,6 @@ async fn main() -> Result<()> {
             if openai_api_key.is_some()    { cfg.openai_api_key    = openai_api_key; }
             if api_url.is_some()           { cfg.api_url           = api_url; }
             if model.is_some()             { cfg.model             = model; }
-            if gh_token.is_some()          { cfg.gh_token          = gh_token; }
 
             if let Err(e) = validate_resolved_config(&cfg) {
                 eprintln!("error: invalid config: {e}");
@@ -590,17 +582,19 @@ async fn main() -> Result<()> {
                     let cfg = octo_core::read_config();
                     println!("anthropic_api_key: {}", cfg.anthropic_api_key.as_deref().map(mask).unwrap_or_else(|| "(not set)".into()));
                     println!("openai_api_key:    {}", cfg.openai_api_key.as_deref().map(mask).unwrap_or_else(|| "(not set)".into()));
-                    println!("gh_token:          {}", cfg.gh_token.as_deref().map(mask).unwrap_or_else(|| "(not set)".into()));
                     println!("model:             {}", cfg.model.as_deref().unwrap_or("(default)"));
                     println!("api_url:           {}", cfg.api_url.as_deref().unwrap_or("(Anthropic)"));
+                    println!();
+                    println!("Note: GH_TOKEN is sourced from lair's process env, not config.json.");
+                    println!("      Set it with `octo env set GH_TOKEN=ghp_…` (it will appear in");
+                    println!("      `docker inspect lair`, by design).");
                 }
-                ConfigAction::Set { model, api_url, anthropic_api_key, openai_api_key, gh_token } => {
+                ConfigAction::Set { model, api_url, anthropic_api_key, openai_api_key } => {
                     let mut cfg = octo_core::read_config();
                     if anthropic_api_key.is_some() { cfg.anthropic_api_key = anthropic_api_key; }
                     if openai_api_key.is_some()    { cfg.openai_api_key    = openai_api_key; }
                     if model.is_some()             { cfg.model             = model; }
                     if api_url.is_some()           { cfg.api_url           = api_url; }
-                    if gh_token.is_some()          { cfg.gh_token          = gh_token; }
                     octo_core::write_config(&cfg);
 
                     // No env-file rewrite: credentials live in config.json,

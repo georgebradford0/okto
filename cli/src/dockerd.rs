@@ -117,7 +117,7 @@ pub struct LairLaunch<'a> {
     pub data_dir:        &'a Path,
     pub env_file:        &'a Path,
     pub docker_socket:   &'a str,
-    /// Host path to the operator's `config.json` (API keys, model, gh_token,
+    /// Host path to the operator's `config.json` (API keys, model,
     /// …). Bind-mounted read-only into the lair container at
     /// `/data/config.json` so lair reads secrets from the file rather than
     /// `--env`/`--env-file` — keeps them out of `docker inspect lair`.

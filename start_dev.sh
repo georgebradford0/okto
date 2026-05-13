@@ -47,7 +47,9 @@ install -m 600 "${DEV_CONFIG_SRC}" "${DEV_DATA_DIR}/config.json"
 # ── Env file consumed by `docker run --env-file` ──────────────────────────────
 # Secrets live in config.json, not here — keeps `docker inspect lair` clean
 # and matches the prod credential surface. Only non-secret runtime knobs go
-# in the env file.
+# in the env file, with one dev-only exception: GH_TOKEN is injected from the
+# host shell so `bash gh …` / `git clone https://…` inside lair work without
+# needing prod's `octo init --env GH_TOKEN=…` opt-in.
 cat > "${DEV_ENV_FILE}" <<EOF
 PUBLIC_PORT=${DEV_NOISE_PORT}
 NOISE_PORT=9000
@@ -55,6 +57,7 @@ OCTO_DATA_DIR=/data
 NOISE_KEY_FILE=/data/noise_key.bin
 OCTO_DEV=1
 OCTO_SKIP_SHELL_ENV=1
+GH_TOKEN=${GH_TOKEN:-}
 # Use the locally-built dev image for child agents too — without this the dev
 # lair tries to pull ghcr.io/georgebradford0/lair:latest when create_agent runs.
 OCTO_AGENT_IMAGE=${DEV_IMAGE}

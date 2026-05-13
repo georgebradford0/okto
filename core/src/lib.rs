@@ -80,6 +80,7 @@ pub fn config_path() -> PathBuf {
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(default)]
 pub struct Config {
     pub name:              Option<String>,
     pub anthropic_api_key: Option<String>,
@@ -88,9 +89,15 @@ pub struct Config {
     /// Full chat-completions URL (e.g. `https://api.openai.com/v1/chat/completions`).
     /// Sent verbatim — no path is appended.
     pub api_url:           Option<String>,
-    /// GitHub token forwarded to lair (and from there, to child agents that
-    /// need to clone private repos or open PRs).
-    pub gh_token:          Option<String>,
+    // `gh_token` was removed in favour of plain env-var propagation:
+    //   - lair gets `GH_TOKEN` via its container env (in prod, `octo init --env
+    //     GH_TOKEN=…`; in dev, start_dev.sh forwards the host shell's value);
+    //   - lair's `exec_create_agent` / `register_remote_agent` read it from
+    //     `std::env::var("GH_TOKEN")` and forward it to children.
+    // Existing config.json files that still carry `gh_token` will deserialize
+    // fine (the field is silently dropped by serde because Config does not
+    // `deny_unknown_fields`) and the next `octo config set …` rewrites them
+    // without it.
 }
 
 // ── API Backend ───────────────────────────────────────────────────────────────

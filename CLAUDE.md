@@ -127,8 +127,15 @@ every model call, so credential rotation is live, no restart needed.
 | Field in `config.json` | Required | Purpose |
 |----------|----------|---------|
 | `anthropic_api_key` | yes | Claude API access (also forwarded to children) |
-| `gh_token` | no  | Forwarded to children for repo clones / PRs |
 | `model` / `api_url` / `openai_api_key` | no | OpenAI-compatible provider for both lair and children |
+
+`gh_token` used to live here too; it doesn't any more. `GH_TOKEN` is now a
+plain env var on lair (operator-supplied via `octo init --env GH_TOKEN=…`
+or, in dev, forwarded from the host shell by `start_dev.sh`), and lair
+reads it from `std::env::var("GH_TOKEN")` when it forwards to children,
+clones for remote agents, or shells out to `gh`/`git`. The trade-off is
+explicit: `GH_TOKEN` will appear in `docker inspect lair`, unlike the
+config-mounted secrets.
 
 #### lair runtime environment variables (non-secret)
 

@@ -453,7 +453,9 @@ fn expand_var(v: &str) -> String {
         "OPENAI_API_KEY"    => cfg.openai_api_key,
         "OPENAI_API_URL"    => cfg.api_url,
         "MODEL"             => cfg.model,
-        "GH_TOKEN"          => cfg.gh_token,
+        // `${GH_TOKEN}` falls through to the std::env::var() lookup below —
+        // lair's `GH_TOKEN` lives in its process env (operator-supplied via
+        // `octo init --env GH_TOKEN=…`), not in config.json.
         _                   => None,
     };
     from_cfg

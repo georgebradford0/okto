@@ -1040,13 +1040,17 @@ async fn exec_create_agent(state: Arc<AppState>, input: serde_json::Value) -> St
 
     info!("[lair/create_agent] creating {child_name} port={noise_port} git={}", git_url.as_deref().unwrap_or("(none)"));
 
-    // Forward provider credentials to the child from lair's own config file
-    // (/data/config.json — bind-mounted from the host's ~/.octo/config.json
-    // for local lairs, SSH-dropped for remote agents). Env vars are no longer
-    // consulted so `docker inspect lair` doesn't leak secrets.
+    // Forward provider credentials to the child. API keys / model / api_url
+    // come from lair's own config.json (/data/config.json — bind-mounted from
+    // the host's ~/.octo/config.json for local lairs, SSH-dropped for remote
+    // agents) so they stay out of `docker inspect lair`. GH_TOKEN is the one
+    // exception: it lives in lair's process env (operator-supplied via
+    // `octo init --env GH_TOKEN=…`) because `bash gh …` and MCP servers spawned
+    // by lair need it in their env too, and there is no `set_var`-from-config
+    // path. Children inherit lair's GH_TOKEN unchanged.
     let cfg = octo_core::read_config();
     let anthropic_api_key = cfg.anthropic_api_key.clone();
-    let gh_token          = cfg.gh_token.clone();
+    let gh_token          = std::env::var("GH_TOKEN").ok().filter(|s| !s.is_empty());
     let model             = cfg.model.clone();
     let openai_api_url    = cfg.api_url.clone();
     let openai_api_key    = cfg.openai_api_key.clone();
@@ -1373,7 +1377,7 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
     // script installs DOES persist the token in the VM's workspace .git/config;
     // that's load-bearing for `git push` and can't be avoided.)
     if let Some(url) = git_url.clone() {
-        let token = octo_core::read_config().gh_token.unwrap_or_default();
+        let token = std::env::var("GH_TOKEN").unwrap_or_default();
         let user_name  = std::env::var("GIT_USER_NAME") .unwrap_or_else(|_| "octo".to_string());
         let user_email = std::env::var("GIT_USER_EMAIL").unwrap_or_else(|_| "octo@localhost".to_string());
         let script = build_remote_clone_script(&url, &token, &user_name, &user_email);
