@@ -1500,7 +1500,7 @@ dependencies = [
 
 [[package]]
 name = "octo"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1509,6 +1509,7 @@ dependencies = [
  "futures-util",
  "libc",
  "octo-core",
+ "openssl",
  "qrcode",
  "reqwest",
  "serde",
