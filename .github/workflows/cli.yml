@@ -21,14 +21,6 @@ jobs:
             os: ubuntu-latest
             cli_artifact:  octo-linux-aarch64
             lair_artifact: octo-lair-linux-aarch64
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            cli_artifact:  octo-macos-x86_64
-            lair_artifact: octo-lair-macos-x86_64
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            cli_artifact:  octo-macos-aarch64
-            lair_artifact: octo-lair-macos-aarch64
 
     steps:
       - name: Checkout
@@ -99,22 +91,16 @@ jobs:
         run: |
           gh release create "cli-v${{ steps.version.outputs.value }}" \
             --title "octo v${{ steps.version.outputs.value }}" \
-            --notes "octo CLI + lair binary.
+            --notes "octo CLI + lair binary (Linux x86_64, aarch64).
 
           ## Installation
 
           \`\`\`sh
           curl -fsSL https://raw.githubusercontent.com/georgebradford0/octo/main/scripts/get-cli.sh | sh
-          \`\`\`
-
-          Supported platforms: Linux (x86_64, aarch64), macOS (x86_64, aarch64)." \
+          \`\`\`" \
             artifacts/octo-linux-x86_64/octo-linux-x86_64 \
             artifacts/octo-linux-aarch64/octo-linux-aarch64 \
-            artifacts/octo-macos-x86_64/octo-macos-x86_64 \
-            artifacts/octo-macos-aarch64/octo-macos-aarch64 \
             artifacts/octo-lair-linux-x86_64/octo-lair-linux-x86_64 \
-            artifacts/octo-lair-linux-aarch64/octo-lair-linux-aarch64 \
-            artifacts/octo-lair-macos-x86_64/octo-lair-macos-x86_64 \
-            artifacts/octo-lair-macos-aarch64/octo-lair-macos-aarch64
+            artifacts/octo-lair-linux-aarch64/octo-lair-linux-aarch64
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

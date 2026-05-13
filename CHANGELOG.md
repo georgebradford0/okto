@@ -4,10 +4,6 @@
 
 ### Added (this revision)
 
-- **macOS support restored.** Both `octo` and `octo-lair` build cleanly on macOS (the Unix-only bits — `kill(pid, 0)`, `SIGTERM`, `process_group(0)` — all work on Darwin). CI's `cli.yml` matrix is back up to four targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`. `scripts/get-cli.sh` auto-detects OS+arch and downloads the matching pair. `octo update` follows suit. The cloud-init userdata `mint_bootstrap_userdata` produces is still Linux-only (always provisions Linux VMs), unchanged.
-
-### Added (prior revision)
-
 - **Remote agents restored** as native processes on a Linux VM. Three lair tools come back: `mint_bootstrap_userdata`, `register_remote_agent`, `forget_agent`. The cloud-init userdata now downloads the matching `octo-lair` release artefact and installs a systemd unit running `--role agent` — no Docker on the remote side. Lair finishes the bootstrap over SSH (config.json drop, optional git clone, `systemctl restart octo-agent`). Per-VM layout: `/var/lib/octo/{data,workspace}/`, env file at `/etc/octo/agent.env`, unit at `/etc/systemd/system/octo-agent.service`.
 - **Encrypted lair → remote-agent transport.** New `octo_core::open_noise_tunnel` opens an outbound Noise tunnel as the **initiator**, verifying the responder's static pubkey against the registry. Lair's WebSocket/HTTP proxy uses this for any agent with `host = Some(_)` — mobile ↔ lair ↔ remote-agent traffic is end-to-end Noise-encrypted. Added `from_base32` + `noise_handshake_initiator` to `core/src/noise.rs`.
 - **Optional Noise responder in agent role.** Setting `AGENT_NOISE_PORT` (only done by the cloud-init userdata) makes the agent run its own `run_noise_proxy` on a public port and publish `<OCTO_DATA_DIR>/agent-info.json` for the SSH-pull. Local agents leave it unset and stay loopback-only.

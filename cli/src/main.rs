@@ -241,8 +241,6 @@ async fn update() -> Result<()> {
     let artifact = match (OS, ARCH) {
         ("linux",  "x86_64")  => "octo-linux-x86_64",
         ("linux",  "aarch64") => "octo-linux-aarch64",
-        ("macos",  "x86_64")  => "octo-macos-x86_64",
-        ("macos",  "aarch64") => "octo-macos-aarch64",
         _ => anyhow::bail!("unsupported platform: {OS}/{ARCH}"),
     };
 

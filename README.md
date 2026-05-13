@@ -6,7 +6,7 @@
 
 A single `octo-lair` binary runs on a host with a static IP. The mobile client connects to lair over an encrypted Noise tunnel; from the lair chat the user creates, messages, and tears down "child" agents. Each child is also an `octo-lair` process (spawned by lair with `--role agent`), listening on a loopback HTTP port. Mobile chats with a child by opening a WebSocket to lair's proxy URL (`/agents/<name>/stream`) — there is no separate connection per child.
 
-Linux and macOS. No Docker, no systemd dependency.
+Linux only (x86_64 and aarch64). No Docker, no systemd dependency.
 
 ## Install the CLI and lair binary
 
@@ -18,7 +18,7 @@ This installs `octo` (CLI) and `octo-lair` (the lair / agent binary) to `~/.loca
 
 ## Setup
 
-`octo init` must be run on a host (Linux or macOS) with a static — or at least publicly-reachable — IP. It expects either `--anthropic-api-key` or `--openai-api-key` plus `--model`.
+`octo init` must be run on a Linux host with a static — or at least publicly-reachable — IP. It expects either `--anthropic-api-key` or `--openai-api-key` plus `--model`.
 
 ```sh
 octo init --anthropic-api-key sk-ant-... --model claude-sonnet-4-6

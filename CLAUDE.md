@@ -10,9 +10,9 @@ Do **not** commit debug/diagnostic logging (`println!`, `console.log`, etc. adde
 
 ## Platform
 
-Linux and macOS. Both run the CLI and lair natively (POSIX `kill(pid, 0)`, SIGTERM, `process_group(0)`); the cloud-init userdata that `mint_bootstrap_userdata` produces for remote agents is always Linux. Windows is out of scope.
+Linux only — x86_64 and aarch64. macOS and Windows are out of scope. Both the `octo` CLI and the `octo-lair` server are built for the two Linux targets; the cloud-init userdata `mint_bootstrap_userdata` emits is also Linux.
 
-CI publishes per-target binaries for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, and `aarch64-apple-darwin`. `scripts/get-cli.sh` auto-detects and downloads the right pair.
+CI publishes per-arch binaries for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`. `scripts/get-cli.sh` auto-detects and downloads the right pair.
 
 ## Binaries
 

@@ -7,11 +7,9 @@ INSTALL_DIR="$HOME/.local/bin"
 OS=$(uname -s)
 ARCH=$(uname -m)
 
-# Both `octo` (CLI) and `octo-lair` (server runtime) are built for Linux and
-# macOS. The CLI spawns octo-lair as a detached background process via
-# `octo init`; both must be on PATH on the host running lair. macOS users
-# can run a local lair the same way Linux users do — or just use the CLI to
-# talk to a remote lair, since the management API is HTTP over loopback.
+# octo is Linux-only — lair runs as a native process on the host you run
+# `octo init` from, and the cloud-init it emits for remote agents is Linux
+# too. Both x86_64 and aarch64 are supported.
 case "$OS" in
   Linux)
     case "$ARCH" in
@@ -20,14 +18,7 @@ case "$OS" in
       *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
     esac
     ;;
-  Darwin)
-    case "$ARCH" in
-      x86_64)  CLI_ARTIFACT="octo-macos-x86_64";  LAIR_ARTIFACT="octo-lair-macos-x86_64"  ;;
-      arm64)   CLI_ARTIFACT="octo-macos-aarch64"; LAIR_ARTIFACT="octo-lair-macos-aarch64" ;;
-      *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
-    esac
-    ;;
-  *) echo "Unsupported OS: $OS"; exit 1 ;;
+  *) echo "Unsupported OS: $OS (octo is Linux-only)"; exit 1 ;;
 esac
 
 mkdir -p "$INSTALL_DIR"
