@@ -12,7 +12,7 @@ Do **not** commit debug/diagnostic logging (`println!`, `console.log`, etc. adde
 
 Linux only — x86_64 and aarch64. macOS and Windows are out of scope for the runtime host. The `octo` CLI is built per-Linux-arch and published via the `cli.yml` GitHub Actions workflow; the lair runtime ships exclusively as a multi-arch Docker image (`ghcr.io/georgebradford0/octo-lair`).
 
-Image releases run **locally**, not in CI: after a `lair/Cargo.toml` version bump, run `scripts/build-lair-image.sh` (uses `docker buildx` against `linux/amd64,linux/arm64` and pushes to ghcr). There is no `lair.yml` workflow.
+Image releases run via the `lair.yml` workflow (manual dispatch): after a `lair/Cargo.toml` version bump, run `gh workflow run lair.yml --ref main`. The workflow does a `docker buildx` build for `linux/amd64,linux/arm64` on a GitHub-hosted runner and pushes to ghcr. `scripts/build-lair-image.sh` remains as a local fallback.
 
 ## Binaries & deployment
 
@@ -152,7 +152,8 @@ Set at `docker run` time by `cli/src/service.rs`:
 | Workflow | What it does |
 |----------|--------------|
 | `cli.yml` | Builds the `octo` CLI per-target and uploads as Release assets. |
+| `lair.yml` | Multi-arch `docker buildx` of `lair/Dockerfile`, pushes to `ghcr.io/<owner>/octo-lair:<version>` + `:latest`. |
 | `android.yml` | Builds AAB via fastlane, uploads to Google Play. |
 | `ios.yml` | Builds on macOS runner, optionally uploads to TestFlight. |
 
-The lair Docker image has **no** CI workflow — releases run locally via `scripts/build-lair-image.sh` and `docker buildx --push`.
+`scripts/build-lair-image.sh` is a local fallback for `lair.yml` when CI is unavailable.

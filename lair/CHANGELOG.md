@@ -13,13 +13,13 @@
 
 ### Removed
 
-- `.github/workflows/lair.yml` — image releases run locally via `scripts/build-lair-image.sh` + `docker buildx --push`.
 - `~/.octo/bin/octo-lair` managed-binary path and the `lair-v*` release-asset downloader in the CLI.
 
 ### Added
 
 - `lair/Dockerfile` (multi-stage builder + bookworm-slim runtime).
-- `scripts/build-lair-image.sh` for multi-arch buildx builds (linux/amd64,linux/arm64).
+- `.github/workflows/lair.yml` (manual dispatch) — multi-arch buildx → `ghcr.io/<owner>/octo-lair:<version>` + `:latest`.
+- `scripts/build-lair-image.sh` as a local fallback for the CI workflow.
 - `octo init --image <ref>` and `octo lair update --image <ref>` for pinning a specific image. `$OCTO_LAIR_IMAGE` works as a global override.
 - `lair-launch.json` gains an `image` field so `octo reload` reuses the same image without flags.
 

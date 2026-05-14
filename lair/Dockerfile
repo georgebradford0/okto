@@ -1,6 +1,7 @@
 # Multi-stage image for octo-lair. Built with `docker buildx` for linux/amd64
-# and linux/arm64; pushed to ghcr.io/georgebradford0/octo-lair by
-# `scripts/build-lair-image.sh` after a lair version bump.
+# and linux/arm64; pushed to ghcr.io/georgebradford0/octo-lair by the
+# `lair.yml` GHA workflow (`gh workflow run lair.yml --ref main`) after a
+# lair version bump. `scripts/build-lair-image.sh` is the local fallback.
 #
 # Runtime contract:
 #   * Operator's host dir is bind-mounted at /data (config.json, lair/,
