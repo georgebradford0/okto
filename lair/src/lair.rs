@@ -109,11 +109,42 @@ struct AppState {
     ready_rx:      watch::Receiver<bool>,
     relay_signer:  Arc<RelaySigner>,
     relay_url:     String,
+    /// Management API bearer token. Set from `LAIR_MGMT_TOKEN` env var at
+    /// startup. When `Some(_)`, every state-mutating CLI endpoint requires
+    /// the matching `X-Octo-Token` header — peer processes inside the
+    /// container (i.e. child agents) don't get the token in their env
+    /// (`agent_proc::spawn` strips it) and run as a different uid so
+    /// they can't read `/proc/1/environ` either. When `None`, the
+    /// management API is open (useful for ad-hoc `docker run` without
+    /// the CLI).
+    mgmt_token:    Option<String>,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 async fn health_handler() -> impl IntoResponse { (StatusCode::OK, "ok") }
+
+/// Bearer-token middleware for the management endpoints. When
+/// `state.mgmt_token` is `Some(_)`, every request must carry a matching
+/// `X-Octo-Token` header. When `None` (no token configured at startup),
+/// the middleware is a no-op — useful for `docker run` smoke tests
+/// without minting a token first.
+async fn require_mgmt_token(
+    State(state): State<Arc<AppState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let Some(expected) = state.mgmt_token.as_deref() else {
+        return next.run(req).await;
+    };
+    let supplied = req.headers()
+        .get("x-octo-token")
+        .and_then(|v| v.to_str().ok());
+    if supplied != Some(expected) {
+        return (StatusCode::FORBIDDEN, "missing or invalid X-Octo-Token").into_response();
+    }
+    next.run(req).await
+}
 
 async fn interrupt_handler(State(state): State<Arc<AppState>>) -> StatusCode {
     state.cancel.lock().unwrap().cancel();
@@ -1883,6 +1914,20 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             .unwrap_or_else(|| DEFAULT_RELAY_URL.to_string());
         info!("[lair] relay_signing_pubkey={} relay_url={}", relay_signer.pubkey_b32(), relay_url_str);
 
+        // Management API token — read once at startup, then removed from
+        // the in-memory env. `/proc/1/environ` still holds the originally
+        // exec'd value, but children run as a different uid (see
+        // `agent_proc::spawn`) so they can't read it.
+        let mgmt_token = std::env::var("LAIR_MGMT_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty());
+        std::env::remove_var("LAIR_MGMT_TOKEN");
+        if mgmt_token.is_some() {
+            info!("[lair] management API gated on X-Octo-Token header");
+        } else {
+            warn!("[lair] LAIR_MGMT_TOKEN not set — management endpoints (POST /agents, /:name/start, /:name/stop, DELETE /:name) are OPEN to peer processes inside the container. Production deploys should always set this.");
+        }
+
         let state = Arc::new(AppState {
             messages:      Arc::new(Mutex::new(messages)),
             last_cost_usd: Mutex::new(None),
@@ -1906,6 +1951,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             ready_rx,
             relay_signer,
             relay_url:     relay_url_str,
+            mgmt_token,
         });
 
         tokio::spawn(poll_agents(state.clone(), ready_tx.clone()));
@@ -1924,6 +1970,20 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
             .allow_headers(Any);
 
+        // Routes that mutate agent lifecycle — gated by `X-Octo-Token`. Peer
+        // processes inside the container (i.e. child agents) don't get the
+        // token in their env, so this is the wall that keeps children from
+        // spawning siblings or terminating each other / lair via HTTP.
+        let protected = Router::new()
+            .route("/agents",             post(cli_create_agent))
+            .route("/agents/:name/start", post(cli_start_agent))
+            .route("/agents/:name/stop",  post(cli_stop_agent))
+            .route("/agents/:name",       delete(cli_delete_agent))
+            .route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                require_mgmt_token,
+            ));
+
         let app = Router::new()
             .route("/health",                  get(health_handler))
             .route("/info",                    get(info_handler))
@@ -1931,10 +1991,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             .route("/stream",                  get(stream_handler))
             .route("/interrupt",               post(interrupt_handler))
             .route("/clear",                   post(clear_handler))
-            .route("/agents",                  get(cli_list_agents).post(cli_create_agent))
-            .route("/agents/:name/start",      post(cli_start_agent))
-            .route("/agents/:name/stop",       post(cli_stop_agent))
-            .route("/agents/:name",            delete(cli_delete_agent))
+            .route("/agents",                  get(cli_list_agents))
             .route("/agents/:name/logs",       get(cli_agent_logs))
             .route("/agents/:name/stream",     get(proxy_agent_stream_handler))
             // Mobile-facing HTTP proxies for the child's existing endpoints.
@@ -1942,6 +1999,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             .route("/agents/:name/interrupt",  post(proxy_agent_interrupt))
             .route("/agents/:name/clear",      post(proxy_agent_clear))
             .route("/agents/:name/branches",   get(proxy_agent_branches))
+            .merge(protected)
             .with_state(state)
             .layer(cors);
 

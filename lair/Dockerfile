@@ -79,6 +79,15 @@ RUN apt-get update && apt-get install -y ca-certificates curl git gpg && \
 
 COPY --from=builder /build/target/release/octo-lair /usr/local/bin/octo-lair
 
+# Dedicated non-root user for child agent processes. Lair (the parent) keeps
+# running as root inside the container so it can chown the bind-mounted
+# /data/agents/<name>/ dirs after creating them. Children are spawned with
+# `cmd.uid(10001)` in agent_proc.rs, which closes three vectors at once:
+#   * `kill 1` against lair (different uid → EPERM)
+#   * reading `LAIR_MGMT_TOKEN` from `/proc/1/environ` (different uid → EACCES)
+#   * reading `/data/config.json` and `/data/lair/*` if those are 0600 root-owned
+RUN useradd -u 10001 -M -N -s /bin/bash octo-agent
+
 LABEL org.opencontainers.image.source=https://github.com/georgebradford0/octo
 LABEL org.opencontainers.image.description="octo-lair — merged lair/agent binary, runs as --role lair by default"
 

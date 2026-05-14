@@ -55,6 +55,58 @@ pub fn env_file_path() -> PathBuf { config_dir().join("lair-env") }
 /// the most recent `octo init`.
 pub fn launch_config_path() -> PathBuf { config_dir().join("lair-launch.json") }
 
+/// Persistent management API token (`X-Octo-Token` header value). Generated
+/// on first run, chmod 0600, passed to the lair container via
+/// `docker -e LAIR_MGMT_TOKEN=<value>`. Children never see it — lair's
+/// `agent_proc::spawn` strips the env var before exec.
+pub fn mgmt_token_path() -> PathBuf { lair_data_dir().join(".mgmt-token") }
+
+/// Read `~/.octo/lair/.mgmt-token`, generating it (random 64 hex chars,
+/// chmod 0600) on first call.
+pub fn ensure_mgmt_token() -> Result<String> {
+    let path = mgmt_token_path();
+    if let Ok(existing) = fs::read_to_string(&path) {
+        let trimmed = existing.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    let token = random_hex(32);
+    fs::write(&path, &token)
+        .with_context(|| format!("write {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&path)?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(&path, perms).ok();
+    }
+    Ok(token)
+}
+
+/// Read the management token if it exists. Returns `None` if the file is
+/// missing or empty.
+pub fn read_mgmt_token() -> Option<String> {
+    fs::read_to_string(mgmt_token_path())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn random_hex(bytes: usize) -> String {
+    use std::io::Read;
+    let mut buf = vec![0u8; bytes];
+    // `/dev/urandom` is the standard kernel CSPRNG on Linux and is fine for
+    // a long-lived shared secret; no need to pull in a rand crate.
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut buf))
+        .expect("read /dev/urandom for mgmt token");
+    buf.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct LaunchRecord {
     pub noise_port: u16,
@@ -180,6 +232,13 @@ pub fn start_lair(launch: &LairLaunch<'_>) -> Result<String> {
         fs::write(launch.env_file, "").ok();
     }
 
+    // Management API bearer token. Minted on first call, persisted to
+    // `~/.octo/lair/.mgmt-token` (chmod 0600), and supplied to lair via
+    // `-e LAIR_MGMT_TOKEN=...`. Children never see it — lair strips the env
+    // var before spawning them, and they run as a different uid so
+    // `/proc/1/environ` is also inaccessible.
+    let mgmt_token = ensure_mgmt_token()?;
+
     let noise_port = launch.noise_port.to_string();
     let http_port  = launch.http_port.to_string();
     let publish_noise = format!("{noise_port}:8443");
@@ -189,6 +248,7 @@ pub fn start_lair(launch: &LairLaunch<'_>) -> Result<String> {
     let mount = format!("{}:/data", launch.config_dir.display());
     let env_file_arg = launch.env_file.display().to_string();
     let public_port = format!("PUBLIC_PORT={noise_port}");
+    let mgmt_env    = format!("LAIR_MGMT_TOKEN={mgmt_token}");
 
     let args: Vec<&str> = vec![
         "run", "-d",
@@ -202,6 +262,10 @@ pub fn start_lair(launch: &LairLaunch<'_>) -> Result<String> {
         // the container is hardcoded to 8443 (the EXPOSE'd port); PUBLIC_PORT
         // is what the mobile client should connect to from outside.
         "-e",           &public_port,
+        // Token for the CLI ↔ lair management API. Set last so we can be
+        // sure it overrides any LAIR_MGMT_TOKEN that snuck into the env
+        // file (the parser of which doesn't reject it as a managed key).
+        "-e",           &mgmt_env,
         launch.image,
     ];
 

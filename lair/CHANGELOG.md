@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-14
+
+### Security
+
+- **Child agents can no longer terminate lair, terminate sibling agents, or spawn new agents.** The four state-mutating management endpoints (`POST /agents`, `POST /agents/:name/start`, `POST /agents/:name/stop`, `DELETE /agents/:name`) now require an `X-Octo-Token` bearer header. The CLI mints the token on first `octo init`, persists it at `~/.octo/lair/.mgmt-token` (chmod 0600 on the host, root-owned 0600 inside the container), and passes it to lair via `docker -e LAIR_MGMT_TOKEN=<value>`. Lair reads the env var once at startup and removes it from the in-memory env.
+- **Child agent processes drop to a non-root uid** (`octo-agent`, uid 10001, baked into `lair/Dockerfile`). `agent_proc::spawn` now sets `cmd.uid(10001).gid(10001)` and chowns each per-agent dir (`/data/agents/<name>/{,data,workspace}` and `agent.log`) to the agent uid before exec. This closes three vectors at once:
+  - `kill 1` against lair from inside its bash tool — lair runs as root, child gets EPERM.
+  - reading `LAIR_MGMT_TOKEN` from `/proc/1/environ` — owned by root, child gets EACCES.
+  - reading `/data/config.json` or `/data/lair/*` if they're 0600 (host-owned via bind mount).
+- `agent_proc::spawn` also explicitly `env_remove`s `LAIR_MGMT_TOKEN` from the child's `Command` env (belt+suspenders on top of the uid drop).
+- Children now spawn with `HOME=/data/agents/<name>` so npm/uvx/gh/git caches land in a writable per-agent dir.
+
+### Notes
+
+- If `LAIR_MGMT_TOKEN` is unset at lair startup (e.g. ad-hoc `docker run` without the CLI), lair logs a warning and leaves the management endpoints open. Production deploys via `octo init` always supply one.
+- The read-only / mobile-facing routes (`/health`, `/info`, `/history`, `/stream`, `/interrupt`, `/clear`, `/agents` GET, `/agents/:name/{history,interrupt,clear,branches,logs,stream}`) are not behind the token — mobile reaches them through the Noise tunnel and the CLI relies on `/agents` GET for `octo agents list`.
+
 ## [0.9.0] - 2026-05-14
 
 ### Changed

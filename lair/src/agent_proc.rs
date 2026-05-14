@@ -7,7 +7,7 @@
 
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, Mutex},
 };
@@ -15,6 +15,23 @@ use std::{
 use anyhow::{Context, Result};
 use tokio::process::{Child, Command};
 use tracing::{info, warn};
+
+/// Non-root uid/gid baked into the lair image as the `octo-agent` user
+/// (see `lair/Dockerfile`). Child agent processes drop to this uid before
+/// exec'ing, which prevents them from `kill 1`-ing lair, reading
+/// `/proc/1/environ`, or reading root-owned files under `/data`.
+const AGENT_UID: u32 = 10001;
+const AGENT_GID: u32 = 10001;
+
+/// Best-effort `chown(uid, gid)` — logs and continues on failure. Used
+/// when the spawning lair process is non-root (e.g. dev mode) and the
+/// chown would EPERM; in that case lair and the child are already the
+/// same uid so the file permissions don't matter.
+fn chown_best_effort(path: &Path, uid: u32, gid: u32) {
+    if let Err(e) = std::os::unix::fs::chown(path, Some(uid), Some(gid)) {
+        warn!("[supervisor] chown {} -> {uid}:{gid} failed: {e} (continuing)", path.display());
+    }
+}
 
 /// Per-agent spawn params handed to `AgentSupervisor::spawn`. Mirrors the
 /// shape of the old `CreateAgentParams` so call sites in `lair.rs` stay
@@ -89,9 +106,20 @@ impl AgentSupervisor {
         std::fs::create_dir_all(&agent_dir)
             .with_context(|| format!("create {}", agent_dir.display()))?;
 
+        // Drop the new dirs (and the existing log file) to the agent uid so
+        // the child can write to them despite running non-root. Best-effort:
+        // if the lair binary itself is running non-root (dev mode, weird
+        // host setup) the chowns just fail with EPERM and we proceed —
+        // children would already be running as the same uid in that case.
+        chown_best_effort(&agent_dir,     AGENT_UID, AGENT_GID);
+        chown_best_effort(&data_dir,      AGENT_UID, AGENT_GID);
+        chown_best_effort(&workspace_dir, AGENT_UID, AGENT_GID);
+
+        let log_path = self.log_path(p.name);
         let log_file = std::fs::OpenOptions::new()
-            .create(true).append(true).open(self.log_path(p.name))
-            .with_context(|| format!("open log file at {}", self.log_path(p.name).display()))?;
+            .create(true).append(true).open(&log_path)
+            .with_context(|| format!("open log file at {}", log_path.display()))?;
+        chown_best_effort(&log_path, AGENT_UID, AGENT_GID);
         let log_file2 = log_file.try_clone().context("clone log fd for stderr")?;
 
         let mut cmd = Command::new(&self.binary_path);
@@ -103,6 +131,9 @@ impl AgentSupervisor {
         // no need to bake credentials into env. Skip the login-shell env
         // bootstrap (we already have what we need from the parent's env).
         cmd.env("OCTO_SKIP_SHELL_ENV", "1");
+        // The child runs as a non-root uid; give it a writable HOME so
+        // npm/uvx/gh/git caches land somewhere it can actually write.
+        cmd.env("HOME", &agent_dir);
         if std::env::var("OCTO_DEV").as_deref() == Ok("1") {
             cmd.env("OCTO_DEV", "1");
         }
@@ -120,10 +151,21 @@ impl AgentSupervisor {
         if let Some(v) = p.model             { cmd.env("MODEL",             v); }
         if let Some(v) = p.gh_token          { cmd.env("GH_TOKEN",          v); }
 
+        // Never let the child inherit lair's management-API token or any
+        // other lair-private knobs. With the uid drop below, `/proc/1/environ`
+        // is also unreadable from the child's uid, so this is belt+suspenders.
+        cmd.env_remove("LAIR_MGMT_TOKEN");
+
         cmd.stdin(Stdio::null())
            .stdout(Stdio::from(log_file))
            .stderr(Stdio::from(log_file2))
            .kill_on_drop(false);
+
+        // Drop privileges to the non-root agent user baked into the image.
+        // This is the only thing that prevents a child from `kill 1`-ing
+        // lair (lair runs as root inside the container) or reading
+        // root-only files like `/proc/1/environ` and `/data/config.json`.
+        cmd.uid(AGENT_UID).gid(AGENT_GID);
 
         let child = cmd.spawn()
             .with_context(|| format!("spawn agent process for {}", p.name))?;

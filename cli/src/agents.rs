@@ -50,9 +50,21 @@ fn http_client() -> reqwest::Client {
         .unwrap()
 }
 
+/// Header name lair expects on every state-mutating management endpoint.
+/// Token lives in `~/.octo/lair/.mgmt-token` (chmod 0600); regenerated on
+/// the next `octo init` if missing.
+const TOKEN_HEADER: &str = "X-Octo-Token";
+
+fn mgmt_request(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match service::read_mgmt_token() {
+        Some(t) => builder.header(TOKEN_HEADER, t),
+        None    => builder, // lair is running with auth disabled — request still goes through
+    }
+}
+
 pub async fn start(name: &str) -> Result<()> {
     let url = format!("{}/agents/{}/start", service::lair_http_url(), name);
-    let resp = http_client().post(&url).send().await
+    let resp = mgmt_request(http_client().post(&url)).send().await
         .with_context(|| format!("POST {url}"))?;
     if !resp.status().is_success() {
         let status = resp.status();
@@ -65,7 +77,7 @@ pub async fn start(name: &str) -> Result<()> {
 
 pub async fn stop(name: &str) -> Result<()> {
     let url = format!("{}/agents/{}/stop", service::lair_http_url(), name);
-    let resp = http_client().post(&url).send().await
+    let resp = mgmt_request(http_client().post(&url)).send().await
         .with_context(|| format!("POST {url}"))?;
     if !resp.status().is_success() {
         let status = resp.status();
@@ -90,7 +102,7 @@ pub async fn delete(name: &str, yes: bool) -> Result<()> {
         }
     }
     let url = format!("{}/agents/{}", service::lair_http_url(), name);
-    let resp = http_client().delete(&url).send().await
+    let resp = mgmt_request(http_client().delete(&url)).send().await
         .with_context(|| format!("DELETE {url}"))?;
     if !resp.status().is_success() {
         let status = resp.status();
