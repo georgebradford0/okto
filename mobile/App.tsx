@@ -869,11 +869,29 @@ const ChatPane = memo(function ChatPane({
         // Server greets us; status becomes 'streaming' if we joined an in-flight
         // turn (events for it will arrive next), else 'ready' for input.
         updateStatus(event.resumed ? 'streaming' : 'ready')
-        // Fresh per-turn refs in case we're starting clean.
-        if (!event.resumed) {
-          streamingIdRef.current = uid()
-          hasAssistantMsgRef.current = false
+        if (event.resumed) {
+          // The server's buffer holds the *entire* in-flight turn from its
+          // first event and is about to be replayed. If we've already rendered
+          // any of it (mid-turn WS reconnect), naively processing the replay
+          // would duplicate every text chunk and tool row. Truncate back to
+          // the last turn anchor — the user/bg_complete row that triggered
+          // this turn — so the replay rebuilds the in-flight portion cleanly.
+          setMessages(prev => {
+            for (let i = prev.length - 1; i >= 0; i--) {
+              const role = prev[i].role
+              if (role === 'user' || role === 'bg_complete') {
+                return prev.slice(0, i + 1)
+              }
+            }
+            return prev
+          })
+          lastToolIdRef.current = null
         }
+        // Reset per-turn streaming refs unconditionally: for resumed=false this
+        // is the first turn after connect; for resumed=true the replay restarts
+        // the turn from its first event.
+        streamingIdRef.current = uid()
+        hasAssistantMsgRef.current = false
         break
       }
       case 'text': {
