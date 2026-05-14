@@ -1500,14 +1500,13 @@ dependencies = [
 
 [[package]]
 name = "octo"
-version = "0.2.10"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
  "clap_complete",
  "data-encoding",
  "futures-util",
- "libc",
  "octo-core",
  "openssl",
  "qrcode",
@@ -1543,7 +1542,7 @@ dependencies = [
 
 [[package]]
 name = "octo-lair"
-version = "0.8.2"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "axum",

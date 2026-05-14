@@ -1,11 +1,14 @@
-//! Local process management for the lair binary.
+//! Lair container management on the operator's host.
 //!
-//! Replaces what `dockerd.rs` did against the Docker daemon. The CLI now
-//! spawns `octo-lair --role lair` as a detached background OS process and
-//! tracks the pid in a pidfile. No systemd, no launchd — just `fork(2)`-style
-//! double-spawn with a pidfile for `octo reload` / `octo destroy`.
+//! The lair binary ships as a multi-arch docker image
+//! (`ghcr.io/georgebradford0/octo-lair`). The CLI never imports a Docker SDK
+//! — every interaction shells out to the `docker` CLI on the operator's
+//! PATH. This module wraps the few invocations the CLI needs: run / rm /
+//! inspect / pull / logs.
 //!
-//! Linux only.
+//! Inside the container, lair and every child agent it spawns are plain
+//! processes; the operator's host `~/.octo` is bind-mounted at `/data` so
+//! `config.json`, `lair/`, and `agents/` stay visible to the CLI.
 
 use std::{
     fs,
@@ -19,33 +22,47 @@ use anyhow::{Context, Result};
 pub const LAIR_DEFAULT_HTTP_PORT:  u16 = 8000;
 pub const LAIR_DEFAULT_NOISE_PORT: u16 = 8443;
 
+/// Container name the CLI uses for the lair instance on this host. Used as
+/// the `--name` flag on `docker run` and as the target for every subsequent
+/// `docker rm`, `docker inspect`, `docker logs`, etc.
+pub const LAIR_CONTAINER_NAME: &str = "octo-lair";
+
+/// Default image reference. Override via `$OCTO_LAIR_IMAGE` or stored in
+/// `lair-launch.json` (`image` field).
+pub const DEFAULT_LAIR_IMAGE: &str = "ghcr.io/georgebradford0/octo-lair:latest";
+
 fn home_dir() -> PathBuf {
     std::env::var("HOME").map(PathBuf::from).unwrap_or_default()
 }
 
-/// Operator's config dir. Always `$HOME/.octo`.
+/// Operator's config dir. Always `$HOME/.octo`. Mounted into the container
+/// at `/data`.
 pub fn config_dir() -> PathBuf { home_dir().join(".octo") }
 
-/// Lair's runtime data dir on this host. `<config_dir>/lair`.
+/// Lair's per-host data dir. Lives at `<config_dir>/lair` on the host and
+/// `/data/lair` inside the container.
 pub fn lair_data_dir() -> PathBuf { config_dir().join("lair") }
 
-/// Per-agent dirs root: `<config_dir>/agents`.
+/// Per-agent dirs root. `<config_dir>/agents` on the host, `/data/agents`
+/// inside the container.
 pub fn agents_dir() -> PathBuf { config_dir().join("agents") }
 
-/// Pidfile lair writes when spawned by the CLI.
-pub fn pidfile_path() -> PathBuf { lair_data_dir().join("lair.pid") }
-
-/// Operator-supplied env vars passed into the lair process (one KEY=VALUE per
-/// line). Persisted across reloads.
+/// Operator-supplied env vars passed into the lair container (one KEY=VALUE
+/// per line). Mounted as `docker --env-file`.
 pub fn env_file_path() -> PathBuf { config_dir().join("lair-env") }
 
-/// Bookkeeping for `octo reload` — records the ports passed to `octo init`.
+/// Bookkeeping for `octo reload` — records the ports and image tag passed to
+/// the most recent `octo init`.
 pub fn launch_config_path() -> PathBuf { config_dir().join("lair-launch.json") }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct LaunchRecord {
     pub noise_port: u16,
     pub http_port:  u16,
+    /// Image reference used the last time lair was started. Carried forward
+    /// across `octo reload` so the operator doesn't have to repass it.
+    #[serde(default)]
+    pub image:      Option<String>,
 }
 
 pub fn write_launch(rec: &LaunchRecord) -> Result<()> {
@@ -62,202 +79,16 @@ pub fn read_launch() -> Option<LaunchRecord> {
         .and_then(|s| serde_json::from_str(&s).ok())
 }
 
-/// `kill(pid, 0)` style liveness probe. Linux-only.
-fn pid_alive(pid: i32) -> bool {
-    // SAFETY: signal 0 is a pure liveness probe; no signal is actually delivered.
-    unsafe { libc::kill(pid, 0) == 0 }
-}
-
-fn read_pid() -> Option<i32> {
-    fs::read_to_string(pidfile_path())
-        .ok()
-        .and_then(|s| s.trim().parse::<i32>().ok())
-}
-
-fn write_pid(pid: i32) -> Result<()> {
-    let p = pidfile_path();
-    fs::create_dir_all(p.parent().unwrap()).ok();
-    fs::write(&p, pid.to_string()).with_context(|| format!("write {}", p.display()))
-}
-
-/// True if a lair process is currently alive according to the pidfile.
-pub fn is_running() -> bool {
-    match read_pid() {
-        Some(pid) => pid_alive(pid),
-        None      => false,
+/// Resolve the lair image reference. Precedence: `$OCTO_LAIR_IMAGE` →
+/// `lair-launch.json` → `DEFAULT_LAIR_IMAGE`.
+pub fn resolve_image(launch_image: Option<&str>) -> String {
+    if let Ok(v) = std::env::var("OCTO_LAIR_IMAGE") {
+        if !v.is_empty() { return v; }
     }
-}
-
-const REPO_SLUG:  &str = "georgebradford0/octo";
-
-/// Path the CLI installs `octo-lair` to when it has to download it itself.
-pub fn managed_lair_path() -> PathBuf {
-    home_dir().join(".octo").join("bin").join("octo-lair")
-}
-
-/// Locate the `octo-lair` binary without trying to download. Checks
-/// `$OCTO_LAIR_BINARY`, `$PATH`, the sibling `octo-lair` next to the current
-/// CLI binary, then `~/.octo/bin/octo-lair`.
-pub fn resolve_lair_binary() -> Result<PathBuf> {
-    if let Ok(p) = std::env::var("OCTO_LAIR_BINARY") {
-        if !p.is_empty() && Path::new(&p).exists() {
-            return Ok(PathBuf::from(p));
-        }
+    if let Some(img) = launch_image.filter(|s| !s.is_empty()) {
+        return img.to_string();
     }
-    if let Ok(p) = which("octo-lair") {
-        return Ok(p);
-    }
-    if let Ok(self_exe) = std::env::current_exe() {
-        if let Some(parent) = self_exe.parent() {
-            let candidate = parent.join("octo-lair");
-            if candidate.exists() {
-                return Ok(candidate);
-            }
-        }
-    }
-    let home_candidate = managed_lair_path();
-    if home_candidate.exists() {
-        return Ok(home_candidate);
-    }
-    anyhow::bail!(
-        "could not find 'octo-lair' binary on PATH or at {}. Set $OCTO_LAIR_BINARY to override, \
-         or let `octo init` fetch it from the latest lair-v* release.",
-        managed_lair_path().display(),
-    );
-}
-
-/// Find the lair binary if one is already on disk; otherwise download the
-/// latest `lair-v*` release artefact for this host's architecture into
-/// `~/.octo/bin/octo-lair` and return that path.
-pub async fn ensure_lair_binary() -> Result<PathBuf> {
-    if let Ok(p) = resolve_lair_binary() {
-        return Ok(p);
-    }
-    println!("octo-lair not found on this host — downloading latest release...");
-    let dest = managed_lair_path();
-    download_lair_binary(&dest).await?;
-    Ok(dest)
-}
-
-/// Resolve the most recent `lair-v*` release tag on the configured repo.
-pub async fn latest_lair_tag() -> Result<String> {
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("octo/", env!("CARGO_PKG_VERSION")))
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .context("build http client")?;
-
-    let releases: serde_json::Value = client
-        .get(format!("https://api.github.com/repos/{REPO_SLUG}/releases?per_page=50"))
-        .send().await
-        .context("GET /releases")?
-        .json().await
-        .context("decode releases JSON")?;
-
-    releases.as_array()
-        .ok_or_else(|| anyhow::anyhow!("/releases didn't return an array"))?
-        .iter()
-        .filter_map(|r| r.get("tag_name").and_then(|t| t.as_str()))
-        .find(|t| t.starts_with("lair-v"))
-        .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!(
-            "no `lair-v*` release found on {REPO_SLUG}. Dispatch the `lair Release` GitHub \
-             Actions workflow once to publish one, or set $OCTO_LAIR_BINARY to point at a \
-             locally-built binary."
-        ))
-}
-
-/// Run `<path> --version` and return the parsed version string (e.g. `0.8.2`).
-pub async fn lair_binary_version(path: &Path) -> Result<String> {
-    let out = tokio::process::Command::new(path)
-        .arg("--version")
-        .output().await
-        .with_context(|| format!("spawn {} --version", path.display()))?;
-    if !out.status.success() {
-        anyhow::bail!("{} --version exited with status {}", path.display(), out.status);
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let token = stdout.split_whitespace().last()
-        .ok_or_else(|| anyhow::anyhow!("empty --version output from {}", path.display()))?;
-    Ok(token.to_string())
-}
-
-/// Always-download path. Pulls the latest `lair-v*` release artefact for
-/// this host's architecture and writes it to `dest`, overwriting whatever's
-/// there. Returns the release tag (e.g. `lair-v0.8.2`). Falls back to `sudo mv`
-/// if `dest`'s directory is not writable by the current user.
-pub async fn download_lair_binary(dest: &Path) -> Result<String> {
-    let artifact = match std::env::consts::ARCH {
-        "x86_64"  => "octo-lair-linux-x86_64",
-        "aarch64" => "octo-lair-linux-aarch64",
-        a => anyhow::bail!("unsupported architecture: {a}"),
-    };
-
-    let tag = latest_lair_tag().await?;
-
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("octo/", env!("CARGO_PKG_VERSION")))
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .context("build http client")?;
-
-    let url = format!("https://github.com/{REPO_SLUG}/releases/download/{tag}/{artifact}");
-    println!("  fetching {url}");
-    let bytes = client.get(&url).send().await
-        .with_context(|| format!("GET {url}"))?
-        .error_for_status()
-        .with_context(|| format!("download {tag}/{artifact}"))?
-        .bytes().await
-        .context("read response body")?;
-
-    if let Some(parent) = dest.parent() {
-        // Best-effort: if we can't create the parent (e.g. /usr/local/bin
-        // already exists but isn't writable by us), the sudo fallback below
-        // still works.
-        fs::create_dir_all(parent).ok();
-    }
-
-    // Stage the download in /tmp so we don't need write access to dest's dir
-    // for the initial write, then move into place (with sudo fallback).
-    let tmp = std::env::temp_dir().join(format!(
-        "octo-lair.{}.{}.download",
-        std::process::id(),
-        tag.trim_start_matches("lair-v"),
-    ));
-    fs::write(&tmp, &bytes)
-        .with_context(|| format!("write {}", tmp.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&tmp)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&tmp, perms).ok();
-    }
-
-    // Try rename first (fast path on same filesystem). If that fails, try
-    // `mv` (handles cross-device moves). If that fails, fall back to `sudo mv`.
-    if fs::rename(&tmp, dest).is_err() {
-        let mv_ok = std::process::Command::new("mv")
-            .arg(&tmp).arg(dest)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !mv_ok {
-            let st = std::process::Command::new("sudo")
-                .args(["mv", "--"])
-                .arg(&tmp).arg(dest)
-                .status()
-                .with_context(|| format!("sudo mv {} {}", tmp.display(), dest.display()))?;
-            anyhow::ensure!(
-                st.success(),
-                "failed to install lair binary to {} (sudo mv exited with {})",
-                dest.display(), st,
-            );
-        }
-    }
-
-    println!("  installed octo-lair to {} ({tag})", dest.display());
-    Ok(tag)
+    DEFAULT_LAIR_IMAGE.to_string()
 }
 
 fn which(name: &str) -> Result<PathBuf> {
@@ -271,97 +102,135 @@ fn which(name: &str) -> Result<PathBuf> {
     anyhow::bail!("'{name}' not found on PATH")
 }
 
-/// Parse the env file into KEY=VALUE pairs that can be applied to a process.
-fn read_env_file(env_path: &Path) -> Vec<(String, String)> {
-    let Ok(text) = fs::read_to_string(env_path) else { return Vec::new(); };
-    text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .filter_map(|l| l.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
-        .collect()
+/// Verify `docker` is on PATH. Called from every CLI entry point that drives
+/// the lair container; we'd rather fail fast with a clear message than have
+/// `start_lair` blow up in the middle of an init.
+pub fn ensure_docker_present() -> Result<()> {
+    which("docker")
+        .map(|_| ())
+        .context("`docker` is required on PATH. Install Docker Engine (https://docs.docker.com/engine/install/) and try again.")
+}
+
+fn docker_status(args: &[&str]) -> Result<std::process::ExitStatus> {
+    std::process::Command::new("docker")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| format!("spawn `docker {}`", args.join(" ")))
+}
+
+fn docker_output(args: &[&str]) -> Result<std::process::Output> {
+    std::process::Command::new("docker")
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("spawn `docker {}`", args.join(" ")))
+}
+
+/// True if a container named `LAIR_CONTAINER_NAME` is running on this host.
+pub fn is_running() -> bool {
+    let out = match docker_output(&[
+        "inspect", "-f", "{{.State.Running}}", LAIR_CONTAINER_NAME,
+    ]) {
+        Ok(o) => o,
+        Err(_) => return false,
+    };
+    if !out.status.success() {
+        return false;
+    }
+    String::from_utf8_lossy(&out.stdout).trim() == "true"
+}
+
+/// True if a container with the lair name exists at all (running or stopped).
+fn container_exists() -> bool {
+    docker_status(&["inspect", LAIR_CONTAINER_NAME])
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 #[derive(Clone, Debug)]
 pub struct LairLaunch<'a> {
     pub noise_port: u16,
     pub http_port:  u16,
-    pub data_dir:   &'a Path,
-    pub agents_dir: &'a Path,
+    pub config_dir: &'a Path,
     pub env_file:   &'a Path,
-    pub binary:     &'a Path,
-    pub log_file:   &'a Path,
+    pub image:      &'a str,
 }
 
-/// Stop any running lair process, then spawn a fresh one detached from the
-/// current shell. Returns the new pid. Caller is responsible for verifying
-/// readiness via `wait_for_health`.
-pub fn start_lair(launch: &LairLaunch<'_>) -> Result<i32> {
+/// Stop any existing lair container, then `docker run` a fresh one in
+/// detached mode. Returns the container's short ID.
+///
+/// The container is named `octo-lair` and bind-mounts the operator's
+/// `~/.octo` at `/data`. Env vars from the lair-env file are forwarded
+/// through `--env-file`; the file shape is plain `KEY=VALUE` per line which
+/// docker reads verbatim.
+pub fn start_lair(launch: &LairLaunch<'_>) -> Result<String> {
+    ensure_docker_present()?;
     stop_lair_if_running();
 
-    fs::create_dir_all(launch.data_dir).ok();
-    fs::create_dir_all(launch.agents_dir).ok();
-    if let Some(parent) = launch.log_file.parent() { fs::create_dir_all(parent).ok(); }
+    fs::create_dir_all(launch.config_dir).ok();
+    fs::create_dir_all(launch.config_dir.join("lair")).ok();
+    fs::create_dir_all(launch.config_dir.join("agents")).ok();
 
-    let log = fs::OpenOptions::new()
-        .create(true).append(true).open(launch.log_file)
-        .with_context(|| format!("open lair log {}", launch.log_file.display()))?;
-    let log2 = log.try_clone().context("clone log fd for stderr")?;
-
-    let mut cmd = std::process::Command::new(launch.binary);
-    cmd.arg("--role").arg("lair");
-
-    // Managed env. These take precedence and aren't overridable via the env
-    // file (the CLI rejects them as reserved names earlier).
-    cmd.env("OCTO_DATA_DIR",   launch.data_dir);
-    cmd.env("OCTO_AGENTS_DIR", launch.agents_dir);
-    cmd.env("NOISE_PORT",      launch.noise_port.to_string());
-    cmd.env("PUBLIC_PORT",     launch.noise_port.to_string());
-    cmd.env("OCTO_SKIP_SHELL_ENV", "1");
-    cmd.env("OCTO_LAIR_BINARY", launch.binary);
-
-    // Operator-supplied env.
-    for (k, v) in read_env_file(launch.env_file) {
-        cmd.env(k, v);
+    // docker errors out on a missing --env-file, so make sure it exists even
+    // if the operator hasn't run `octo env set` yet.
+    if !launch.env_file.exists() {
+        fs::write(launch.env_file, "").ok();
     }
 
-    cmd.stdin(Stdio::null())
-       .stdout(Stdio::from(log))
-       .stderr(Stdio::from(log2));
+    let noise_port = launch.noise_port.to_string();
+    let http_port  = launch.http_port.to_string();
+    let publish_noise = format!("{noise_port}:8443");
+    // Loopback-only on the host: the management API is for the CLI, never
+    // exposed publicly.
+    let publish_http  = format!("127.0.0.1:{http_port}:8000");
+    let mount = format!("{}:/data", launch.config_dir.display());
+    let env_file_arg = launch.env_file.display().to_string();
+    let public_port = format!("PUBLIC_PORT={noise_port}");
 
-    // Detach into a new process group so the parent shell exiting doesn't kill it.
-    // `process_group(0)` makes the child its own session leader on Unix.
-    use std::os::unix::process::CommandExt;
-    cmd.process_group(0);
+    let args: Vec<&str> = vec![
+        "run", "-d",
+        "--name",       LAIR_CONTAINER_NAME,
+        "--restart",    "unless-stopped",
+        "-p",           &publish_noise,
+        "-p",           &publish_http,
+        "-v",           &mount,
+        "--env-file",   &env_file_arg,
+        // Tell lair which port to advertise in the QR code. NOISE_PORT inside
+        // the container is hardcoded to 8443 (the EXPOSE'd port); PUBLIC_PORT
+        // is what the mobile client should connect to from outside.
+        "-e",           &public_port,
+        launch.image,
+    ];
 
-    let _ = launch.http_port; // currently the lair binary hardcodes 8000
-
-    let child = cmd.spawn()
-        .with_context(|| format!("spawn lair binary {}", launch.binary.display()))?;
-    let pid = child.id() as i32;
-    write_pid(pid)?;
-    // Don't wait on the child — we want it to keep running after the CLI exits.
-    std::mem::forget(child);
-    Ok(pid)
+    let out = docker_output(&args)?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!("docker run failed: {stderr}");
+    }
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok(id)
 }
 
-/// Send SIGTERM to the running lair, wait a moment, then SIGKILL if it's
-/// still alive. Removes the pidfile when done. No-op if not running.
+/// Stop + remove the lair container if one exists. Idempotent.
 pub fn stop_lair_if_running() {
-    let Some(pid) = read_pid() else { return; };
-    if !pid_alive(pid) {
-        let _ = fs::remove_file(pidfile_path());
-        return;
+    if !container_exists() { return; }
+    let _ = docker_status(&["rm", "-f", LAIR_CONTAINER_NAME]);
+}
+
+/// `docker pull <image>`. Used by `octo lair update`.
+pub fn docker_pull(image: &str) -> Result<()> {
+    ensure_docker_present()?;
+    let status = std::process::Command::new("docker")
+        .args(["pull", image])
+        .status()
+        .with_context(|| format!("spawn `docker pull {image}`"))?;
+    if !status.success() {
+        anyhow::bail!("`docker pull {image}` exited with {status}");
     }
-    // SAFETY: standard SIGTERM/SIGKILL system call.
-    unsafe { libc::kill(pid, libc::SIGTERM); }
-    for _ in 0..50 {
-        if !pid_alive(pid) { break; }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    if pid_alive(pid) {
-        unsafe { libc::kill(pid, libc::SIGKILL); }
-    }
-    let _ = fs::remove_file(pidfile_path());
+    Ok(())
 }
 
 /// Wait for `http://127.0.0.1:<port>/health` to return 200, up to `timeout`.
@@ -393,9 +262,26 @@ pub async fn detect_public_ip() -> Result<String> {
     Ok(body.trim().to_string())
 }
 
-/// CLI ↔ lair management API base URL. Lair binds HTTP on
-/// `0.0.0.0:LAIR_DEFAULT_HTTP_PORT`; the CLI hits 127.0.0.1.
+/// CLI ↔ lair management API base URL. Lair binds HTTP on the container's
+/// 0.0.0.0:8000; the CLI hits the host-published 127.0.0.1:<http_port>.
 pub fn lair_http_url() -> String {
     let port = read_launch().map(|r| r.http_port).unwrap_or(LAIR_DEFAULT_HTTP_PORT);
     format!("http://127.0.0.1:{port}")
+}
+
+/// Stream `docker logs` for the lair container into stdout. `follow` maps
+/// straight to `-f`; tail defaults to the last 1k lines to mirror the old
+/// 1MB-from-file behaviour without scanning a long-running container's
+/// entire stdout.
+pub async fn stream_lair_logs(follow: bool) -> Result<()> {
+    ensure_docker_present()?;
+    let mut cmd = std::process::Command::new("docker");
+    cmd.args(["logs", "--tail", "1000"]);
+    if follow { cmd.arg("--follow"); }
+    cmd.arg(LAIR_CONTAINER_NAME);
+    let status = cmd.status().context("spawn `docker logs`")?;
+    if !status.success() {
+        anyhow::bail!("`docker logs {LAIR_CONTAINER_NAME}` exited with {status}");
+    }
+    Ok(())
 }

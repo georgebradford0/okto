@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Local dev loop: cargo-build lair from the working tree and run it directly
-# against a dedicated host data dir (./dev-data/). No Docker involved — lair
-# and any agents it spawns are plain OS processes on this host.
+# Local dev loop: build the lair image from the working tree (single-arch,
+# loaded into the local Docker daemon) and run it against ./dev-data/.
+# Children spawn inside the same container; their data lives in
+# ./dev-data/agents on the host via bind mount.
 #
-# Stop with ./stop_dev.sh (kills the lair pid and any agent pids it spawned,
-# rms ./dev-data/).
+# Stop with ./stop_dev.sh (docker rm -f octo-lair-dev + rms ./dev-data/).
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
-DEV_DATA_DIR="${REPO_ROOT}/dev-data/lair"
-DEV_AGENTS_DIR="${REPO_ROOT}/dev-data/agents"
+DEV_ROOT="${REPO_ROOT}/dev-data"
 DEV_CONFIG_SRC="${REPO_ROOT}/config.json"
 DEV_NOISE_PORT="${DEV_NOISE_PORT:-9000}"
+DEV_HTTP_PORT="${DEV_HTTP_PORT:-9001}"
+DEV_CONTAINER="${DEV_CONTAINER:-octo-lair-dev}"
+DEV_IMAGE="${DEV_IMAGE:-octo-lair:dev}"
 
 if [ ! -f "${DEV_CONFIG_SRC}" ]; then
     echo "ERROR: ${DEV_CONFIG_SRC} is missing." >&2
@@ -21,34 +23,42 @@ if [ ! -f "${DEV_CONFIG_SRC}" ]; then
     exit 1
 fi
 
-# Build lair once so the spawn is fast.
-echo "▸ cargo build -p octo-lair --release..."
-( cd "${REPO_ROOT}" && cargo build -p octo-lair --release )
+echo "▸ docker build -t ${DEV_IMAGE} (single-arch, host-arch only)..."
+docker build -f "${REPO_ROOT}/lair/Dockerfile" -t "${DEV_IMAGE}" "${REPO_ROOT}"
 
-# Ensure dev dirs exist and seed config.
-mkdir -p "${DEV_DATA_DIR}" "${DEV_AGENTS_DIR}" "${REPO_ROOT}/dev-data"
+mkdir -p "${DEV_ROOT}"
+install -m 600 "${DEV_CONFIG_SRC}" "${DEV_ROOT}/config.json"
 
-# In native mode, config.json is read from $HOME/.octo/config.json (via
-# octo_core::config_dir). For dev, point OCTO_HOME at the dev-data dir so we
-# don't smear over the operator's real config.
-DEV_HOME="${REPO_ROOT}/dev-data/home"
-mkdir -p "${DEV_HOME}"
-install -m 600 "${DEV_CONFIG_SRC}" "${DEV_HOME}/config.json"
+# Wipe any leftover container from a previous run.
+docker rm -f "${DEV_CONTAINER}" >/dev/null 2>&1 || true
 
-# Use the locally-built lair binary for both roles.
-export OCTO_LAIR_BINARY="${REPO_ROOT}/target/release/octo-lair"
-export OCTO_DATA_DIR="${DEV_DATA_DIR}"
-export OCTO_AGENTS_DIR="${DEV_AGENTS_DIR}"
-export OCTO_HOME="${DEV_HOME}"
-export NOISE_PORT="${DEV_NOISE_PORT}"
-export PUBLIC_PORT="${DEV_NOISE_PORT}"
-export OCTO_DEV=1
-export OCTO_SKIP_SHELL_ENV=1
-export GH_TOKEN="${GH_TOKEN:-}"
+# Empty env file by default; override by editing ./dev-data/lair-env before
+# (re)running start_dev.sh.
+touch "${DEV_ROOT}/lair-env"
 
-echo "▸ Starting lair (cargo run -p octo-lair --release -- --role lair)..."
-echo "  data_dir: ${DEV_DATA_DIR}"
-echo "  agents_dir: ${DEV_AGENTS_DIR}"
-echo "  HOME:     ${DEV_HOME}"
+# Forward GH_TOKEN from the host shell into the container if present.
+EXTRA_ENV=()
+if [ -n "${GH_TOKEN:-}" ]; then
+    EXTRA_ENV+=("-e" "GH_TOKEN=${GH_TOKEN}")
+fi
+
+echo "▸ docker run -d --name ${DEV_CONTAINER} ..."
+echo "  data:       ${DEV_ROOT}"
+echo "  noise port: ${DEV_NOISE_PORT}"
+echo "  http port:  ${DEV_HTTP_PORT} (127.0.0.1 only)"
 echo ""
-exec "${OCTO_LAIR_BINARY}" --role lair
+
+docker run -d \
+    --name "${DEV_CONTAINER}" \
+    -p "${DEV_NOISE_PORT}:8443" \
+    -p "127.0.0.1:${DEV_HTTP_PORT}:8000" \
+    -v "${DEV_ROOT}:/data" \
+    --env-file "${DEV_ROOT}/lair-env" \
+    -e "PUBLIC_PORT=${DEV_NOISE_PORT}" \
+    -e "OCTO_DEV=1" \
+    "${EXTRA_ENV[@]}" \
+    "${DEV_IMAGE}"
+
+echo ""
+echo "✓ Dev lair started. Tail logs with:"
+echo "    docker logs -f ${DEV_CONTAINER}"

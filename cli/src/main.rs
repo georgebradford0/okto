@@ -45,23 +45,29 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Bootstrap lair as a native process on this host.
+    /// Bootstrap lair as a docker container on this host.
     ///
     /// Refuses to run if `~/.octo/config.json` already exists. On first run,
     /// prompts for the API keys / model interactively, writes config.json,
-    /// then starts lair.
+    /// pulls the lair image, then `docker run`s it.
     Init {
-        /// Extra env var passed to the lair process (KEY=VALUE). Repeatable.
+        /// Extra env var passed to the lair container via `docker --env-file`.
+        /// Inherited by every child agent process lair spawns. Repeatable.
         #[arg(long = "env", short = 'e', value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
         env: Vec<String>,
 
-        /// Port that lair publishes its Noise endpoint on
+        /// Port that lair publishes its Noise endpoint on (host side)
         #[arg(long, default_value_t = service::LAIR_DEFAULT_NOISE_PORT)]
         noise_port: u16,
 
         /// Port that lair binds its HTTP / management API on (loopback only)
         #[arg(long, default_value_t = service::LAIR_DEFAULT_HTTP_PORT)]
         http_port: u16,
+
+        /// Lair image reference. Defaults to `$OCTO_LAIR_IMAGE` or
+        /// `ghcr.io/georgebradford0/octo-lair:latest`.
+        #[arg(long)]
+        image: Option<String>,
 
         /// Path to an mcp.json file to seed lair's MCP tool list
         #[arg(long)]
@@ -106,7 +112,7 @@ enum Command {
     /// Update the octo CLI to the latest release
     Update,
 
-    /// Manage the octo-lair binary on this host
+    /// Manage the octo-lair docker image on this host
     Lair {
         #[command(subcommand)]
         action: LairAction,
@@ -164,8 +170,13 @@ enum EnvAction {
 
 #[derive(Subcommand)]
 enum LairAction {
-    /// Download the latest octo-lair release and restart lair
-    Update,
+    /// Pull the latest octo-lair image and restart the container
+    Update {
+        /// Image reference to pull. Defaults to the image recorded by `octo init`,
+        /// then `$OCTO_LAIR_IMAGE`, then `ghcr.io/georgebradford0/octo-lair:latest`.
+        #[arg(long)]
+        image: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -345,37 +356,30 @@ async fn update() -> Result<()> {
     Ok(())
 }
 
-async fn update_lair() -> Result<()> {
-    // Install over whatever location is already in use, so the new binary is
-    // what `resolve_lair_binary` picks on the next start. If nothing is
-    // installed yet, drop it into the managed path.
-    let dest = service::resolve_lair_binary().unwrap_or_else(|_| service::managed_lair_path());
+async fn update_lair(image_override: Option<String>) -> Result<()> {
+    service::ensure_docker_present()?;
 
-    let current_version = if dest.exists() {
-        service::lair_binary_version(&dest).await.ok()
-    } else {
-        None
+    let launch = service::read_launch();
+    let prior_image = launch.as_ref().and_then(|l| l.image.clone());
+    let image = match image_override {
+        Some(i) if !i.is_empty() => i,
+        _ => service::resolve_image(prior_image.as_deref()),
     };
 
-    let latest_tag = service::latest_lair_tag().await?;
-    let latest_version = latest_tag.trim_start_matches("lair-v");
+    println!("Pulling {image}...");
+    service::docker_pull(&image)?;
 
-    if let Some(cur) = current_version.as_deref() {
-        if cur == latest_version {
-            println!("octo-lair already at v{cur} ({}).", dest.display());
-            return Ok(());
-        }
-        println!("Updating octo-lair: v{cur} -> v{latest_version} ({})", dest.display());
-    } else {
-        println!("Installing octo-lair v{latest_version} to {}", dest.display());
+    // Persist the (possibly new) image reference so subsequent reloads keep
+    // using it without --image being repassed.
+    if let Some(mut rec) = launch {
+        rec.image = Some(image.clone());
+        service::write_launch(&rec)?;
     }
-
-    service::download_lair_binary(&dest).await?;
 
     if service::is_running() {
         init::restart_lair("lair update").await?;
     } else if service::read_launch().is_some() {
-        println!("lair is not running; new binary will be used on next `octo reload`.");
+        println!("lair is not running; new image will be used on next `octo reload`.");
     } else {
         println!("lair has not been initialized; run `octo init` to start it.");
     }
@@ -415,11 +419,10 @@ async fn uninstall(yes: bool) -> Result<()> {
 
 async fn stream_logs(name: &str, follow: bool) -> Result<()> {
     use std::io::{Read, Seek, SeekFrom};
-    let path = if name == "lair" {
-        service::lair_data_dir().join("lair.log")
-    } else {
-        service::agents_dir().join(name).join("agent.log")
-    };
+    if name == "lair" {
+        return service::stream_lair_logs(follow).await;
+    }
+    let path = service::agents_dir().join(name).join("agent.log");
     if !path.exists() {
         anyhow::bail!("no log file at {}", path.display());
     }
@@ -459,7 +462,7 @@ async fn stream_logs(name: &str, follow: bool) -> Result<()> {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Init { env, noise_port, http_port, mcp_config } => {
+        Command::Init { env, noise_port, http_port, image, mcp_config } => {
             let extra_env = init::parse_extra_env(&env)?;
 
             let config_path = octo_core::config_path();
@@ -535,6 +538,7 @@ async fn main() -> Result<()> {
                 http_port,
                 mcp_seed,
                 extra_env:  &extra_env,
+                image:      image.as_deref(),
             }).await?;
         }
 
@@ -619,7 +623,7 @@ async fn main() -> Result<()> {
         Command::Version => println!("{}", env!("CARGO_PKG_VERSION")),
         Command::Update => update().await?,
         Command::Lair { action } => match action {
-            LairAction::Update => update_lair().await?,
+            LairAction::Update { image } => update_lair(image).await?,
         },
         Command::Uninstall { yes } => uninstall(yes).await?,
         Command::Completions { shell } => {

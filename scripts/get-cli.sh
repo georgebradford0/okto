@@ -8,8 +8,9 @@ OS=$(uname -s)
 ARCH=$(uname -m)
 
 # octo is Linux-only — both x86_64 and aarch64 are supported. Only the CLI
-# binary is installed here; `octo init` downloads the matching octo-lair
-# binary into ~/.octo/bin/ on first run.
+# binary is installed here; `octo init` `docker pull`s the matching
+# octo-lair image (ghcr.io/georgebradford0/octo-lair) on first run, so
+# Docker must already be installed and runnable as this user.
 case "$OS" in
   Linux)
     case "$ARCH" in
@@ -94,9 +95,16 @@ if [ -n "$COMPLETIONS_INSTALLED" ]; then
   echo "Start a new shell (or run 'exec $DETECTED_SHELL') to activate them."
   echo ""
 fi
-echo "Next: run 'octo init --anthropic-api-key <key> --model <model>' to bootstrap"
-echo "      lair on this host. octo init downloads octo-lair into ~/.octo/bin/"
-echo "      on first run. Optional init flags: --openai-api-key, --api-url, --env KEY=VALUE."
+if ! command -v docker >/dev/null 2>&1; then
+  echo "WARNING: 'docker' is not on PATH. Install Docker Engine before running"
+  echo "         'octo init' — it pulls and runs ghcr.io/georgebradford0/octo-lair."
+  echo ""
+fi
+
+echo "Next: run 'octo init' to bootstrap lair on this host. It will prompt"
+echo "      for API keys interactively, then 'docker pull' the lair image and"
+echo "      'docker run' it. Optional init flags: --env KEY=VALUE, --image,"
+echo "      --noise-port, --mcp-config."
 echo ""
 
 "$INSTALL_DIR/octo" --help

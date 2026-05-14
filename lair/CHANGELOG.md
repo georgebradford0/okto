@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-14
+
+### Changed
+
+- **Distribution model: lair ships exclusively as a multi-arch Docker image (`ghcr.io/georgebradford0/octo-lair`).** The standalone `octo-lair-linux-{x86_64,aarch64}` binary release path (`lair-v*` tags, `octo lair update` binary download, `~/.octo/bin/octo-lair`) is gone. `octo init` `docker pull`s the image and `docker run`s it in detached mode with the operator's `~/.octo` bind-mounted at `/data` and `~/.octo/lair-env` ingested via `--env-file`.
+- **The Rust code (CLI + lair) does not import a Docker SDK.** Every Docker interaction is a shell-out — either from `cli/src/service.rs` for container lifecycle (`run` / `rm -f` / `inspect` / `pull` / `logs`), or from the lair agentic loop's `bash` tool. No `bollard`, no `docker.rs` resurrection.
+- **Children stay in-container.** Lair's `AgentSupervisor` still spawns each child as a plain `octo-lair --role agent` process via `tokio::process::Command` — inside the same container as lair. Children inherit the lair process env by default, so env vars passed via `docker run -e KEY=VAL` (or `octo env set KEY=VAL`) automatically reach every child agent and every MCP server they invoke.
+- `OCTO_HOME=/data` is baked into the image so `config.json`, the SSH keypair, and the noise keypair resolve under the bind-mounted host dir. `OCTO_DATA_DIR=/data/lair` and `OCTO_AGENTS_DIR=/data/agents` follow the same scheme.
+
+### Removed
+
+- `.github/workflows/lair.yml` — image releases run locally via `scripts/build-lair-image.sh` + `docker buildx --push`.
+- `~/.octo/bin/octo-lair` managed-binary path and the `lair-v*` release-asset downloader in the CLI.
+
+### Added
+
+- `lair/Dockerfile` (multi-stage builder + bookworm-slim runtime).
+- `scripts/build-lair-image.sh` for multi-arch buildx builds (linux/amd64,linux/arm64).
+- `octo init --image <ref>` and `octo lair update --image <ref>` for pinning a specific image. `$OCTO_LAIR_IMAGE` works as a global override.
+- `lair-launch.json` gains an `image` field so `octo reload` reuses the same image without flags.
+
 ## [0.6.4] - 2026-05-12
 
 ### Changed

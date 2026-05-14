@@ -1,0 +1,99 @@
+# Multi-stage image for octo-lair. Built with `docker buildx` for linux/amd64
+# and linux/arm64; pushed to ghcr.io/georgebradford0/octo-lair by
+# `scripts/build-lair-image.sh` after a lair version bump.
+#
+# Runtime contract:
+#   * Operator's host dir is bind-mounted at /data (config.json, lair/,
+#     agents/, all live there).
+#   * NOISE_PORT (default 8443) is published from the container; the loopback
+#     HTTP management port (8000) is published to 127.0.0.1 only.
+#   * Env vars passed via `docker run -e KEY=VAL` reach lair *and* every child
+#     agent process it spawns — children inherit the lair process env via
+#     tokio's Command default, no extra plumbing required.
+#
+# ── Stage 1: Builder ──────────────────────────────────────────────────────────
+FROM rust:1.88-slim AS builder
+
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+
+ENV OPENSSL_NO_VENDOR=1
+
+WORKDIR /build
+
+# Strip the workspace to just the crates needed for the lair binary. tests/
+# and cli/ aren't built here — the CLI runs on the operator's host, not in
+# the image.
+RUN printf '[workspace]\nmembers = ["core", "lair"]\nresolver = "2"\n' > Cargo.toml
+
+COPY Cargo.lock ./
+COPY core/Cargo.toml    core/
+COPY lair/Cargo.toml    lair/
+
+# Stub sources for dep-caching layer.
+RUN mkdir -p core/src lair/src && \
+    echo '' > core/src/lib.rs && \
+    echo 'fn main() {}' > lair/src/main.rs
+
+# QEMU-emulated arm64 builds frequently lose crates.io HTTPS connections
+# mid-`cargo fetch` (SSL_ERROR_SYSCALL). Crank cargo's own retry knobs and
+# wrap the fetch in a shell retry — each attempt resumes from the cached
+# crates the previous run did manage to download, so it converges fast.
+ENV CARGO_NET_RETRY=10 \
+    CARGO_HTTP_TIMEOUT=120 \
+    CARGO_HTTP_MULTIPLEXING=false
+
+RUN i=0; until cargo fetch; do \
+        i=$((i+1)); \
+        if [ "$i" -ge 5 ]; then echo "[cargo fetch] giving up after 5 attempts" >&2; exit 1; fi; \
+        echo "[cargo fetch] attempt $i failed; retrying in 10s..." >&2; \
+        sleep 10; \
+    done
+
+COPY core/src    core/src
+COPY lair/src    lair/src
+
+RUN cargo build --release -p octo-lair
+
+# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
+FROM debian:bookworm-slim
+
+# Tools lair's bash / git / mcp paths shell out to. `gh` and `node` are pulled
+# in because most MCP servers in the wild are npx- or `gh`-driven; `uv`
+# (provides `uvx`) covers the Python ecosystem.
+RUN apt-get update && apt-get install -y ca-certificates curl git gpg && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list && \
+    apt-get update && \
+    apt-get install -y \
+        gh \
+        jq \
+        nodejs \
+        openssh-client \
+        qrencode \
+    && rm -rf /var/lib/apt/lists/* && \
+    curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
+
+COPY --from=builder /build/target/release/octo-lair /usr/local/bin/octo-lair
+
+LABEL org.opencontainers.image.source=https://github.com/georgebradford0/octo
+LABEL org.opencontainers.image.description="octo-lair — merged lair/agent binary, runs as --role lair by default"
+
+# Operator's host dir is bind-mounted here. config.json, lair/, agents/, and
+# lair-env all live under /data so they survive container restarts and stay
+# visible to the host CLI for `octo logs`, `octo agents list`, etc.
+ENV HOME=/data \
+    OCTO_HOME=/data \
+    OCTO_DATA_DIR=/data/lair \
+    OCTO_AGENTS_DIR=/data/agents \
+    OCTO_SKIP_SHELL_ENV=1 \
+    OCTO_LAIR_BINARY=/usr/local/bin/octo-lair
+
+EXPOSE 8000 8443
+
+# Default entrypoint runs the parent (lair) role. Children are spawned by lair
+# itself as plain processes inside this same container — there is no bollard
+# in the binary, and no second container per agent.
+ENTRYPOINT ["/usr/local/bin/octo-lair", "--role", "lair"]

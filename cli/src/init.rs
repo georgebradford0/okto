@@ -1,4 +1,4 @@
-//! `octo init` — bootstrap a lair process on the local Linux host.
+//! `octo init` — bootstrap a lair container on the local Linux host.
 
 use std::{
     fs,
@@ -31,6 +31,9 @@ pub struct InitOptions<'a> {
     /// init in a half-finished state.
     pub mcp_seed:   Option<McpSeed>,
     pub extra_env:  &'a [(String, String)],
+    /// Image reference to `docker run`. `None` falls back to
+    /// `$OCTO_LAIR_IMAGE` or `service::DEFAULT_LAIR_IMAGE`.
+    pub image:      Option<&'a str>,
 }
 
 pub struct McpSeed {
@@ -88,6 +91,9 @@ pub fn load_seed_mcp_config(path: &Path) -> Result<String> {
 }
 
 pub async fn run(opts: InitOptions<'_>) -> Result<()> {
+    service::ensure_docker_present()?;
+
+    let cfg_dir    = service::config_dir();
     let lair_dir   = service::lair_data_dir();
     let agents_dir = service::agents_dir();
     fs::create_dir_all(&lair_dir)
@@ -117,35 +123,32 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
     let key_file = lair_dir.join("noise_key.bin");
     let pubkey_b32 = ensure_noise_keypair(&key_file)?;
 
-    // Compose the env file passed to the lair process.
+    // Compose the env file passed to the lair container via --env-file.
     let env_path = service::env_file_path();
     fs::create_dir_all(env_path.parent().unwrap()).ok();
     let env_text = build_env_file(opts.extra_env);
     write_secret_file(&env_path, &env_text)?;
     println!("Wrote env file: {}", env_path.display());
 
-    // Locate the lair binary, downloading the latest `lair-v*` release
-    // artefact into ~/.octo/bin/ on first run.
-    let binary = service::ensure_lair_binary().await?;
-    println!("Using lair binary: {}", binary.display());
+    let image = service::resolve_image(opts.image);
+    println!("Pulling lair image: {image}");
+    service::docker_pull(&image)?;
 
-    let log_file = lair_dir.join("lair.log");
     let launch = service::LairLaunch {
         noise_port: opts.noise_port,
         http_port:  opts.http_port,
-        data_dir:   &lair_dir,
-        agents_dir: &agents_dir,
+        config_dir: &cfg_dir,
         env_file:   &env_path,
-        binary:     &binary,
-        log_file:   &log_file,
+        image:      &image,
     };
     println!("Starting lair...");
-    let pid = service::start_lair(&launch)?;
-    println!("lair pid: {pid}");
+    let id = service::start_lair(&launch)?;
+    println!("lair container: {}", id.chars().take(12).collect::<String>());
 
     service::write_launch(&service::LaunchRecord {
         noise_port: opts.noise_port,
         http_port:  opts.http_port,
+        image:      Some(image.clone()),
     })?;
 
     println!("Waiting for lair to be ready...");
@@ -208,9 +211,10 @@ fn ensure_noise_keypair(path: &Path) -> Result<String> {
     Ok(BASE32_NOPAD.encode(&kp.public))
 }
 
-/// Operator env file (`~/.octo/lair-env`). Managed runtime knobs come from
-/// `octo init` flags + `service::start_lair`; this file only carries
-/// operator-supplied extras like GH_TOKEN.
+/// Operator env file (`~/.octo/lair-env`). Passed to the lair container via
+/// `docker --env-file`. Carries operator-supplied extras (GH_TOKEN,
+/// PROVIDER_TOKENS, etc.); the managed knobs (`OCTO_HOME`, ports, etc.) are
+/// already baked into the image's `ENV` directives.
 pub fn build_env_file(extra_env: &[(String, String)]) -> String {
     let mut out = String::new();
     for (k, v) in extra_env {
@@ -219,11 +223,14 @@ pub fn build_env_file(extra_env: &[(String, String)]) -> String {
     out
 }
 
-/// Env keys octo manages itself (set by `service::start_lair`). The
-/// `octo env` subcommand refuses to add or remove these.
+/// Env keys octo manages itself (baked into the image or set by
+/// `service::start_lair`). The `octo env` subcommand refuses to add or
+/// remove these.
 pub const MANAGED_ENV_KEYS: &[&str] = &[
-    "NOISE_PORT", "PUBLIC_PORT", "OCTO_DATA_DIR", "OCTO_AGENTS_DIR",
+    "NOISE_PORT", "PUBLIC_PORT",
+    "OCTO_HOME", "OCTO_DATA_DIR", "OCTO_AGENTS_DIR",
     "OCTO_SKIP_SHELL_ENV", "OCTO_LAIR_BINARY",
+    "HOME",
 ];
 
 pub fn parse_extra_env(raw: &[String]) -> Result<Vec<(String, String)>> {
@@ -267,26 +274,22 @@ pub fn serialize_env_file(entries: &[(String, String)]) -> String {
     out
 }
 
-/// Stop + respawn lair with the persisted launch record. Used by `octo reload`
-/// and `octo env set/unset`.
+/// Stop + respawn the lair container with the persisted launch record. Used
+/// by `octo reload` and `octo env set/unset`.
 pub async fn restart_lair(reason: &str) -> Result<()> {
     let rec = service::read_launch().ok_or_else(|| anyhow::anyhow!(
         "~/.octo/lair-launch.json is missing. Re-run `octo init` once to record \
          launch parameters; subsequent `{reason}` calls won't need flags."
     ))?;
-    let lair_dir = service::lair_data_dir();
-    let agents_dir = service::agents_dir();
+    let cfg_dir = service::config_dir();
     let env_path = service::env_file_path();
-    let binary   = service::ensure_lair_binary().await?;
-    let log_file = lair_dir.join("lair.log");
+    let image = service::resolve_image(rec.image.as_deref());
     let launch = service::LairLaunch {
         noise_port: rec.noise_port,
         http_port:  rec.http_port,
-        data_dir:   &lair_dir,
-        agents_dir: &agents_dir,
+        config_dir: &cfg_dir,
         env_file:   &env_path,
-        binary:     &binary,
-        log_file:   &log_file,
+        image:      &image,
     };
     println!("Restarting lair ({reason})...");
     service::start_lair(&launch)?;
@@ -308,4 +311,3 @@ pub fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
     }
     Ok(())
 }
-

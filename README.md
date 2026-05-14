@@ -1,24 +1,24 @@
 # octo
 
-`octo` is a mobile agent management system that runs a fleet of LLM agents as plain OS processes on a Linux host. It was originally designed for coding but can be used to deploy any type of agent.
+`octo` is a mobile agent management system that runs a fleet of LLM agents inside a single Docker container on a Linux host. It was originally designed for coding but can be used to deploy any type of agent.
 
 ## Architecture
 
-A single `octo-lair` binary runs on a host with a static IP. The mobile client connects to lair over an encrypted Noise tunnel; from the lair chat the user creates, messages, and tears down "child" agents. Each child is also an `octo-lair` process (spawned by lair with `--role agent`), listening on a loopback HTTP port. Mobile chats with a child by opening a WebSocket to lair's proxy URL (`/agents/<name>/stream`) — there is no separate connection per child.
+A single `octo-lair` container runs on a host with a static IP. The mobile client connects to lair over an encrypted Noise tunnel; from the lair chat the user creates, messages, and tears down "child" agents. Each child is another `octo-lair` process (spawned by lair with `--role agent`) inside the same container, listening on a loopback HTTP port. Mobile chats with a child by opening a WebSocket to lair's proxy URL (`/agents/<name>/stream`) — there is no separate connection per child, and no second container per agent.
 
-Linux only (x86_64 and aarch64). No Docker, no systemd dependency.
+Linux only (x86_64 and aarch64). The lair image is multi-arch (linux/amd64, linux/arm64). The Rust code never talks to the Docker daemon — every Docker interaction is either an `octo` CLI shell-out or a `bash` tool call from the agentic loop.
 
-## Install the CLI and lair binary
+## Install the CLI
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/georgebradford0/octo/main/scripts/get-cli.sh | sh
 ```
 
-This installs `octo` (CLI) and `octo-lair` (the lair / agent binary) to `~/.local/bin/`. Both must be on PATH; if `~/.local/bin` isn't in your PATH, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc.
+This installs the `octo` CLI to `~/.local/bin/octo`. Docker must already be installed and runnable as the current user — `octo init` `docker pull`s `ghcr.io/georgebradford0/octo-lair:latest` on first run.
 
 ## Setup
 
-`octo init` must be run on a Linux host with a static — or at least publicly-reachable — IP. On first run it prompts interactively for credentials; on subsequent runs (when `~/.octo/config.json` already exists) it refuses to overwrite the existing config.
+`octo init` must be run on a Linux host with Docker installed and a static — or at least publicly-reachable — IP. On first run it prompts interactively for credentials; on subsequent runs (when `~/.octo/config.json` already exists) it refuses to overwrite the existing config.
 
 ```sh
 octo init
@@ -35,9 +35,15 @@ It prompts for:
 
 1. Persist credentials to `~/.octo/config.json`.
 2. Generate a Noise keypair and an Ed25519 SSH keypair (the SSH key is reserved for ops backchannels — e.g. SSHing into a remote host for tailing logs).
-3. Write an env file (`~/.octo/lair-env`).
-4. Spawn `octo-lair --role lair` as a detached background process (pid recorded at `~/.octo/lair/lair.pid`).
-5. Wait for lair's health check, then print a QR code containing the host, port, and Noise pubkey.
+3. Write an env file (`~/.octo/lair-env`) — this is what `docker --env-file` ingests.
+4. `docker pull` the lair image, then `docker run -d --name octo-lair -v ~/.octo:/data -p 8443:8443 …`.
+5. Wait for the management API on `127.0.0.1:8000/health`, then print a QR code containing the host, port, and Noise pubkey.
+
+Pass `--image ghcr.io/you/octo-lair:0.9.0` (or `OCTO_LAIR_IMAGE=…`) to pin a specific image.
+
+### Env vars
+
+Anything passed via `--env KEY=VAL` (or stored later with `octo env set KEY=VAL`) is written to `~/.octo/lair-env` and ingested by docker on container start. **The same variables are inherited by every child agent process lair spawns** — child agents share the lair container's env, so a single `-e GH_TOKEN=…` reaches lair, every child, and any MCP server they invoke.
 
 Anyone with the QR data can connect, so treat it like a credential.
 
@@ -47,10 +53,11 @@ The `mobile/` directory contains a React Native app (TODO: store links). Open th
 
 | Command | What it does |
 |---|---|
-| `octo init` | First-run setup. Spawns lair. |
-| `octo reload` | Restart lair (picks up new env / binary). `--all` also restarts every agent. |
-| `octo destroy` | Kill lair, terminate every agent, wipe `~/.octo/lair` and `~/.octo/agents`. |
-| `octo logs [name]` | Tail `~/.octo/lair/lair.log` (default) or a specific agent's `agent.log`. `-f` to follow. |
+| `octo init` | First-run setup. Pulls the lair image and `docker run`s it. |
+| `octo reload` | Restart the lair container (picks up new env / image). `--all` also restarts every agent. |
+| `octo destroy` | Remove the lair container, terminate every agent, wipe `~/.octo/lair` and `~/.octo/agents`. |
+| `octo logs [name]` | `docker logs` for lair (default) or tail a specific agent's `agent.log`. `-f` to follow. |
+| `octo lair update [--image …]` | `docker pull` the lair image and restart the container. |
 | `octo agents list` | Show every known agent (status, pid, port, git URL). |
 | `octo agents start <name>` | Re-spawn a stopped agent. |
 | `octo agents stop <name>` | SIGTERM an agent. |
