@@ -246,6 +246,51 @@ fn remove_completions() {
     }
 }
 
+/// Regenerate shell completions in any of the canonical locations that
+/// already contain an `octo` completion file. Silent on locations that don't
+/// exist — we don't create new files (the user may have opted out of
+/// completions at install time). Shells out to the freshly-installed binary
+/// at `bin` rather than calling `clap_complete` in-process, so we pick up
+/// any new subcommands.
+async fn refresh_completions(bin: &std::path::Path) {
+    let home = match std::env::var("HOME") {
+        Ok(h) => std::path::PathBuf::from(h),
+        Err(_) => return,
+    };
+    let targets: &[(&str, std::path::PathBuf)] = &[
+        ("bash", home.join(".local/share/bash-completion/completions/octo")),
+        ("zsh",  home.join(".zfunc/_octo")),
+        ("fish", home.join(".config/fish/completions/octo.fish")),
+    ];
+    for (shell, path) in targets {
+        if !path.exists() { continue; }
+        let out = match tokio::process::Command::new(bin)
+            .args(["completions", shell])
+            .output().await
+        {
+            Ok(o) if o.status.success() => o.stdout,
+            Ok(o) => {
+                eprintln!(
+                    "warning: `octo completions {shell}` exited with {}; leaving {} untouched",
+                    o.status, path.display(),
+                );
+                continue;
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: could not run `octo completions {shell}`: {e}; leaving {} untouched",
+                    path.display(),
+                );
+                continue;
+            }
+        };
+        match std::fs::write(path, &out) {
+            Ok(_)  => println!("Refreshed {shell} completions at {}", path.display()),
+            Err(e) => eprintln!("warning: could not write {}: {e}", path.display()),
+        }
+    }
+}
+
 async fn update() -> Result<()> {
     use std::env::consts::{ARCH, OS};
     use tokio::process::Command;
@@ -298,6 +343,8 @@ async fn update() -> Result<()> {
             .await?;
         anyhow::ensure!(status.success(), "failed to install updated binary");
     }
+
+    refresh_completions(std::path::Path::new(dest)).await;
 
     println!("Updated: v{current_version} → v{latest_version}");
     Ok(())
