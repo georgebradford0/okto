@@ -1,8 +1,10 @@
 //! Outbound SSH from lair to a remote-VM agent. Used by
 //! `register_remote_agent` to (a) pull the agent's published identity from
-//! `/var/lib/octo/data/agent-info.json` after cloud-init finishes, and
-//! (b) drop the operator's `config.json` + optionally clone a git repo, then
-//! `systemctl restart octo-agent`.
+//! `/var/lib/octo/lair/agent-info.json` (host path; bind-mounted to
+//! `/data/lair/agent-info.json` inside the agent container) after cloud-init
+//! finishes, and (b) drop the operator's `config.json` + optionally clone a
+//! git repo, then `systemctl restart octo-agent` (which restarts the
+//! `docker run`'d container).
 //!
 //! Shells out to the system `ssh` binary so host-key handling, key auth, and
 //! `known_hosts` come for free.
@@ -17,14 +19,20 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::{debug, warn};
 
-/// Where the agent process publishes its identity on the remote VM. Matches
-/// the path the `mint_bootstrap_userdata` cloud-init sets as `OCTO_DATA_DIR`.
-pub const REMOTE_AGENT_INFO_PATH: &str = "/var/lib/octo/data/agent-info.json";
+/// Where the agent process publishes its identity on the remote VM. The
+/// agent container has `OCTO_DATA_DIR=/data/lair` baked in by the image and
+/// runs with `-v /var/lib/octo:/data`, so the host-side path is
+/// `/var/lib/octo/lair/agent-info.json`. Lair reads it over SSH.
+pub const REMOTE_AGENT_INFO_PATH: &str = "/var/lib/octo/lair/agent-info.json";
 
-/// Where lair drops the operator's `config.json` on the remote VM.
-pub const REMOTE_CONFIG_PATH:     &str = "/var/lib/octo/data/config.json";
+/// Where lair drops the operator's `config.json` on the remote VM. The
+/// agent container has `OCTO_HOME=/data` baked in, so it reads
+/// `/data/config.json` — host path with the bind mount is
+/// `/var/lib/octo/config.json`.
+pub const REMOTE_CONFIG_PATH:     &str = "/var/lib/octo/config.json";
 
-/// Workspace dir on the remote VM (mirrors local agents' `~/.octo/agents/<name>/workspace`).
+/// Workspace dir on the remote VM. The userdata sets the container's
+/// `WORKSPACE_DIR=/data/workspace`; host-side it's `/var/lib/octo/workspace`.
 pub const REMOTE_WORKSPACE_PATH:  &str = "/var/lib/octo/workspace";
 
 /// Lair-side known_hosts file. Stored under `OCTO_DATA_DIR` so accept-new
@@ -33,8 +41,10 @@ pub fn known_hosts_path() -> PathBuf {
     octo_core::data_dir().join("known_hosts")
 }
 
-/// Parsed contents of `/var/lib/octo/data/agent-info.json` as written by the
-/// agent role.
+/// Parsed contents of `/var/lib/octo/lair/agent-info.json` as written by
+/// the agent role inside its container (the container writes
+/// `/data/lair/agent-info.json` which the host sees at
+/// `/var/lib/octo/lair/agent-info.json` via the bind mount).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AgentInfo {
     pub pubkey:   String,

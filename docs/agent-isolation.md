@@ -1,6 +1,8 @@
 # Agent isolation inside the lair container
 
-This doc explains how child agent processes are kept from terminating lair, terminating their siblings, or spawning new agents. As of `lair 0.10.0` / `cli 0.4.0`.
+This doc explains how *local* child agent processes are kept from terminating lair, terminating their siblings, or spawning new agents. As of `lair 0.10.1` / `cli 0.4.0`.
+
+> **Remote agents** are out of scope — they live on separate VMs, in their own `octo-lair` container booted by the cloud-init userdata that `mint_bootstrap_userdata` mints (Docker install + `docker run … --role agent` under a systemd unit; see `lair/src/lair.rs::exec_mint_bootstrap_userdata`). The mobile ↔ lair ↔ remote-agent flow encrypts the second hop with an outbound Noise tunnel from lair, so the same "children can't talk to each other" property holds *between* hosts naturally. The threats this doc addresses are inter-process within the lair container.
 
 ## Threat model
 

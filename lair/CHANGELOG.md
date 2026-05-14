@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-05-14
+
+### Fixed
+
+- **Remote-agent bootstrap (`mint_bootstrap_userdata` tool) was still wired for the deleted binary-release path.** The cloud-init it produced tried to `curl https://github.com/.../releases/download/cli-v<X>/octo-lair-linux-<arch>` — a path that no longer exists since 0.9.0 dropped the `lair-v*` binary artefacts in favour of the multi-arch Docker image. The userdata now:
+  1. Trusts lair's operator SSH key.
+  2. Installs Docker if absent (`curl https://get.docker.com | sh`), enables `docker.service`.
+  3. `docker pull ghcr.io/georgebradford0/octo-lair:<lair_version>` (overridable via the new `image` arg on `mint_bootstrap_userdata`).
+  4. Writes a systemd unit that `docker run`s the image with `--entrypoint /usr/local/bin/octo-lair`, `-v /var/lib/octo:/data`, `-p <public_port>:<public_port>`, and `--env-file /etc/octo/agent.env`.
+- `ssh.rs::REMOTE_*_PATH` constants now point at the host-side bind-mount paths the container surfaces:
+  - `REMOTE_AGENT_INFO_PATH` `/var/lib/octo/data/agent-info.json` → `/var/lib/octo/lair/agent-info.json` (container writes `/data/lair/agent-info.json`).
+  - `REMOTE_CONFIG_PATH` `/var/lib/octo/data/config.json` → `/var/lib/octo/config.json` (container reads `/data/config.json` via `OCTO_HOME=/data`).
+  - `REMOTE_WORKSPACE_PATH` unchanged at `/var/lib/octo/workspace`.
+- Tool description + lair's system-prompt blurb for `mint_bootstrap_userdata` / `register_remote_agent` updated to reflect the docker-runtime flow.
+
 ## [0.10.0] - 2026-05-14
 
 ### Security

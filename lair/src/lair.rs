@@ -827,8 +827,8 @@ octo can host any kind of agent workload, not only coding agents — don't assum
 2. Direct work — answer questions, run shell commands, read external resources, and handle small fixes that don't require a child's repo.
 
 # Environment
-- Linux host. Local children are plain OS processes (`octo-lair --role agent`); each has a per-agent data dir + workspace under `~/.octo/agents/<name>/` and binds a loopback HTTP port (30100–30199). Mobile reaches a local child via lair's `/agents/<name>/stream` proxy URL.
-- Remote children are the same `octo-lair --role agent` binary running on a separate VM you provisioned via a cloud-MCP. They listen on a public Noise port; lair opens an outbound Noise tunnel for the WS proxy so traffic stays encrypted end-to-end. Lair's SSH key bootstraps the VM (config.json drop, optional repo clone, systemctl restart).
+- Linux host. Lair runs inside a Docker container; local children are plain OS processes (`octo-lair --role agent`) spawned *inside the same container* as lair (non-root uid 10001). Each has a per-agent data dir + workspace under `/data/agents/<name>/` (bind-mounted from `~/.octo/agents/<name>/` on the host) and binds a loopback HTTP port (30100–30199). Mobile reaches a local child via lair's `/agents/<name>/stream` proxy URL.
+- Remote children run the same `octo-lair` image on a separate VM you provisioned via a cloud-MCP. The userdata installs Docker, `docker pull`s the lair image, and `docker run`s it with `--role agent` under a systemd unit. They listen on a public Noise port; lair opens an outbound Noise tunnel for the WS proxy so traffic stays encrypted end-to-end. Lair's SSH key bootstraps the VM (drops `config.json` into the host's `/var/lib/octo`, optional repo clone, `systemctl restart` to refresh the container).
 - `gh` and `git` are expected to be installed on the host; `GH_TOKEN` is in lair's env when the operator set it via `octo env`.
 - MCP servers may be configured at init time or hot-added at runtime; their tools appear alongside the built-ins. `web_fetch` (and `web_search` when Brave is configured) cover external lookups.
 - A path prefixed with `@` (e.g. `@core/src/lib.rs`) is a file reference inside a repo — treat it as a path.
@@ -841,8 +841,8 @@ octo can host any kind of agent workload, not only coding agents — don't assum
   - `startup_script` runs before the child's HTTP server boots — good for `apt-get`, package installs, git config.
   - `startup_prompt` is sent as the child's first user message once it's ready and triggers a full agentic loop.
   - **Never put secrets in `startup_script` or `startup_prompt`** — provider credentials are forwarded via env automatically; you don't need to bake them in.
-- **`mint_bootstrap_userdata`** — args: `name`, `agent_purpose?`, `startup_script?`, `public_port?`, `lair_version?`. Returns a cloud-init bash script for a **remote** agent. The userdata is **credentials-free** — it trusts lair's SSH key, downloads `octo-lair` from GitHub Releases, and installs a systemd unit running `--role agent`. Hand the returned `userdata` to whichever provisioning MCP the user has configured (AWS, Hetzner, etc.). The MCP returns the new VM's IP → call `register_remote_agent`.
-- **`register_remote_agent`** — args: `name`, `host`, `provider?`, `instance_id?`, `git_url?`, `metadata?`. After the provisioning MCP returns the VM's IP, lair SSHes in and: (a) waits for the agent to publish `/var/lib/octo/data/agent-info.json`, (b) drops `config.json` with API keys, (c) clones `git_url` into the workspace if given, (d) `systemctl restart`s the agent. Total timeout ~6 minutes. `name` must match what you passed to `mint_bootstrap_userdata`.
+- **`mint_bootstrap_userdata`** — args: `name`, `agent_purpose?`, `startup_script?`, `public_port?`, `lair_version?`, `image?`. Returns a cloud-init bash script for a **remote** agent. The userdata is **credentials-free** — it trusts lair's SSH key, installs Docker if absent, `docker pull`s the lair image, and writes a systemd unit that `docker run`s the image with `--role agent`. Hand the returned `userdata` to whichever provisioning MCP the user has configured (AWS, Hetzner, etc.). The MCP returns the new VM's IP → call `register_remote_agent`.
+- **`register_remote_agent`** — args: `name`, `host`, `provider?`, `instance_id?`, `git_url?`, `metadata?`. After the provisioning MCP returns the VM's IP, lair SSHes in and: (a) waits for the agent container to publish `/var/lib/octo/lair/agent-info.json` (the agent writes it inside the container; the host sees it via the bind mount), (b) drops `config.json` to `/var/lib/octo/config.json` with the API keys, (c) clones `git_url` into the workspace if given, (d) `systemctl restart`s the agent unit (which `docker run`s a fresh container, picking up the new config). Total timeout ~6 minutes. `name` must match what you passed to `mint_bootstrap_userdata`.
 - **`terminate_agent(name)`** — *destructive, local agents only.* Kills the process and deletes the per-agent data + workspace dirs. For remote agents, returns instructions to terminate the VM via the provisioning MCP first, then call `forget_agent`. Always run `list_agents` first to confirm the exact name; confirm with the user before calling unless the request was unambiguous.
 - **`forget_agent(name)`** — *registry-only.* Removes a remote agent's row without touching the VM. Use after the provisioning MCP has terminated the instance. Don't use on a live local agent — use `terminate_agent` instead.
 - **`restart_all_agents`** — restart every managed *local* agent. Use after upgrading the lair binary; no effect on remote agents.
@@ -984,13 +984,15 @@ fn mint_bootstrap_userdata_tool() -> AnthropicTool {
         name: "mint_bootstrap_userdata".to_string(),
         description: "Mint a cloud-init bash script (\"userdata\") for bootstrapping a remote \
                        octo agent on a freshly-provisioned Linux VM. The userdata contains **no \
-                       credentials** — only lair's SSH public key, an octo-lair binary download \
-                       from GitHub Releases, and a systemd unit that runs `--role agent`. The \
-                       agent boots without API keys; lair finishes the bootstrap over SSH \
-                       afterwards (drops config.json, optionally clones the git repo, restarts \
-                       the systemd unit). Returns the userdata blob plus the agent name. After \
-                       the provisioning MCP returns the new VM's IP, call \
-                       `register_remote_agent(name=…, host=<public_ip>, ...)`."
+                       credentials** — only lair's SSH public key, a Docker install (if absent), \
+                       a `docker pull` of the multi-arch `octo-lair` image, and a systemd unit \
+                       that `docker run`s the image with `--role agent`. The agent boots without \
+                       API keys; lair finishes the bootstrap over SSH afterwards (drops \
+                       config.json into the container's bind-mounted /data, optionally clones \
+                       the git repo, and `systemctl restart`s the unit — which restarts the \
+                       container, picking up the fresh config). Returns the userdata blob plus \
+                       the agent name. After the provisioning MCP returns the new VM's IP, \
+                       call `register_remote_agent(name=…, host=<public_ip>, ...)`."
             .to_string(),
         input_schema: serde_json::json!({
             "type": "object",
@@ -1013,7 +1015,11 @@ fn mint_bootstrap_userdata_tool() -> AnthropicTool {
                 },
                 "lair_version": {
                     "type": "string",
-                    "description": "Specific `octo-lair` release tag (without leading v) to install on the VM. Defaults to lair's own running version, which is what you usually want."
+                    "description": "Lair image tag to pull (without leading v). Defaults to lair's own running version. Only used to compose the default `image` — overridden by `image` if both are passed."
+                },
+                "image": {
+                    "type": "string",
+                    "description": "Explicit lair image reference (e.g. `ghcr.io/you/octo-lair:0.10.1`). Defaults to `ghcr.io/georgebradford0/octo-lair:<lair_version>`."
                 }
             },
             "required": ["name"]
@@ -1026,10 +1032,12 @@ fn register_remote_agent_tool() -> AnthropicTool {
     AnthropicTool {
         name: "register_remote_agent".to_string(),
         description: "Finish bootstrapping a remote agent and register it with lair. SSHes in \
-                       (using lair's operator key), waits for the agent to publish \
-                       `/var/lib/octo/data/agent-info.json`, drops a `config.json` with the API \
-                       keys, optionally clones `git_url` into the workspace, and \
-                       `systemctl restart`s the agent service. Total timeout ~6 minutes. `name` \
+                       (using lair's operator key), waits for the agent container to publish \
+                       `/var/lib/octo/lair/agent-info.json` (host path; bind-mounted to \
+                       `/data/lair/` inside the agent container), drops `config.json` to \
+                       `/var/lib/octo/config.json` with the API keys, optionally clones \
+                       `git_url` into the workspace, and `systemctl restart`s the agent service \
+                       (which restarts the docker container). Total timeout ~6 minutes. `name` \
                        must match what was passed to `mint_bootstrap_userdata`. Each SSH op \
                        retries internally with exponential backoff. A `Pending` registry row \
                        is inserted as soon as the agent's identity is known."
@@ -1209,18 +1217,23 @@ async fn exec_mint_bootstrap_userdata(state: Arc<AppState>, input: serde_json::V
     let public_port    = input.get("public_port")   .and_then(|v| v.as_u64()).unwrap_or(9000) as u16;
     let lair_version   = input.get("lair_version")  .and_then(|v| v.as_str()).map(str::to_string)
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    let image = input.get("image").and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("ghcr.io/georgebradford0/octo-lair:{lair_version}"));
 
     let lair_pubkey = match ssh_ops::read_lair_public_key() {
         Ok(k) => k,
         Err(e) => return format!("error reading lair SSH public key: {e:#}"),
     };
 
+    // Env file passed to `docker run --env-file`. All container-internal
+    // paths — the image bakes `OCTO_HOME=/data` and `OCTO_DATA_DIR=/data/lair`
+    // already, and `-v /var/lib/octo:/data` maps those to host paths.
     let mut env_lines: Vec<String> = vec![
         "AGENT_PORT=8000".to_string(),
         format!("AGENT_NOISE_PORT={public_port}"),
-        "OCTO_DATA_DIR=/var/lib/octo/data".to_string(),
-        "WORKSPACE_DIR=/var/lib/octo/workspace".to_string(),
-        "NOISE_KEY_FILE=/var/lib/octo/data/noise_key.bin".to_string(),
+        "WORKSPACE_DIR=/data/workspace".to_string(),
         "OCTO_SKIP_SHELL_ENV=1".to_string(),
     ];
     if let Some(v) = &agent_purpose  { env_lines.push(format!("AGENT_PURPOSE={v}")); }
@@ -1237,49 +1250,53 @@ cat >> /root/.ssh/authorized_keys <<'OCTO_SSH_EOF'
 OCTO_SSH_EOF
 chmod 600 /root/.ssh/authorized_keys
 
-# 2. Install git (curl is usually preinstalled on cloud images).
-if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -y
-    apt-get install -y --no-install-recommends git ca-certificates curl
-elif command -v yum >/dev/null 2>&1; then
-    yum install -y git ca-certificates curl
-elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache git ca-certificates curl
+# 2. Install Docker if it isn't already there. Uses the official Docker
+#    convenience script, which handles apt/yum/apk distros transparently.
+if ! command -v docker >/dev/null 2>&1; then
+    curl -fsSL https://get.docker.com | sh
 fi
+systemctl enable --now docker
 
-# 3. Download octo-lair binary for this VM's architecture.
-ARCH=$(uname -m)
-case "$ARCH" in
-    x86_64)  ARTIFACT="octo-lair-linux-x86_64"  ;;
-    aarch64) ARTIFACT="octo-lair-linux-aarch64" ;;
-    *) echo "unsupported arch: $ARCH"; exit 1 ;;
-esac
-curl -fsSL "https://github.com/georgebradford0/octo/releases/download/cli-v{lair_version}/$ARTIFACT" \
-    -o /usr/local/bin/octo-lair
-chmod +x /usr/local/bin/octo-lair
+# 3. Host dirs that the agent container bind-mounts at /data. Lair's SSH
+#    bootstrap phase writes `/var/lib/octo/config.json` (the operator's
+#    API keys) and reads `/var/lib/octo/lair/agent-info.json` (the agent's
+#    Noise pubkey + port) — both via this same bind mount.
+install -d -m 700 /var/lib/octo /var/lib/octo/lair /var/lib/octo/workspace /etc/octo
 
-# 4. Prepare dirs that the agent's OCTO_DATA_DIR and WORKSPACE_DIR will point at.
-install -d -m 700 /var/lib/octo/data /var/lib/octo/workspace /etc/octo
-
-# 5. Env file with the agent's non-secret bootstrap config.
+# 4. Non-secret bootstrap env passed to `docker run --env-file`. API keys
+#    are dropped over SSH after the container is up; the container is
+#    restarted afterwards via `systemctl restart octo-agent`.
 umask 077
 cat > /etc/octo/agent.env <<'OCTO_ENV_EOF'
 {env_content}
 OCTO_ENV_EOF
 umask 022
 
-# 6. systemd unit. The agent boots without API keys — lair drops config.json
-#    over SSH afterwards and triggers a restart.
+# 5. Pull the multi-arch lair image. The image hosts both --role lair and
+#    --role agent; we override the entrypoint below to pick the agent role.
+docker pull "{image}"
+
+# 6. systemd unit drives `docker run`. ExecStartPre removes any stale
+#    container; ExecStart launches a fresh one in the foreground so systemd
+#    can supervise it. Restart is always — if the container crashes or the
+#    host reboots, systemd brings it back.
 cat > /etc/systemd/system/octo-agent.service <<'OCTO_UNIT_EOF'
 [Unit]
-Description=octo agent
-After=network-online.target
+Description=octo agent container
+Requires=docker.service
+After=docker.service network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/octo/agent.env
-ExecStart=/usr/local/bin/octo-lair --role agent
+ExecStartPre=-/usr/bin/docker rm -f octo-agent
+ExecStart=/usr/bin/docker run --rm --name octo-agent \
+    -p {public_port}:{public_port} \
+    -v /var/lib/octo:/data \
+    --env-file /etc/octo/agent.env \
+    --entrypoint /usr/local/bin/octo-lair \
+    {image} --role agent
+ExecStop=/usr/bin/docker stop -t 10 octo-agent
 Restart=always
 RestartSec=5
 
