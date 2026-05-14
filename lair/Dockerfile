@@ -90,7 +90,8 @@ ENV HOME=/data \
     OCTO_DATA_DIR=/data/lair \
     OCTO_AGENTS_DIR=/data/agents \
     OCTO_SKIP_SHELL_ENV=1 \
-    OCTO_LAIR_BINARY=/usr/local/bin/octo-lair
+    OCTO_LAIR_BINARY=/usr/local/bin/octo-lair \
+    NOISE_PORT=8443
 
 EXPOSE 8000 8443
 
