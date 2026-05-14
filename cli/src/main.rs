@@ -313,8 +313,13 @@ async fn update() -> Result<()> {
     let latest_version = latest_tag.trim_start_matches('v');
 
     let current_version = env!("CARGO_PKG_VERSION");
+    let current_exe = std::env::current_exe()?;
+    let current_exe_str = current_exe.to_str().unwrap_or("/usr/local/bin/octo");
     if latest_version == current_version {
         println!("Already up to date (v{current_version}).");
+        // Still reconcile completions in case they were left stale by an
+        // older `octo update` that predated the refresh logic.
+        refresh_completions(std::path::Path::new(current_exe_str)).await;
         return Ok(());
     }
 
@@ -327,8 +332,7 @@ async fn update() -> Result<()> {
         .await?;
     anyhow::ensure!(status.success(), "download failed");
 
-    let current = std::env::current_exe()?;
-    let dest = current.to_str().unwrap_or("/usr/local/bin/octo");
+    let dest = current_exe_str;
 
     Command::new("chmod").args(["+x", "/tmp/octo-update"]).status().await?;
 
