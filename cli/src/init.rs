@@ -124,11 +124,22 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
     let pubkey_b32 = ensure_noise_keypair(&key_file)?;
 
     // Compose the env file passed to the lair container via --env-file.
+    // Additive: pre-existing entries are kept and `--env KEY=VAL` upserts on
+    // top, so re-running `octo init -e GH_TOKEN=…` doesn't wipe other vars.
+    // Use `octo env unset` or `octo destroy` to remove entries.
     let env_path = service::env_file_path();
     fs::create_dir_all(env_path.parent().unwrap()).ok();
-    let env_text = build_env_file(opts.extra_env);
-    write_secret_file(&env_path, &env_text)?;
-    println!("Wrote env file: {}", env_path.display());
+    let existing_text = fs::read_to_string(&env_path).unwrap_or_default();
+    let mut entries = parse_env_file(&existing_text);
+    for (k, v) in opts.extra_env {
+        if let Some(slot) = entries.iter_mut().find(|(ek, _)| ek == k) {
+            slot.1 = v.clone();
+        } else {
+            entries.push((k.clone(), v.clone()));
+        }
+    }
+    write_secret_file(&env_path, &serialize_env_file(&entries))?;
+    println!("Wrote env file: {} ({} entries)", env_path.display(), entries.len());
 
     let image = service::resolve_image(opts.image);
     println!("Pulling lair image: {image}");
@@ -209,18 +220,6 @@ fn ensure_noise_keypair(path: &Path) -> Result<String> {
     }
     println!("Wrote Noise keypair to {}.", path.display());
     Ok(BASE32_NOPAD.encode(&kp.public))
-}
-
-/// Operator env file (`~/.octo/lair-env`). Passed to the lair container via
-/// `docker --env-file`. Carries operator-supplied extras (GH_TOKEN,
-/// PROVIDER_TOKENS, etc.); the managed knobs (`OCTO_HOME`, ports, etc.) are
-/// already baked into the image's `ENV` directives.
-pub fn build_env_file(extra_env: &[(String, String)]) -> String {
-    let mut out = String::new();
-    for (k, v) in extra_env {
-        out.push_str(&format!("{k}={v}\n"));
-    }
-    out
 }
 
 /// Env keys octo manages itself (baked into the image or set by

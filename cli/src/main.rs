@@ -466,20 +466,7 @@ async fn main() -> Result<()> {
             let extra_env = init::parse_extra_env(&env)?;
 
             let config_path = octo_core::config_path();
-            let launch_path = service::launch_config_path();
             let config_exists = config_path.exists();
-            let launch_exists = launch_path.exists();
-
-            // Refuse only when init clearly succeeded last time (both config
-            // and launch record present). If config.json was written but lair
-            // never started (e.g. a previous init bailed on a bad mcp config),
-            // treat this as a resumable retry.
-            if config_exists && launch_exists {
-                eprintln!("{} already exists — octo is already configured.", config_path.display());
-                eprintln!("To change values, edit it directly or use `octo config set`.");
-                eprintln!("To start over, `octo destroy` first (which removes ~/.octo state).");
-                std::process::exit(1);
-            }
 
             // Pre-flight: validate any --mcp-config file BEFORE we prompt or
             // write anything. A broken mcp file used to fail after config.json
@@ -495,7 +482,7 @@ async fn main() -> Result<()> {
 
             if config_exists {
                 println!(
-                    "{} exists but lair was never started — resuming init with the existing config.",
+                    "{} exists — reusing it. (Edit via `octo config set …` or `octo destroy` to start over.)",
                     config_path.display(),
                 );
                 let cfg = octo_core::read_config();
