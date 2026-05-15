@@ -198,6 +198,7 @@ impl AgentSupervisor {
         cmd.env("OCTO_DATA_DIR",   &data_dir);
         cmd.env("WORKSPACE_DIR",   &workspace_dir);
         cmd.env("AGENT_PORT",      p.port.to_string());
+        cmd.env("AGENT_NAME",      p.name);
         // Children share the operator's config.json via core::config_dir();
         // no need to bake credentials into env. Skip the login-shell env
         // bootstrap (we already have what we need from the parent's env).

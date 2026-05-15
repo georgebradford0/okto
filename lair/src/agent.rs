@@ -591,6 +591,38 @@ async fn exec_terminate_agent(input: serde_json::Value) -> String {
     }
 }
 
+/// Forward a push-notification request to lair. Child agents hold no relay
+/// signing key (mobile is subscribed under lair's pubkey), so lair signs and
+/// forwards to the relay on the child's behalf via its container-internal
+/// `/internal/notify` endpoint. Best-effort: every failure is logged and
+/// swallowed — a missing push must never disturb the agentic loop.
+async fn forward_notify_to_lair(category: &str, title: &str, body: &str) {
+    let Some(base) = std::env::var("LAIR_INTERNAL_URL").ok().filter(|s| !s.is_empty()) else {
+        warn!("[agent/notify] LAIR_INTERNAL_URL unset — cannot forward push");
+        return;
+    };
+    // Prefix the title with this agent's name so the operator can tell which
+    // agent a push came from. `AGENT_NAME` is set by the supervisor at spawn.
+    let title = match std::env::var("AGENT_NAME").ok().filter(|s| !s.is_empty()) {
+        Some(name) => format!("{name} · {title}"),
+        None       => title.to_string(),
+    };
+    let url = format!("{base}/internal/notify");
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+    {
+        Ok(c)  => c,
+        Err(e) => { warn!("[agent/notify] build http client failed: {e}"); return; }
+    };
+    let payload = serde_json::json!({ "category": category, "title": title, "body": body });
+    match client.post(&url).json(&payload).send().await {
+        Ok(r) if r.status().is_success() => debug!("[agent/notify] forwarded push to lair ({})", r.status()),
+        Ok(r)  => warn!("[agent/notify] lair {url} returned {}", r.status()),
+        Err(e) => warn!("[agent/notify] POST {url} failed: {e}"),
+    }
+}
+
 async fn exec_run_command_in_background(state: Arc<AppState>, input: serde_json::Value) -> String {
     let command = match input.get("command").and_then(|v| v.as_str()) {
         Some(s) if !s.trim().is_empty() => s.to_string(),
@@ -655,6 +687,14 @@ async fn exec_run_command_in_background(state: Arc<AppState>, input: serde_json:
         if let Some(json) = chat_event_to_wire_json(&event) {
             buffer_and_fanout(&stream_state_arc.stream_state, json.to_string());
         }
+
+        // Push notification. Children have no relay key, so lair signs and
+        // forwards on our behalf — see `forward_notify_to_lair`.
+        let title = format!("Background command {}", outcome.status);
+        let body  = outcome.summary.chars().take(120).collect::<String>();
+        tokio::spawn(async move {
+            forward_notify_to_lair("task_complete", &title, &body).await;
+        });
 
         try_continue_auto(stream_state_arc.clone());
     });

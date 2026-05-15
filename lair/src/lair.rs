@@ -210,6 +210,38 @@ async fn info_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Va
     }))
 }
 
+#[derive(serde::Deserialize)]
+struct InternalNotifyBody {
+    category: String,
+    #[serde(default)] title: Option<String>,
+    #[serde(default)] body:  Option<String>,
+}
+
+/// Container-internal push relay. Child agents hold no relay signing key —
+/// mobile is subscribed under *lair's* pubkey — so a child that wants to push
+/// (e.g. on background-task completion) POSTs here and lair signs + forwards
+/// to the relay. Deliberately unauthenticated: only processes inside the lair
+/// container can reach this HTTP server, and the worst a caller can do is
+/// trigger a push to the operator's own device — not a lifecycle op, which is
+/// what the `X-Octo-Token` / `X-Octo-Agent-Token` walls actually protect.
+async fn internal_notify_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body):   Json<InternalNotifyBody>,
+) -> StatusCode {
+    if state.relay_url.is_empty() {
+        return StatusCode::OK;
+    }
+    let signer = state.relay_signer.clone();
+    let url    = state.relay_url.clone();
+    tokio::spawn(async move {
+        relay_client::notify(
+            &url, &signer, &body.category,
+            body.title.as_deref(), body.body.as_deref(),
+        ).await;
+    });
+    StatusCode::ACCEPTED
+}
+
 async fn history_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let cost = *state.last_cost_usd.lock().unwrap();
     let msgs = messages_to_history(&state.messages.lock().unwrap(), cost);
@@ -2503,6 +2535,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             .route("/stream",                  get(stream_handler))
             .route("/interrupt",               post(interrupt_handler))
             .route("/clear",                   post(clear_handler))
+            .route("/internal/notify",         post(internal_notify_handler))
             .route("/agents",                  get(cli_list_agents))
             .route("/agents/:name/logs",       get(cli_agent_logs))
             .route("/agents/:name/stream",     get(proxy_agent_stream_handler))
