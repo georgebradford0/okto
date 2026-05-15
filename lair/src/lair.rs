@@ -23,7 +23,7 @@ use tracing::{debug, error, info, warn};
 use axum::{
     extract::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
-        Path as AxumPath, State,
+        Path as AxumPath, RawQuery, State,
     },
     http::{Method, StatusCode},
     response::{IntoResponse, Response},
@@ -894,6 +894,21 @@ async fn proxy_agent_branches(
     State(state):   State<Arc<AppState>>,
 ) -> Response {
     proxy_agent_http(&state, &name, reqwest::Method::GET, "/branches").await
+}
+
+/// Unlike the other proxied endpoints, the child's `/completions` is driven
+/// by `dir_part` / `file_part` query params, so the raw query string must be
+/// forwarded verbatim — `proxy_agent_http` appends `sub` to the base URL as-is.
+async fn proxy_agent_completions(
+    AxumPath(name):  AxumPath<String>,
+    RawQuery(query): RawQuery,
+    State(state):    State<Arc<AppState>>,
+) -> Response {
+    let sub = match query {
+        Some(q) if !q.is_empty() => format!("/completions?{q}"),
+        _                        => "/completions".to_string(),
+    };
+    proxy_agent_http(&state, &name, reqwest::Method::GET, &sub).await
 }
 
 async fn proxy_agent_stream_handler(
@@ -2496,6 +2511,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             .route("/agents/:name/interrupt",  post(proxy_agent_interrupt))
             .route("/agents/:name/clear",      post(proxy_agent_clear))
             .route("/agents/:name/branches",   get(proxy_agent_branches))
+            .route("/agents/:name/completions", get(proxy_agent_completions))
             .merge(protected)
             .merge(agent_protected)
             .with_state(state)
