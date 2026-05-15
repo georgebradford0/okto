@@ -34,7 +34,8 @@ pub use background::{
 };
 
 pub mod relay;
-pub use relay::{RelaySigner, notify as relay_notify};
+pub use relay::{RelaySigner, notify as relay_notify, send_notification_tool,
+    NOTIFY_CATEGORY_AGENT_MESSAGE};
 
 pub mod ssh;
 pub use ssh::{ensure_ssh_keypair, SSH_PRIVATE_KEY_FILE, SSH_PUBLIC_KEY_FILE};

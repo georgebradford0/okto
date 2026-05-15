@@ -16,8 +16,50 @@ use ed25519_dalek::{Signer, SigningKey};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use serde::Serialize;
+use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
+
+use crate::AnthropicTool;
+
+/// Category passed to the relay for model-initiated `send_notification`
+/// pushes. Distinct from `task_complete` (background-task completion) so the
+/// relay / mobile client can treat operator-addressed messages differently.
+pub const NOTIFY_CATEGORY_AGENT_MESSAGE: &str = "agent_message";
+
+/// Build the `AnthropicTool` spec for `send_notification`. The tool itself is
+/// role-specific in execution — lair signs and POSTs to the relay directly,
+/// while a child agent forwards to lair — but the schema is identical, so both
+/// roles share this definition.
+pub fn send_notification_tool() -> AnthropicTool {
+    AnthropicTool {
+        name: "send_notification".to_string(),
+        description: "Send a push notification to the operator's phone. Use this \
+                      sparingly — only when the operator genuinely needs to know \
+                      something now and has likely stepped away: a long task \
+                      finished, you've hit a decision you cannot proceed past \
+                      without their input, or they explicitly asked to be \
+                      notified. Do NOT use it for routine progress updates or to \
+                      echo a reply they are already watching for. Delivery is \
+                      best-effort: if no relay is configured the call is a no-op."
+            .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Short notification title — lead with what the operator would act on. Keep it under ~60 characters."
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Notification body, one or two sentences. Keep it under ~200 characters; mobile OSes truncate beyond that."
+                }
+            },
+            "required": ["title", "body"]
+        }),
+        display_label: Some("Sending notification".into()),
+    }
+}
 
 /// Wraps an Ed25519 signing key with helpers to expose its public half in
 /// the same RFC4648 base32 (no padding) shape mobile already uses for the

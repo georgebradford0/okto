@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-05-15
+
+### Added
+
+- **`send_notification` tool.** Both the lair and agent agentic loops now expose a `send_notification` tool so the model can push a notification to the operator's phone directly, rather than a push only happening as a side effect of background-task completion. Lair signs and POSTs to the relay itself; child agents (which hold no relay key) forward to lair's `/internal/notify`. Pushes use a distinct `agent_message` relay category.
+
 ## [0.11.0] - 2026-05-14
 
 ### Added

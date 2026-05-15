@@ -33,7 +33,7 @@ use octo_core::{
     get_branches_for_repo, init_mcp_pool, init_shell_env,
     load_or_generate_keypair, read_config,
     resolve_api_key, resolve_model, run_command_in_background_tool,
-    run_noise_proxy, send_message,
+    run_noise_proxy, send_message, send_notification_tool, NOTIFY_CATEGORY_AGENT_MESSAGE,
     spawn_background_command, to_base32, ApiMessage, AnthropicTool,
     BackgroundCommandParams, ChatEvent, Config, ContentBlock, McpPool,
     KEEPALIVE_INTERVAL, KEEPALIVE_MAX_MISSED,
@@ -397,7 +397,7 @@ async fn update_config_handler(Json(patch): Json<Config>) -> StatusCode {
 }
 
 fn make_extra_tools() -> Vec<AnthropicTool> {
-    let mut tools = vec![run_command_in_background_tool()];
+    let mut tools = vec![run_command_in_background_tool(), send_notification_tool()];
     if has_spawn_capability() {
         tools.push(spawn_agent_tool());
         tools.push(terminate_agent_tool());
@@ -494,6 +494,7 @@ fn make_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
                 "run_command_in_background" => exec_run_command_in_background(state, input).await,
                 "spawn_agent"               => exec_spawn_agent(input).await,
                 "terminate_agent"           => exec_terminate_agent(input).await,
+                "send_notification"         => exec_send_notification(input).await,
                 other => format!("unknown tool: {other}"),
             }
         })
@@ -621,6 +622,23 @@ async fn forward_notify_to_lair(category: &str, title: &str, body: &str) {
         Ok(r)  => warn!("[agent/notify] lair {url} returned {}", r.status()),
         Err(e) => warn!("[agent/notify] POST {url} failed: {e}"),
     }
+}
+
+/// `send_notification` tool — a child agent holds no relay signing key, so it
+/// forwards the push to lair, which signs and relays it on the agent's behalf.
+async fn exec_send_notification(input: serde_json::Value) -> String {
+    let title = input.get("title").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let body  = input.get("body").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if body.is_empty() {
+        return "error: 'body' is required".to_string();
+    }
+    if std::env::var("LAIR_INTERNAL_URL").ok().filter(|s| !s.is_empty()).is_none() {
+        warn!("[agent/send_notification] LAIR_INTERNAL_URL unset — push dropped");
+        return "Notification not sent: this agent cannot reach lair to relay the push.".to_string();
+    }
+    forward_notify_to_lair(NOTIFY_CATEGORY_AGENT_MESSAGE, &title, &body).await;
+    info!("[agent/send_notification] forwarded push to lair");
+    "Notification dispatched to the operator's device.".to_string()
 }
 
 async fn exec_run_command_in_background(state: Arc<AppState>, input: serde_json::Value) -> String {

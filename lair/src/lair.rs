@@ -39,6 +39,7 @@ use octo_core::{
     register_task, tasks_wire_json, TaskRecord, TaskStatus,
     relay as relay_client, RelaySigner,
     resolve_api_key, resolve_model, run_noise_proxy, run_command_in_background_tool, send_message,
+    send_notification_tool, NOTIFY_CATEGORY_AGENT_MESSAGE,
     spawn_background_command, to_base32, ApiMessage, AnthropicTool, BackgroundCommandParams, ChatEvent,
     ContentBlock, McpPool, DEV_PUBKEY_BASE32, DEV_STATIC_PRIVATE, DEV_STATIC_PUBLIC,
     KEEPALIVE_INTERVAL, KEEPALIVE_MAX_MISSED,
@@ -1379,6 +1380,7 @@ fn lair_extra_tools() -> Vec<AnthropicTool> {
         forget_agent_tool(),
         restart_all_agents_tool(),
         run_command_in_background_tool(),
+        send_notification_tool(),
     ]
 }
 
@@ -1398,6 +1400,7 @@ fn lair_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
                 "forget_agent"              => exec_forget_agent(state, input).await,
                 "restart_all_agents"        => exec_restart_all_agents(state).await,
                 "run_command_in_background" => exec_run_command_in_background(state, input).await,
+                "send_notification"         => exec_send_notification(state, input).await,
                 other => format!("unknown tool: {other}"),
             }
         })
@@ -1407,6 +1410,28 @@ fn lair_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
 async fn exec_list_agents(state: Arc<AppState>) -> String {
     let records = state.registry.lock().unwrap().list().to_vec();
     serde_json::to_string_pretty(&records).unwrap_or_else(|e| format!("error: {e}"))
+}
+
+/// `send_notification` tool — lair holds the relay signing key, so it signs
+/// and POSTs the push to the relay directly (the same path as
+/// `internal_notify_handler`, but awaited so the model gets a result back).
+async fn exec_send_notification(state: Arc<AppState>, input: serde_json::Value) -> String {
+    let title = input.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let body  = input.get("body").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if body.is_empty() {
+        return "error: 'body' is required".to_string();
+    }
+    if state.relay_url.is_empty() {
+        warn!("[lair/send_notification] no relay configured — push dropped");
+        return "Notification not sent: no relay is configured for this lair.".to_string();
+    }
+    let title_opt = (!title.is_empty()).then_some(title);
+    relay_client::notify(
+        &state.relay_url, &state.relay_signer,
+        NOTIFY_CATEGORY_AGENT_MESSAGE, title_opt, Some(body),
+    ).await;
+    info!("[lair/send_notification] dispatched push to relay");
+    "Notification dispatched to the operator's device.".to_string()
 }
 
 async fn exec_create_agent(state: Arc<AppState>, input: serde_json::Value) -> String {
