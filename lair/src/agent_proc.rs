@@ -16,12 +16,33 @@ use anyhow::{Context, Result};
 use tokio::process::{Child, Command};
 use tracing::{info, warn};
 
-/// Non-root uid/gid baked into the lair image as the `octo-agent` user
-/// (see `lair/Dockerfile`). Child agent processes drop to this uid before
-/// exec'ing, which prevents them from `kill 1`-ing lair, reading
-/// `/proc/1/environ`, or reading root-owned files under `/data`.
-const AGENT_UID: u32 = 10001;
-const AGENT_GID: u32 = 10001;
+/// Legacy non-root uid/gid baked into the lair image as the `octo-agent`
+/// user (see `lair/Dockerfile`). Used as a fallback when the supervisor
+/// can't allocate a per-agent uid slot from the 10100..10199 range — e.g.
+/// when the child's port falls outside the standard 30100..30199 range.
+const FALLBACK_AGENT_UID: u32 = 10001;
+const FALLBACK_AGENT_GID: u32 = 10001;
+
+/// Per-agent uid range. Maps 1:1 to the agent port range (30100..30199):
+/// port 30100 → uid 10100, ..., port 30199 → uid 10199. Each child runs as
+/// its own uid so siblings can't read each other's `OCTO_AGENT_TOKEN` via
+/// `/proc/<pid>/environ`.
+const PORT_RANGE_BASE: u16 = 30100;
+const PORT_RANGE_LEN:  u16 = 100;
+const UID_RANGE_BASE:  u32 = 10100;
+
+/// Resolve the (uid, gid) a child agent should run as, given its port.
+/// Falls back to `(FALLBACK_AGENT_UID, FALLBACK_AGENT_GID)` when the port
+/// is outside the standard range.
+fn uid_for_port(port: u16) -> (u32, u32) {
+    if port >= PORT_RANGE_BASE && port < PORT_RANGE_BASE + PORT_RANGE_LEN {
+        let offset = (port - PORT_RANGE_BASE) as u32;
+        let uid = UID_RANGE_BASE + offset;
+        (uid, uid)
+    } else {
+        (FALLBACK_AGENT_UID, FALLBACK_AGENT_GID)
+    }
+}
 
 /// Best-effort `chown(uid, gid)` — logs and continues on failure. Used
 /// when the spawning lair process is non-root (e.g. dev mode) and the
@@ -51,6 +72,16 @@ pub struct SpawnParams<'a> {
     pub model:             Option<&'a str>,
     pub gh_token:          Option<&'a str>,
     pub agent_purpose:     Option<&'a str>,
+    /// Capability token (random base64) the child uses to authenticate calls
+    /// back to lair's agent-scoped management endpoints (e.g. spawn a
+    /// grandchild, terminate one of its own descendants). Passed via
+    /// `OCTO_AGENT_TOKEN` env. `None` for operator-spawned agents that
+    /// don't get spawn/terminate capability (children of children get one
+    /// from the spawning flow).
+    pub agent_token:       Option<&'a str>,
+    /// URL the child should hit to reach lair's loopback management API
+    /// (e.g. `http://127.0.0.1:8000`). Passed via `LAIR_INTERNAL_URL`.
+    pub lair_internal_url: Option<&'a str>,
 }
 
 /// One running agent. We keep the `Child` handle so dropping the supervisor
@@ -106,20 +137,25 @@ impl AgentSupervisor {
         std::fs::create_dir_all(&agent_dir)
             .with_context(|| format!("create {}", agent_dir.display()))?;
 
+        // Per-agent uid baked into the image (see `lair/Dockerfile`). Each
+        // child runs as its own uid so siblings can't read each other's
+        // `OCTO_AGENT_TOKEN` from `/proc/<pid>/environ`.
+        let (uid, gid) = uid_for_port(p.port);
+
         // Drop the new dirs (and the existing log file) to the agent uid so
         // the child can write to them despite running non-root. Best-effort:
         // if the lair binary itself is running non-root (dev mode, weird
         // host setup) the chowns just fail with EPERM and we proceed —
         // children would already be running as the same uid in that case.
-        chown_best_effort(&agent_dir,     AGENT_UID, AGENT_GID);
-        chown_best_effort(&data_dir,      AGENT_UID, AGENT_GID);
-        chown_best_effort(&workspace_dir, AGENT_UID, AGENT_GID);
+        chown_best_effort(&agent_dir,     uid, gid);
+        chown_best_effort(&data_dir,      uid, gid);
+        chown_best_effort(&workspace_dir, uid, gid);
 
         let log_path = self.log_path(p.name);
         let log_file = std::fs::OpenOptions::new()
             .create(true).append(true).open(&log_path)
             .with_context(|| format!("open log file at {}", log_path.display()))?;
-        chown_best_effort(&log_path, AGENT_UID, AGENT_GID);
+        chown_best_effort(&log_path, uid, gid);
         let log_file2 = log_file.try_clone().context("clone log fd for stderr")?;
 
         let mut cmd = Command::new(&self.binary_path);
@@ -150,6 +186,8 @@ impl AgentSupervisor {
         if let Some(v) = p.openai_api_url    { cmd.env("OPENAI_API_URL",    v); }
         if let Some(v) = p.model             { cmd.env("MODEL",             v); }
         if let Some(v) = p.gh_token          { cmd.env("GH_TOKEN",          v); }
+        if let Some(v) = p.agent_token       { cmd.env("OCTO_AGENT_TOKEN",  v); }
+        if let Some(v) = p.lair_internal_url { cmd.env("LAIR_INTERNAL_URL", v); }
 
         // Never let the child inherit lair's management-API token or any
         // other lair-private knobs. With the uid drop below, `/proc/1/environ`
@@ -161,11 +199,12 @@ impl AgentSupervisor {
            .stderr(Stdio::from(log_file2))
            .kill_on_drop(false);
 
-        // Drop privileges to the non-root agent user baked into the image.
-        // This is the only thing that prevents a child from `kill 1`-ing
-        // lair (lair runs as root inside the container) or reading
-        // root-only files like `/proc/1/environ` and `/data/config.json`.
-        cmd.uid(AGENT_UID).gid(AGENT_GID);
+        // Drop privileges to the per-agent uid baked into the image.
+        // This prevents a child from `kill 1`-ing lair (lair runs as root
+        // inside the container), reading root-only files like
+        // `/proc/1/environ` and `/data/config.json`, and reading any
+        // sibling agent's `OCTO_AGENT_TOKEN` from its `/proc/<pid>/environ`.
+        cmd.uid(uid).gid(gid);
 
         let child = cmd.spawn()
             .with_context(|| format!("spawn agent process for {}", p.name))?;

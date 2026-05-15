@@ -79,14 +79,23 @@ RUN apt-get update && apt-get install -y ca-certificates curl git gpg && \
 
 COPY --from=builder /build/target/release/octo-lair /usr/local/bin/octo-lair
 
-# Dedicated non-root user for child agent processes. Lair (the parent) keeps
-# running as root inside the container so it can chown the bind-mounted
-# /data/agents/<name>/ dirs after creating them. Children are spawned with
-# `cmd.uid(10001)` in agent_proc.rs, which closes three vectors at once:
+# Dedicated non-root users for child agent processes. Lair (the parent)
+# keeps running as root inside the container so it can chown the bind-mounted
+# /data/agents/<name>/ dirs after creating them. Each agent gets its own uid
+# in the 10100..10199 range (one per available loopback port 30100..30199),
+# which closes four vectors at once:
 #   * `kill 1` against lair (different uid → EPERM)
 #   * reading `LAIR_MGMT_TOKEN` from `/proc/1/environ` (different uid → EACCES)
 #   * reading `/data/config.json` and `/data/lair/*` if those are 0600 root-owned
-RUN useradd -u 10001 -M -N -s /bin/bash octo-agent
+#   * sibling impersonation — agent A can't read agent B's `OCTO_AGENT_TOKEN`
+#     from `/proc/<B-pid>/environ` because uid checks deny cross-uid reads
+#
+# uid 10001 / user `octo-agent` is kept around as the legacy fallback for
+# the rare case where the supervisor can't assign a per-agent uid slot.
+RUN useradd -u 10001 -M -N -s /bin/bash octo-agent && \
+    for i in $(seq 0 99); do \
+        useradd -u $((10100 + i)) -M -N -s /bin/bash octo-agent-$i; \
+    done
 
 LABEL org.opencontainers.image.source=https://github.com/georgebradford0/octo
 LABEL org.opencontainers.image.description="octo-lair — merged lair/agent binary, runs as --role lair by default"

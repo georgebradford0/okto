@@ -88,6 +88,12 @@ pub struct AgentRecord {
     /// Opaque provider-specific blob (region, instance_type, image id, …).
     #[serde(default)]
     pub metadata:       serde_json::Value,
+    /// Name of the agent that spawned this one, if any. `None` when the
+    /// agent was created by the operator (CLI / lair's own LLM); `Some(_)`
+    /// when another agent spawned it via the agent-token-gated API. Used
+    /// to drive cascade-terminate and to enforce depth / descendant caps.
+    #[serde(default)]
+    pub parent:         Option<String>,
 }
 
 impl AgentRecord {
@@ -199,6 +205,56 @@ impl Registry {
         let used: std::collections::HashSet<u16> =
             self.agents.iter().map(|a| a.port).collect();
         range.into_iter().find(|p| !used.contains(p))
+    }
+
+    /// Depth of `name` in the parent chain: 0 for top-level (no parent), 1
+    /// for a direct child of a top-level agent, etc. Returns `None` if
+    /// `name` is not in the registry. Unknown / dangling parents short-circuit
+    /// to the depth where the chain breaks (treated as top-level above the
+    /// break) — they don't loop.
+    pub fn depth_of(&self, name: &str) -> Option<usize> {
+        let mut current = self.get(name)?.parent.clone();
+        let mut depth = 0usize;
+        // Hard cap on chain walks to prevent any accidental cycle.
+        for _ in 0..256 {
+            match current {
+                None => return Some(depth),
+                Some(p) => {
+                    depth += 1;
+                    current = self.get(&p).and_then(|r| r.parent.clone());
+                    if current.is_none() && self.get(&p).is_none() {
+                        // Parent name doesn't resolve — treat as top-level above the break.
+                        return Some(depth);
+                    }
+                }
+            }
+        }
+        Some(depth)
+    }
+
+    /// All direct children of `name` (one level below).
+    pub fn direct_children(&self, name: &str) -> Vec<String> {
+        self.agents.iter()
+            .filter(|a| a.parent.as_deref() == Some(name))
+            .map(|a| a.name.clone())
+            .collect()
+    }
+
+    /// Transitive descendants of `name`, ordered leaves-first (so callers
+    /// can terminate them in order without orphaning intermediate nodes).
+    /// Excludes `name` itself.
+    pub fn descendants_leaves_first(&self, name: &str) -> Vec<String> {
+        // BFS by level, then reverse so leaves come first.
+        let mut levels: Vec<Vec<String>> = Vec::new();
+        let mut frontier = self.direct_children(name);
+        while !frontier.is_empty() {
+            let next: Vec<String> = frontier.iter()
+                .flat_map(|n| self.direct_children(n))
+                .collect();
+            levels.push(frontier);
+            frontier = next;
+        }
+        levels.into_iter().rev().flatten().collect()
     }
 
     /// Write the registry to disk atomically (temp file + rename).

@@ -47,6 +47,7 @@ export interface AgentInfo {
   name:    string
   status:  string  // 'running' | 'stopped' | 'pending'
   kind:    string  // 'local' | 'remote'
+  parent?: string  // name of the spawning agent, if any (omitted for operator-spawned roots)
 }
 
 /** Mirrors octo_core::TaskRecord. */

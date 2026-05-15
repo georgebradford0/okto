@@ -6,6 +6,7 @@ use clap::{Parser, ValueEnum};
 
 mod agent;
 mod agent_proc;
+mod agent_tokens;
 mod bootstrap;
 mod lair;
 mod ssh;

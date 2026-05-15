@@ -388,7 +388,74 @@ async fn update_config_handler(Json(patch): Json<Config>) -> StatusCode {
 }
 
 fn make_extra_tools() -> Vec<AnthropicTool> {
-    vec![run_command_in_background_tool()]
+    let mut tools = vec![run_command_in_background_tool()];
+    if has_spawn_capability() {
+        tools.push(spawn_agent_tool());
+        tools.push(terminate_agent_tool());
+    }
+    tools
+}
+
+/// True when lair handed this child a capability token at spawn time. Only
+/// agent-spawned children get one; operator-spawned (top-level) children do
+/// not, and therefore can't see the `spawn_agent` / `terminate_agent` tools.
+fn has_spawn_capability() -> bool {
+    std::env::var("OCTO_AGENT_TOKEN").ok().filter(|s| !s.is_empty()).is_some()
+        && std::env::var("LAIR_INTERNAL_URL").ok().filter(|s| !s.is_empty()).is_some()
+}
+
+fn spawn_agent_tool() -> AnthropicTool {
+    AnthropicTool {
+        name: "spawn_agent".to_string(),
+        description: "Spawn a new octo child agent owned by this agent. The new agent runs as \
+                       a separate OS process inside the lair container with its own loopback \
+                       port and per-agent uid. You can terminate any agent you spawn (or any \
+                       transitive descendant) with `terminate_agent`. Operator caps may refuse \
+                       this call if you've reached the maximum spawn depth or descendant count."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "git_url": {
+                    "type": "string",
+                    "description": "Optional Git repository to clone into the new agent's workspace at spawn time."
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional logical name for the new child. Defaults to lair-<repo-slug> if git_url is set, else lair-workload."
+                },
+                "startup_script": {
+                    "type": "string",
+                    "description": "Optional shell script run inside the child before its HTTP server starts. Never include secrets."
+                },
+                "startup_prompt": {
+                    "type": "string",
+                    "description": "Optional first user message to the child's agentic loop once ready. Never include secrets."
+                }
+            },
+            "required": []
+        }),
+        display_label: Some("Spawning agent".into()),
+    }
+}
+
+fn terminate_agent_tool() -> AnthropicTool {
+    AnthropicTool {
+        name: "terminate_agent".to_string(),
+        description: "Permanently terminate an agent that this agent spawned (or any transitive \
+                       descendant). Kills the process, cascade-terminates everything beneath it, \
+                       and deletes the per-agent data + workspace directories. Refuses non-\
+                       descendant names. Irreversible."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "Name of the descendant agent to terminate." }
+            },
+            "required": ["name"]
+        }),
+        display_label: Some("Terminating agent".into()),
+    }
 }
 
 fn make_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_json::Value)
@@ -400,10 +467,77 @@ fn make_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
         Box::pin(async move {
             match name.as_str() {
                 "run_command_in_background" => exec_run_command_in_background(state, input).await,
+                "spawn_agent"               => exec_spawn_agent(input).await,
+                "terminate_agent"           => exec_terminate_agent(input).await,
                 other => format!("unknown tool: {other}"),
             }
         })
     }))
+}
+
+async fn exec_spawn_agent(input: serde_json::Value) -> String {
+    let Some(token) = std::env::var("OCTO_AGENT_TOKEN").ok().filter(|s| !s.is_empty()) else {
+        return "error: this agent has no spawn capability (no OCTO_AGENT_TOKEN in env).".to_string();
+    };
+    let Some(base)  = std::env::var("LAIR_INTERNAL_URL").ok().filter(|s| !s.is_empty()) else {
+        return "error: LAIR_INTERNAL_URL is unset; cannot reach lair management API.".to_string();
+    };
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
+        Ok(c)  => c,
+        Err(e) => return format!("error: build http client: {e}"),
+    };
+    let url = format!("{base}/agents/child");
+    let resp = match client.post(&url)
+        .header("X-Octo-Agent-Token", token)
+        .json(&input)
+        .send()
+        .await
+    {
+        Ok(r)  => r,
+        Err(e) => return format!("error: POST {url}: {e}"),
+    };
+    let status = resp.status();
+    let body   = resp.text().await.unwrap_or_default();
+    if status.is_success() { body } else { format!("error ({status}): {body}") }
+}
+
+async fn exec_terminate_agent(input: serde_json::Value) -> String {
+    let name = match input.get("name").and_then(|v| v.as_str()) {
+        Some(n) if !n.is_empty() => n.to_string(),
+        _ => return "error: missing 'name' field".to_string(),
+    };
+    let Some(token) = std::env::var("OCTO_AGENT_TOKEN").ok().filter(|s| !s.is_empty()) else {
+        return "error: this agent has no terminate capability (no OCTO_AGENT_TOKEN in env).".to_string();
+    };
+    let Some(base)  = std::env::var("LAIR_INTERNAL_URL").ok().filter(|s| !s.is_empty()) else {
+        return "error: LAIR_INTERNAL_URL is unset; cannot reach lair management API.".to_string();
+    };
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+    {
+        Ok(c)  => c,
+        Err(e) => return format!("error: build http client: {e}"),
+    };
+    let url = format!("{base}/agents/child/{name}");
+    let resp = match client.delete(&url)
+        .header("X-Octo-Agent-Token", token)
+        .send()
+        .await
+    {
+        Ok(r)  => r,
+        Err(e) => return format!("error: DELETE {url}: {e}"),
+    };
+    let status = resp.status();
+    let body   = resp.text().await.unwrap_or_default();
+    if status.is_success() {
+        format!("Terminated '{name}' and any descendants.")
+    } else {
+        format!("error ({status}): {body}")
+    }
 }
 
 async fn exec_run_command_in_background(state: Arc<AppState>, input: serde_json::Value) -> String {

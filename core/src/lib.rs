@@ -114,6 +114,24 @@ pub struct Config {
     // fine (the field is silently dropped by serde because Config does not
     // `deny_unknown_fields`) and the next `octo config set …` rewrites them
     // without it.
+    /// Max parent-chain length permitted when an agent spawns a child. A
+    /// top-level agent is depth 0; its direct children are depth 1; etc.
+    /// The cap applies to the *child being spawned*, so depth 3 means
+    /// "great-grandchildren are allowed; great-great-grandchildren are not."
+    /// `None` → default 3.
+    pub agent_spawn_max_depth:    Option<usize>,
+    /// Max number of transitive descendants any single agent is allowed to
+    /// have at once. Prevents fork-bomb-style runaway growth. `None` → default 5.
+    pub agent_spawn_max_descendants: Option<usize>,
+}
+
+/// Resolved spawn-cap pair (depth, descendants). Reads `Config`; supplies
+/// defaults if either field is absent.
+pub fn resolve_agent_spawn_caps(cfg: &Config) -> (usize, usize) {
+    (
+        cfg.agent_spawn_max_depth.unwrap_or(3),
+        cfg.agent_spawn_max_descendants.unwrap_or(5),
+    )
 }
 
 // ── API Backend ───────────────────────────────────────────────────────────────
@@ -1767,11 +1785,12 @@ pub fn build_system_prompt(repo_path: &str) -> String {
 
     let tool_guidance    = shared_tool_guidance();
     let bg_task_note      = background_task_note();
+    let spawn_note        = spawn_capability_note();
 
     format!(
         "You are an AI assistant helping manage the git repository at {repo_path}.\
          You can inspect code, answer questions, and help coordinate work across branches.\
-         Any path preceded by '@' (e.g. @src/main.rs) is a reference to a file path in the git repository.{claude_md}{tool_guidance}{bg_task_note}"
+         Any path preceded by '@' (e.g. @src/main.rs) is a reference to a file path in the git repository.{claude_md}{tool_guidance}{bg_task_note}{spawn_note}"
     )
 }
 
@@ -1790,13 +1809,34 @@ pub fn build_agent_system_prompt(workspace: &str) -> String {
     };
     let tool_guidance    = shared_tool_guidance();
     let bg_task_note      = background_task_note();
+    let spawn_note        = spawn_capability_note();
 
     format!(
         "You are an AI agent running in a containerized workspace at {workspace}.\
          You have bash, file-system, and (when configured) MCP-server tools available.\
          You are not bound to any specific git repository — treat the workspace as scratch \
-         space unless the user gives you something else to work on.{purpose_block}{tool_guidance}{bg_task_note}"
+         space unless the user gives you something else to work on.{purpose_block}{tool_guidance}{bg_task_note}{spawn_note}"
     )
+}
+
+/// Appended to the agent system prompt only when lair handed this child a
+/// capability token (i.e. it was itself spawned by another agent). Operator-
+/// spawned top-level agents don't see this section — they don't have the
+/// tools either.
+fn spawn_capability_note() -> String {
+    if std::env::var("OCTO_AGENT_TOKEN").ok().filter(|s| !s.is_empty()).is_none() {
+        return String::new();
+    }
+    "\n\n# Sub-agent orchestration\n\
+     You can spawn your own child agents with `spawn_agent` and terminate any \
+     agent you (transitively) spawned with `terminate_agent`. Children you \
+     spawn are owned by you: if you are terminated, lair cascade-terminates \
+     them too. There are operator-imposed caps on tree depth and total \
+     descendants — if a spawn is refused, accept the cap rather than \
+     retrying. Use sub-agents when a task genuinely benefits from isolated \
+     state (a separate repo clone, a long-running build) — not as a \
+     general parallelism mechanism."
+        .to_string()
 }
 
 // ── Git ───────────────────────────────────────────────────────────────────────

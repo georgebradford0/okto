@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-05-14
+
+### Added
+
+- **Agent-spawned-agent flow.** Children can now spawn their own children via two new tools (`spawn_agent`, `terminate_agent`), with ownership tracked on the `AgentRecord.parent` field. The mobile `agents` event surfaces `parent` so the sidebar can render the tree.
+- **Cascade terminate.** `terminate_agent` (operator or agent) now BFS-terminates every transitive descendant leaves-first, kills the supervisor handles, drops registry rows + agent tokens, and removes per-agent data/workspace dirs. Operators no longer have to walk the tree manually.
+- **Per-agent capability tokens.** When an agent spawns a child, lair mints a fresh random token, persists it at `/data/lair/agent-tokens.json` (0600 root-owned), and passes it to the child as `OCTO_AGENT_TOKEN`. The child uses it as `X-Octo-Agent-Token` against two new endpoints — `POST /agents/child` and `DELETE /agents/child/:name` — that are scoped: an agent can only spawn children of itself and only terminate agents it (transitively) spawned. Lair restarts adopt running children and re-issue their existing tokens.
+- **Spawn caps.** `config.json` now accepts `agent_spawn_max_depth` (default 3) and `agent_spawn_max_descendants` (default 5) to bound runaway agent-spawned-agent trees. Operator-spawned agents are unrestricted.
+
+### Security
+
+- **Per-agent uids 10100..10199**, baked into `lair/Dockerfile`. `agent_proc::spawn` now maps loopback port → uid (`port 30100 → uid 10100`, …) so each child runs as its own uid. This closes one extra vector on top of 0.10.0: sibling agents could previously read each other's env (and so each other's `OCTO_AGENT_TOKEN`) via `/proc/<pid>/environ` because they shared uid 10001. The legacy uid 10001 / user `octo-agent` is kept as a fallback for the rare case where a non-standard port falls outside 30100..30199.
+
+### Internal
+
+- New `lair/src/agent_tokens.rs` module: persistent capability-token store with atomic 0600 writes.
+- `core::Registry` grows `depth_of`, `direct_children`, and `descendants_leaves_first` helpers.
+- `core::resolve_agent_spawn_caps` returns the (depth, descendants) pair from `Config`.
+- `octo_core::AgentRecord` grows a `parent: Option<String>` field (`#[serde(default)]`, back-compat with existing `agents.json`).
+- New `SpawnParams.agent_token` / `SpawnParams.lair_internal_url` fields propagate the per-agent token + lair API URL into the child's env.
+
 ## [0.10.2] - 2026-05-14
 
 ### Fixed

@@ -1542,7 +1542,7 @@ dependencies = [
 
 [[package]]
 name = "octo-lair"
-version = "0.10.2"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1553,6 +1553,7 @@ dependencies = [
  "octo-core",
  "openssl",
  "qrcode",
+ "rand 0.8.6",
  "reqwest",
  "serde",
  "serde_json",

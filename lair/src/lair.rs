@@ -51,8 +51,9 @@ use serde::{Deserialize, Serialize};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::agent_proc::{AgentSupervisor, SpawnParams};
+use crate::agent_tokens::AgentTokens;
 use crate::ssh as ssh_ops;
-use octo_core::{AgentRecord, AgentStatus, Registry, status_from_alive};
+use octo_core::{AgentRecord, AgentStatus, Registry, resolve_agent_spawn_caps, status_from_alive};
 
 const RELAY_SIGNING_KEY_FILE: &str = "relay_signing_key.bin";
 const DEFAULT_RELAY_URL:      &str = "https://octorelay.directto.link";
@@ -70,6 +71,11 @@ struct AgentWire {
     /// `"local"` or `"remote"`. Surfaced so the mobile sidebar can label
     /// remote agents distinctly if it wants — purely advisory.
     kind:   &'static str,
+    /// Name of the agent that spawned this one, if any. Mobile uses this to
+    /// render the agent list as a tree (operator-spawned agents at the root,
+    /// agent-spawned children nested under their parent).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
 }
 
 // ── Session persistence ───────────────────────────────────────────────────────
@@ -118,6 +124,13 @@ struct AppState {
     /// management API is open (useful for ad-hoc `docker run` without
     /// the CLI).
     mgmt_token:    Option<String>,
+    /// Persistent capability tokens minted for agent-spawned-agent flows.
+    /// Lookup happens on every `X-Octo-Agent-Token` request to resolve the
+    /// caller's agent name.
+    agent_tokens:      Arc<Mutex<AgentTokens>>,
+    /// URL passed to children as `LAIR_INTERNAL_URL` so they can call
+    /// lair's management API for spawn/terminate.
+    lair_internal_url: String,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -143,6 +156,40 @@ async fn require_mgmt_token(
     if supplied != Some(expected) {
         return (StatusCode::FORBIDDEN, "missing or invalid X-Octo-Token").into_response();
     }
+    next.run(req).await
+}
+
+/// Caller identity attached to agent-token-gated requests. Threaded through
+/// as a request extension so handlers know which agent authenticated.
+#[derive(Clone)]
+struct AgentCaller {
+    name: String,
+}
+
+/// Capability-token middleware for the agent-spawned-agent endpoints. Looks
+/// up the supplied `X-Octo-Agent-Token` in the persisted store, resolves it
+/// to the calling agent's name, and attaches that name as a request
+/// extension so the handler can fill in `parent` and enforce descendant
+/// scoping. Unlike `require_mgmt_token`, this is always strict — there is no
+/// "open by default" mode.
+async fn require_agent_token(
+    State(state): State<Arc<AppState>>,
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let supplied = req.headers()
+        .get("x-octo-agent-token")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let Some(token) = supplied.filter(|s| !s.is_empty()) else {
+        return (StatusCode::FORBIDDEN, "missing X-Octo-Agent-Token").into_response();
+    };
+    let name = state.agent_tokens.lock().unwrap()
+        .name_for_token(&token).map(str::to_string);
+    let Some(name) = name else {
+        return (StatusCode::FORBIDDEN, "invalid X-Octo-Agent-Token").into_response();
+    };
+    req.extensions_mut().insert(AgentCaller { name });
     next.run(req).await
 }
 
@@ -476,6 +523,11 @@ async fn start_agent_by_name(state: &AppState, name: &str) -> Result<(), String>
     // git_url isn't stored in the registry — the workspace dir already holds
     // the clone (if any), and `bootstrap::ensure_workspace` detects it on
     // restart via the `.git` marker.
+    // If this agent already has a capability token (was originally spawned
+    // by another agent), re-issue it on restart so its descendants can still
+    // call back. Operator-spawned agents have no token row and stay that way.
+    let agent_token = state.agent_tokens.lock().unwrap().get(&record.name).map(str::to_string);
+    let lair_internal_url = state.lair_internal_url.clone();
     let params = SpawnParams {
         name:              &record.name,
         port:              record.port,
@@ -488,6 +540,8 @@ async fn start_agent_by_name(state: &AppState, name: &str) -> Result<(), String>
         model:             cfg.model.as_deref(),
         gh_token:          gh_token.as_deref(),
         agent_purpose:     None,
+        agent_token:       agent_token.as_deref(),
+        lair_internal_url: Some(&lair_internal_url),
     };
     let pid = state.supervisor.spawn(&params).await.map_err(|e| e.to_string())?;
     {
@@ -499,28 +553,61 @@ async fn start_agent_by_name(state: &AppState, name: &str) -> Result<(), String>
     Ok(())
 }
 
-/// Stop and remove a child agent: SIGTERM the process, drop the per-agent
-/// data/workspace dirs, and remove the registry row.
+/// Stop and remove a child agent and *every transitive descendant*: SIGTERM
+/// each process leaves-first, drop their per-agent data/workspace dirs, and
+/// remove their registry rows. Descendants are torn down even when the
+/// initial target is a remote agent (its local sub-agents — if any — would
+/// still live in this container).
 async fn terminate_agent_by_name(state: &AppState, name: &str) -> Result<(), String> {
-    let is_remote = {
+    // Snapshot the registry tree once; we don't want a race to spawn a new
+    // descendant mid-tear-down.
+    let (target, descendants) = {
         let reg = state.registry.lock().unwrap();
-        match reg.get(name) {
-            Some(r) => r.is_remote(),
-            None    => return Err(format!("agent '{name}' not found")),
-        }
+        let Some(target) = reg.get(name).cloned() else {
+            return Err(format!("agent '{name}' not found"));
+        };
+        let descendants = reg.descendants_leaves_first(name);
+        (target, descendants)
     };
-    if is_remote {
+
+    if target.is_remote() && descendants.is_empty() {
         return Err(format!(
             "'{name}' is a remote agent — terminate_agent only destroys local processes. \
              Use the provisioning MCP's terminate-instance method first, then call \
              forget_agent('{name}') to clean up the registry row."
         ));
     }
-    state.supervisor.terminate(name).await.map_err(|e| e.to_string())?;
+
+    // Tear down descendants first so we don't orphan any. Errors are logged
+    // and we keep going — partial cleanup beats no cleanup.
+    for desc in &descendants {
+        let is_remote = state.registry.lock().unwrap()
+            .get(desc).map(|r| r.is_remote()).unwrap_or(false);
+        if is_remote {
+            // Remote descendants: we can drop the registry row + token here,
+            // but the VM itself needs operator action via the cloud MCP.
+            warn!("[lair/terminate] '{desc}' is a remote descendant of '{name}'; dropping registry row only — operator must terminate the VM via the cloud MCP.");
+        } else if let Err(e) = state.supervisor.terminate(desc).await {
+            warn!("[lair/terminate] descendant '{desc}': {e}");
+        }
+        {
+            let mut reg = state.registry.lock().unwrap();
+            let _ = reg.remove(desc);
+        }
+        let _ = state.agent_tokens.lock().unwrap().remove(desc);
+    }
+
+    // Then the original target itself. Remote-with-descendants drops the row
+    // here too; the operator should clean up the VM separately.
+    if !target.is_remote() {
+        state.supervisor.terminate(name).await.map_err(|e| e.to_string())?;
+    }
     {
         let mut reg = state.registry.lock().unwrap();
         let _ = reg.remove(name);
     }
+    let _ = state.agent_tokens.lock().unwrap().remove(name);
+
     state.poll_trigger.notify_one();
     Ok(())
 }
@@ -558,6 +645,7 @@ async fn poll_agents(state: Arc<AppState>, ready_tx: watch::Sender<bool>) {
                     name:   record.name.clone(),
                     status: status.as_wire_str().to_string(),
                     kind,
+                    parent: record.parent.clone(),
                 });
             }
             out
@@ -843,7 +931,12 @@ octo can host any kind of agent workload, not only coding agents — don't assum
   - **Never put secrets in `startup_script` or `startup_prompt`** — provider credentials are forwarded via env automatically; you don't need to bake them in.
 - **`mint_bootstrap_userdata`** — args: `name`, `agent_purpose?`, `startup_script?`, `public_port?`, `lair_version?`, `image?`. Returns a cloud-init bash script for a **remote** agent. The userdata is **credentials-free** — it trusts lair's SSH key, installs Docker if absent, `docker pull`s the lair image, and writes a systemd unit that `docker run`s the image with `--role agent`. Hand the returned `userdata` to whichever provisioning MCP the user has configured (AWS, Hetzner, etc.). The MCP returns the new VM's IP → call `register_remote_agent`.
 - **`register_remote_agent`** — args: `name`, `host`, `provider?`, `instance_id?`, `git_url?`, `metadata?`. After the provisioning MCP returns the VM's IP, lair SSHes in and: (a) waits for the agent container to publish `/var/lib/octo/lair/agent-info.json` (the agent writes it inside the container; the host sees it via the bind mount), (b) drops `config.json` to `/var/lib/octo/config.json` with the API keys, (c) clones `git_url` into the workspace if given, (d) `systemctl restart`s the agent unit (which `docker run`s a fresh container, picking up the new config). Total timeout ~6 minutes. `name` must match what you passed to `mint_bootstrap_userdata`.
-- **`terminate_agent(name)`** — *destructive, local agents only.* Kills the process and deletes the per-agent data + workspace dirs. For remote agents, returns instructions to terminate the VM via the provisioning MCP first, then call `forget_agent`. Always run `list_agents` first to confirm the exact name; confirm with the user before calling unless the request was unambiguous.
+- **`terminate_agent(name)`** — *destructive.* Kills the named agent **and every transitive descendant** (leaves-first), then deletes their per-agent data + workspace dirs. Sub-agents spawned by other agents are torn down automatically with their parent. For remote agents, returns instructions to terminate the VM via the provisioning MCP first, then call `forget_agent`. Always run `list_agents` first to confirm the exact name; confirm with the user before calling unless the request was unambiguous.
+
+# Agent ownership
+- Agents can themselves spawn child agents via their own `spawn_agent` tool. Those children carry a `parent` field in the registry. `list_agents` surfaces it; mobile renders ownership as a tree.
+- Cascade-terminate is automatic: terminating a parent terminates everything beneath it. You don't need to walk the tree manually.
+- Caps on agent-spawned-agent flows are operator-controlled via `config.json` (`agent_spawn_max_depth`, `agent_spawn_max_descendants`). Operator-spawned agents are unrestricted.
 - **`forget_agent(name)`** — *registry-only.* Removes a remote agent's row without touching the VM. Use after the provisioning MCP has terminated the instance. Don't use on a live local agent — use `terminate_agent` instead.
 - **`restart_all_agents`** — restart every managed *local* agent. Use after upgrading the lair binary; no effect on remote agents.
 - **`run_command_in_background(command)`** — run a shell command in the background. The user is notified when it finishes. For long builds, big test suites, large downloads. Prefer the regular `bash` tool for anything fast. When it completes, the output is injected into this conversation autonomously — if no follow-up action is genuinely useful, reply with one short acknowledgement line rather than producing prose.
@@ -1118,6 +1211,22 @@ async fn exec_list_agents(state: Arc<AppState>) -> String {
 }
 
 async fn exec_create_agent(state: Arc<AppState>, input: serde_json::Value) -> String {
+    match exec_create_agent_for_parent(state, input, None).await {
+        Ok(msg) => msg,
+        Err(e)  => format!("error: {e}"),
+    }
+}
+
+/// Core create-agent logic shared by the lair-LLM tool, the CLI endpoint,
+/// and the agent-token-gated `POST /agents/child` endpoint. `parent` is the
+/// name of the agent that requested this spawn, or `None` for operator-level
+/// spawns. When `parent` is `Some`, a fresh capability token is minted for
+/// the new child so *it* can spawn grandchildren in turn.
+async fn exec_create_agent_for_parent(
+    state:  Arc<AppState>,
+    input:  serde_json::Value,
+    parent: Option<String>,
+) -> Result<String, String> {
     let git_url = input.get("git_url").and_then(|v| v.as_str()).map(str::to_string);
 
     let child_name = input.get("name").and_then(|v| v.as_str())
@@ -1133,7 +1242,7 @@ async fn exec_create_agent(state: Arc<AppState>, input: serde_json::Value) -> St
         });
 
     if state.registry.lock().unwrap().get(&child_name).is_some() {
-        return format!("error: agent '{child_name}' already exists");
+        return Err(format!("agent '{child_name}' already exists"));
     }
 
     let startup_script = input.get("startup_script").and_then(|v| v.as_str()).map(str::to_string);
@@ -1146,15 +1255,34 @@ async fn exec_create_agent(state: Arc<AppState>, input: serde_json::Value) -> St
         Some(p) => p as u16,
         None => match state.registry.lock().unwrap().assign_free_port(30100..=30199) {
             Some(p) => p,
-            None    => return "error: no free loopback ports in 30100–30199".to_string(),
+            None    => return Err("no free loopback ports in 30100–30199".to_string()),
         },
     };
 
-    info!("[lair/create_agent] creating {child_name} port={port} git={}", git_url.as_deref().unwrap_or("(none)"));
+    info!(
+        "[lair/create_agent] creating {child_name} port={port} parent={} git={}",
+        parent.as_deref().unwrap_or("(operator)"),
+        git_url.as_deref().unwrap_or("(none)"),
+    );
 
     let cfg = octo_core::read_config();
     let gh_token = std::env::var("GH_TOKEN").ok().filter(|s| !s.is_empty());
 
+    // Mint a capability token only when the new child has a parent (i.e.
+    // it was spawned by another agent). Operator-spawned children stay
+    // tokenless and cannot themselves spawn descendants. Persisting the
+    // token before spawn means a crash between spawn and persist would
+    // leave a child running without spawn capability — preferable to a
+    // child running with a token that was never written to disk.
+    let agent_token = if parent.is_some() {
+        Some(state.agent_tokens.lock().unwrap()
+            .ensure(&child_name, octo_core::now_secs())
+            .map_err(|e| format!("mint agent token for '{child_name}': {e:#}"))?)
+    } else {
+        None
+    };
+
+    let lair_internal_url = state.lair_internal_url.clone();
     let params = SpawnParams {
         name:              &child_name,
         port,
@@ -1167,6 +1295,8 @@ async fn exec_create_agent(state: Arc<AppState>, input: serde_json::Value) -> St
         model:             cfg.model.as_deref(),
         gh_token:          gh_token.as_deref(),
         agent_purpose:     None,
+        agent_token:       agent_token.as_deref(),
+        lair_internal_url: Some(&lair_internal_url),
     };
 
     match state.supervisor.spawn(&params).await {
@@ -1185,20 +1315,24 @@ async fn exec_create_agent(state: Arc<AppState>, input: serde_json::Value) -> St
                 instance_id:    None,
                 provider:       None,
                 metadata:       serde_json::Value::Null,
+                parent:         parent.clone(),
             };
             let add_result = state.registry.lock().unwrap().add(record);
             if let Err(e) = add_result {
                 error!("[lair/create_agent] registry add failed: {e:#}");
                 let _ = state.supervisor.stop(&child_name).await;
-                return format!("error registering '{child_name}': {e:#}");
+                let _ = state.agent_tokens.lock().unwrap().remove(&child_name);
+                return Err(format!("registering '{child_name}': {e:#}"));
             }
             info!("[lair/create_agent] created {child_name} pid={pid}");
             state.poll_trigger.notify_one();
-            format!("Created child '{child_name}' (pid {pid}) on loopback port {port}.")
+            Ok(format!("Created child '{child_name}' (pid {pid}) on loopback port {port}."))
         }
         Err(e) => {
             error!("[lair/create_agent] failed: {e:#}");
-            format!("error: {e:#}")
+            // Spawn failed — release the token slot we reserved upfront.
+            let _ = state.agent_tokens.lock().unwrap().remove(&child_name);
+            Err(format!("{e:#}"))
         }
     }
 }
@@ -1433,6 +1567,7 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
             instance_id:    instance_id.clone(),
             provider:       provider.clone(),
             metadata:       metadata.clone(),
+            parent:         None,
         };
         if let Err(e) = state.registry.lock().unwrap().set(pending) {
             return format!("error inserting pending registry row: {e:#}");
@@ -1517,6 +1652,7 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
         instance_id,
         provider,
         metadata,
+        parent:         None,
     };
     if let Err(e) = state.registry.lock().unwrap().set(record) {
         return format!("error finalising registry row for '{name}': {e:#}");
@@ -1789,6 +1925,101 @@ async fn cli_delete_agent(
     }
 }
 
+// ── Agent-token-gated routes (agent ↔ lair, for agent-spawned-agent flow) ────
+
+/// Body for `POST /agents/child`. Same shape as `CreateAgentBody` — the
+/// parent name comes from the X-Octo-Agent-Token middleware extension, not
+/// the body. We split it from `CreateAgentBody` so we can add per-flow
+/// fields later without affecting the operator endpoint.
+#[derive(Deserialize, Default)]
+struct CreateChildAgentBody {
+    name:           Option<String>,
+    git_url:        Option<String>,
+    port:           Option<u16>,
+    startup_script: Option<String>,
+    startup_prompt: Option<String>,
+}
+
+/// Spawn a new agent whose parent is the caller. The caller is identified by
+/// `X-Octo-Agent-Token` (handled by the `require_agent_token` middleware,
+/// which attaches an `AgentCaller` extension).
+async fn agent_create_child(
+    State(state):  State<Arc<AppState>>,
+    axum::Extension(caller): axum::Extension<AgentCaller>,
+    Json(body):    Json<CreateChildAgentBody>,
+) -> Response {
+    // Enforce spawn caps before doing any work.
+    let cfg = octo_core::read_config();
+    let (max_depth, max_descendants) = resolve_agent_spawn_caps(&cfg);
+    {
+        let reg = state.registry.lock().unwrap();
+        let caller_depth = reg.depth_of(&caller.name).unwrap_or(0);
+        // The *new* child sits one level below the caller.
+        if caller_depth + 1 > max_depth {
+            return (
+                StatusCode::FORBIDDEN,
+                format!(
+                    "agent spawn refused: would create depth {} (max {max_depth}). \
+                     Caller '{}' is already at depth {caller_depth}.",
+                    caller_depth + 1, caller.name,
+                ),
+            ).into_response();
+        }
+        let current_descendants = reg.descendants_leaves_first(&caller.name).len();
+        if current_descendants + 1 > max_descendants {
+            return (
+                StatusCode::FORBIDDEN,
+                format!(
+                    "agent spawn refused: '{}' already has {current_descendants} \
+                     transitive descendant(s) (max {max_descendants}).",
+                    caller.name,
+                ),
+            ).into_response();
+        }
+    }
+
+    let mut input = serde_json::Map::new();
+    if let Some(v) = body.name           { input.insert("name".into(),           serde_json::Value::String(v)); }
+    if let Some(v) = body.git_url        { input.insert("git_url".into(),        serde_json::Value::String(v)); }
+    if let Some(v) = body.port           { input.insert("port".into(),           serde_json::Value::Number(v.into())); }
+    if let Some(v) = body.startup_script { input.insert("startup_script".into(), serde_json::Value::String(v)); }
+    if let Some(v) = body.startup_prompt { input.insert("startup_prompt".into(), serde_json::Value::String(v)); }
+
+    match exec_create_agent_for_parent(state, serde_json::Value::Object(input), Some(caller.name.clone())).await {
+        Ok(msg) => (StatusCode::OK, msg).into_response(),
+        Err(e)  => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+/// Terminate one of the caller's descendants. The target must be in the
+/// caller's transitive descendant set (direct or grand-…); attempts to
+/// terminate the caller itself, a sibling, an unrelated agent, or lair are
+/// rejected. Cascade-terminates everything below the target as usual.
+async fn agent_delete_child(
+    AxumPath(name): AxumPath<String>,
+    State(state):   State<Arc<AppState>>,
+    axum::Extension(caller): axum::Extension<AgentCaller>,
+) -> Response {
+    let is_descendant = {
+        let reg = state.registry.lock().unwrap();
+        reg.descendants_leaves_first(&caller.name).iter().any(|n| n == &name)
+    };
+    if !is_descendant {
+        return (
+            StatusCode::FORBIDDEN,
+            format!(
+                "agent terminate refused: '{name}' is not a descendant of '{}'. \
+                 Agents may only terminate agents they (transitively) spawned.",
+                caller.name,
+            ),
+        ).into_response();
+    }
+    match terminate_agent_by_name(&state, &name).await {
+        Ok(_)  => (StatusCode::OK, "ok").into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
 async fn cli_agent_logs(
     AxumPath(name): AxumPath<String>,
     State(state):   State<Arc<AppState>>,
@@ -1945,6 +2176,15 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             warn!("[lair] LAIR_MGMT_TOKEN not set — management endpoints (POST /agents, /:name/start, /:name/stop, DELETE /:name) are OPEN to peer processes inside the container. Production deploys should always set this.");
         }
 
+        let agent_tokens = AgentTokens::load(dir.join("agent-tokens.json"))
+            .map_err(|e| anyhow::anyhow!("load agent-tokens: {e:#}"))?;
+        let agent_tokens = Arc::new(Mutex::new(agent_tokens));
+
+        // Loopback URL children use to reach lair's management API. Lair
+        // binds on 0.0.0.0:8000 inside the container, so 127.0.0.1:8000
+        // works for any peer process in the same container.
+        let lair_internal_url = format!("http://127.0.0.1:{http_port}");
+
         let state = Arc::new(AppState {
             messages:      Arc::new(Mutex::new(messages)),
             last_cost_usd: Mutex::new(None),
@@ -1969,6 +2209,8 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             relay_signer,
             relay_url:     relay_url_str,
             mgmt_token,
+            agent_tokens,
+            lair_internal_url,
         });
 
         tokio::spawn(poll_agents(state.clone(), ready_tx.clone()));
@@ -1990,7 +2232,8 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
         // Routes that mutate agent lifecycle — gated by `X-Octo-Token`. Peer
         // processes inside the container (i.e. child agents) don't get the
         // token in their env, so this is the wall that keeps children from
-        // spawning siblings or terminating each other / lair via HTTP.
+        // spawning siblings, terminating each other, or terminating lair
+        // via HTTP. Operator-level scope: can create any top-level agent.
         let protected = Router::new()
             .route("/agents",             post(cli_create_agent))
             .route("/agents/:name/start", post(cli_start_agent))
@@ -1999,6 +2242,18 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             .route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 require_mgmt_token,
+            ));
+
+        // Routes available to child agents via the per-agent capability
+        // token (`X-Octo-Agent-Token`). Strict scope: the caller can only
+        // spawn agents owned by itself, and can only terminate agents
+        // that descend from itself.
+        let agent_protected = Router::new()
+            .route("/agents/child",       post(agent_create_child))
+            .route("/agents/child/:name", delete(agent_delete_child))
+            .route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                require_agent_token,
             ));
 
         let app = Router::new()
@@ -2017,6 +2272,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             .route("/agents/:name/clear",      post(proxy_agent_clear))
             .route("/agents/:name/branches",   get(proxy_agent_branches))
             .merge(protected)
+            .merge(agent_protected)
             .with_state(state)
             .layer(cors);
 

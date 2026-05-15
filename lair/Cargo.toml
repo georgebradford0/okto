@@ -1,6 +1,6 @@
 [package]
 name        = "octo-lair"
-version     = "0.10.2"
+version     = "0.11.0"
 edition     = "2021"
 description = "octo merged HTTP/WebSocket server — runs either the lair (parent) or agent (child) role from a single binary"
 
@@ -28,3 +28,4 @@ tracing-subscriber  = { version = "0.3", features = ["env-filter", "fmt", "time"
 clap                = { version = "4.4",  features = ["derive"] }
 qrcode              = "0.14"
 libc                = "0.2"
+rand                = "0.8"
