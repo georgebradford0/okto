@@ -17,6 +17,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use tracing::{debug, error, info, warn};
 
 use crate::service;
 
@@ -66,6 +67,7 @@ fn write_mcp(agent: &str, configs: &[McpServerConfig]) -> Result<()> {
         std::fs::create_dir_all(parent).ok();
     }
     let json = serde_json::to_string_pretty(configs)?;
+    debug!("[mcp] writing {} ({} server(s)) for agent '{agent}'", path.display(), configs.len());
     crate::init::write_secret_file(&path, &json)
 }
 
@@ -237,8 +239,10 @@ fn command_in_lair_container(name: &str) -> Result<bool> {
     } else {
         format!("command -v {} >/dev/null 2>&1", shell_quote(name))
     };
+    debug!("[mcp] probing command availability inside lair container: {name}");
     let status = service::docker_exec_status(&["sh", "-c", &probe])
         .context("docker exec command-availability probe")?;
+    debug!("[mcp] command '{name}' available in container: {}", status.success());
     Ok(status.success())
 }
 
@@ -312,6 +316,7 @@ pub async fn add(
     let names = vec![name.to_string()];
     let baseline = read_log_snapshot(agent).len();
 
+    info!("[mcp] adding server '{name}' to agent '{agent}'");
     println!("→ writing config to '{agent}'");
     write_mcp(agent, &configs)?;
 
@@ -325,18 +330,34 @@ pub async fn add(
 
     let marker = results.get(name).cloned().unwrap_or(McpMarker::Timeout);
     if !marker.is_success() {
+        warn!("[mcp] server '{name}' did not connect; rolling back config for agent '{agent}'");
         configs.retain(|c| c.name != name);
         write_mcp(agent, &configs)?;
     }
 
     match marker {
-        McpMarker::Connected => println!("MCP server '{name}' connected successfully."),
-        McpMarker::NoTools   => println!("MCP server '{name}' connected but advertised no tools."),
-        McpMarker::SpawnFailed(r) => anyhow::bail!("MCP server '{name}' failed to spawn — {r}"),
-        McpMarker::InitFailed(r)  => anyhow::bail!("MCP server '{name}' process started but MCP handshake failed — {r}"),
-        McpMarker::Timeout        => anyhow::bail!(
-            "MCP server '{name}' did not confirm connection within timeout — entry not saved. Run `octo logs {agent}` to investigate."
-        ),
+        McpMarker::Connected => {
+            info!("[mcp] server '{name}' connected on agent '{agent}'");
+            println!("MCP server '{name}' connected successfully.");
+        }
+        McpMarker::NoTools => {
+            info!("[mcp] server '{name}' connected (no tools) on agent '{agent}'");
+            println!("MCP server '{name}' connected but advertised no tools.");
+        }
+        McpMarker::SpawnFailed(r) => {
+            error!("[mcp] server '{name}' failed to spawn: {r}");
+            anyhow::bail!("MCP server '{name}' failed to spawn — {r}");
+        }
+        McpMarker::InitFailed(r) => {
+            error!("[mcp] server '{name}' MCP handshake failed: {r}");
+            anyhow::bail!("MCP server '{name}' process started but MCP handshake failed — {r}");
+        }
+        McpMarker::Timeout => {
+            error!("[mcp] server '{name}' did not confirm connection within timeout");
+            anyhow::bail!(
+                "MCP server '{name}' did not confirm connection within timeout — entry not saved. Run `octo logs {agent}` to investigate."
+            );
+        }
     }
     Ok(())
 }
@@ -419,6 +440,7 @@ pub async fn import_from_file(agent: &str, path: &Path) -> Result<()> {
     let names: Vec<String> = resolved.iter().map(|e| e.name.clone()).collect();
     let baseline = read_log_snapshot(agent).len();
 
+    info!("[mcp] importing {} server(s) into agent '{agent}' from {}", resolved.len(), path.display());
     println!("Importing {} MCP server(s) into '{agent}' (replacing existing config)...", resolved.len());
     write_mcp(agent, &resolved)?;
 
@@ -437,14 +459,17 @@ pub async fn import_from_file(agent: &str, path: &Path) -> Result<()> {
     failures.sort();
 
     if failures.is_empty() {
+        info!("[mcp] import into agent '{agent}' succeeded ({} server(s))", names.len());
         println!("Imported successfully:");
         print!("{}", format_marker_report(&results, &names));
         return Ok(());
     }
 
     // Rollback: restore the previous mcp.json (or delete if there was none).
+    error!("[mcp] import into agent '{agent}' failed for {} server(s): {}", failures.len(), failures.join(", "));
     eprintln!("\nMCP startup failures detected:");
     eprint!("{}", format_marker_report(&results, &names));
+    warn!("[mcp] rolling back: restoring previous {}", mcp_path(agent).display());
     eprintln!("\nRolling back: restoring previous '{}'.", mcp_path(agent).display());
     match previous {
         Some(text) => crate::init::write_secret_file(&mcp_path(agent), &text)?,
@@ -465,6 +490,7 @@ pub async fn remove(agent: &str, name: &str) -> Result<()> {
         anyhow::bail!("MCP server '{name}' not found in '{agent}'");
     }
     write_mcp(agent, &configs)?;
+    info!("[mcp] removed server '{name}' from agent '{agent}'");
     println!("Removed MCP server '{name}' from '{agent}'.");
     Ok(())
 }

@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader as TokioBufReader};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 
 /// How often to mirror the running command's output tail into the registry.
 /// Cheap (in-memory only) so 1 s is fine.
@@ -249,16 +249,19 @@ pub fn register_task(
     record:   TaskRecord,
     cancel:   CancellationToken,
 ) {
+    let task_id = record.task_id.clone();
     let snapshot = {
         let mut ss = state.lock().unwrap();
         ss.task_cancellers.insert(record.task_id.clone(), cancel);
         ss.tasks.push(record);
         if ss.tasks.len() > MAX_TASKS_RETAINED {
             let drop = ss.tasks.len() - MAX_TASKS_RETAINED;
+            debug!("[background] task registry over cap, evicting {drop} oldest");
             ss.tasks.drain(0..drop);
         }
         ss.tasks.clone()
     };
+    debug!("[background] registered task {task_id} ({} in registry)", snapshot.len());
     crate::app::save_tasks(data_dir, &snapshot, "tasks");
 }
 
@@ -281,9 +284,12 @@ pub fn finalize_task(
             t.completed_at = Some(now_secs());
             t.summary  = Some(tail_chars(&outcome.summary, MAX_TASK_SUMMARY));
             t.cost_usd = Some(outcome.cost_usd);
+        } else {
+            debug!("[background] finalize: task {} fell out of retention window", outcome.task_id);
         }
         ss.tasks.clone()
     };
+    debug!("[background] finalized task {} status={}", outcome.task_id, outcome.status);
     crate::app::save_tasks(data_dir, &snapshot, "tasks");
 }
 
@@ -305,9 +311,11 @@ pub fn record_task_progress(state: &Mutex<StreamState>, task_id: &str, output_ta
 pub fn cancel_task(state: &Mutex<StreamState>, task_id: &str) -> bool {
     let token = state.lock().unwrap().task_cancellers.get(task_id).cloned();
     if let Some(token) = token {
+        debug!("[background] cancelling task {task_id}");
         token.cancel();
         true
     } else {
+        warn!("[background] cancel requested for unknown/finished task {task_id}");
         false
     }
 }

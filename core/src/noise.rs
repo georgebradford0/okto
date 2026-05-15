@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Soft cap for an individual encrypted frame. The wire format uses a u16 length
 /// prefix (max 65535), but in practice our payloads are well under this — capping
@@ -240,7 +240,11 @@ pub async fn handle_noise_connection(
     }
     let transport = Arc::new(Mutex::new(transport));
     debug!("[noise] connecting to local HTTP port {http_port} for peer={peer:?}");
-    let local = tokio::net::TcpStream::connect(format!("127.0.0.1:{http_port}")).await?;
+    let local = tokio::net::TcpStream::connect(format!("127.0.0.1:{http_port}")).await
+        .map_err(|e| {
+            error!("[noise] failed to connect to local HTTP port {http_port}: {e}");
+            e
+        })?;
     let (mut raw_read, mut raw_write) = stream.into_split();
     let (mut local_read, mut local_write) = local.into_split();
     let transport_enc = transport.clone();
@@ -256,8 +260,9 @@ pub async fn handle_noise_connection(
             if n == 0 { break; }
             let enc_n = match transport_enc.lock().unwrap().write_message(&plain[..n], &mut enc) {
                 Ok(n)  => n,
-                Err(_) => break,
+                Err(e) => { warn!("[noise] proxy encrypt error: {e}"); break; }
             };
+            trace!("[noise] proxy out {n}B plain -> {enc_n}B enc");
             let len = (enc_n as u16).to_be_bytes();
             if raw_write.write_all(&len).await.is_err()          { break; }
             if raw_write.write_all(&enc[..enc_n]).await.is_err() { break; }
@@ -287,8 +292,9 @@ pub async fn handle_noise_connection(
             }
             let dec_n = match transport_dec.lock().unwrap().read_message(&enc[..len], &mut dec) {
                 Ok(n)  => n,
-                Err(_) => break,
+                Err(e) => { warn!("[noise] proxy decrypt error: {e}"); break; }
             };
+            trace!("[noise] proxy in {len}B enc -> {dec_n}B plain");
             if local_write.write_all(&dec[..dec_n]).await.is_err() { break; }
         }
     });

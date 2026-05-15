@@ -12,6 +12,7 @@ use std::{
 use anyhow::{Context, Result};
 use rand::rngs::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
+use tracing::{debug, info};
 
 /// File name of the Ed25519 private key inside the data directory.
 pub const SSH_PRIVATE_KEY_FILE: &str = "ssh_id_ed25519";
@@ -26,9 +27,11 @@ pub fn ensure_ssh_keypair(dir: &Path) -> Result<(PathBuf, PathBuf)> {
     let pub_path  = dir.join(SSH_PUBLIC_KEY_FILE);
 
     if priv_path.exists() && pub_path.exists() {
+        debug!("[ssh] reusing existing keypair at {}", priv_path.display());
         return Ok((priv_path, pub_path));
     }
 
+    info!("[ssh] generating new Ed25519 keypair in {}", dir.display());
     fs::create_dir_all(dir)
         .with_context(|| format!("create ssh key dir {}", dir.display()))?;
 
@@ -54,5 +57,6 @@ pub fn ensure_ssh_keypair(dir: &Path) -> Result<(PathBuf, PathBuf)> {
             .with_context(|| format!("chmod 0600 {}", priv_path.display()))?;
     }
 
+    info!("[ssh] wrote keypair: {} (0600) + {}", priv_path.display(), pub_path.display());
     Ok((priv_path, pub_path))
 }

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use octo_core::Registry;
+use tracing::{debug, error, info};
 
 use crate::service;
 
@@ -64,26 +65,34 @@ fn mgmt_request(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
 
 pub async fn start(name: &str) -> Result<()> {
     let url = format!("{}/agents/{}/start", service::lair_http_url(), name);
+    debug!("[agents] POST {url}");
     let resp = mgmt_request(http_client().post(&url)).send().await
         .with_context(|| format!("POST {url}"))?;
+    debug!("[agents] POST {url} -> {}", resp.status());
     if !resp.status().is_success() {
         let status = resp.status();
         let body   = resp.text().await.unwrap_or_default();
+        error!("[agents] start '{name}' failed: lair returned {status}: {body}");
         anyhow::bail!("lair returned {status}: {body}");
     }
+    info!("[agents] agent '{name}' started");
     println!("Started '{name}'.");
     Ok(())
 }
 
 pub async fn stop(name: &str) -> Result<()> {
     let url = format!("{}/agents/{}/stop", service::lair_http_url(), name);
+    debug!("[agents] POST {url}");
     let resp = mgmt_request(http_client().post(&url)).send().await
         .with_context(|| format!("POST {url}"))?;
+    debug!("[agents] POST {url} -> {}", resp.status());
     if !resp.status().is_success() {
         let status = resp.status();
         let body   = resp.text().await.unwrap_or_default();
+        error!("[agents] stop '{name}' failed: lair returned {status}: {body}");
         anyhow::bail!("lair returned {status}: {body}");
     }
+    info!("[agents] agent '{name}' stopped");
     println!("Stopped '{name}'.");
     Ok(())
 }
@@ -102,13 +111,17 @@ pub async fn delete(name: &str, yes: bool) -> Result<()> {
         }
     }
     let url = format!("{}/agents/{}", service::lair_http_url(), name);
+    debug!("[agents] DELETE {url}");
     let resp = mgmt_request(http_client().delete(&url)).send().await
         .with_context(|| format!("DELETE {url}"))?;
+    debug!("[agents] DELETE {url} -> {}", resp.status());
     if !resp.status().is_success() {
         let status = resp.status();
         let body   = resp.text().await.unwrap_or_default();
+        error!("[agents] delete '{name}' failed: lair returned {status}: {body}");
         anyhow::bail!("lair returned {status}: {body}");
     }
+    info!("[agents] agent '{name}' deleted");
     println!("Deleted '{name}'.");
     Ok(())
 }

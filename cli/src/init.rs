@@ -8,6 +8,7 @@ use std::{
 use anyhow::{Context, Result};
 use data_encoding::BASE32_NOPAD;
 use octo_core::ensure_ssh_keypair;
+use tracing::{debug, error, info, warn};
 
 use crate::service;
 
@@ -91,24 +92,31 @@ pub fn load_seed_mcp_config(path: &Path) -> Result<String> {
 }
 
 pub async fn run(opts: InitOptions<'_>) -> Result<()> {
+    info!("[init] run starting");
     service::ensure_docker_present()?;
 
     let cfg_dir    = service::config_dir();
     let lair_dir   = service::lair_data_dir();
     let agents_dir = service::agents_dir();
+    debug!("[init] creating directory {}", lair_dir.display());
     fs::create_dir_all(&lair_dir)
         .with_context(|| format!("create {}", lair_dir.display()))?;
+    debug!("[init] creating directory {}", agents_dir.display());
     fs::create_dir_all(&agents_dir)
         .with_context(|| format!("create {}", agents_dir.display()))?;
 
     // SSH keypair for ops backchannels.
     match ensure_ssh_keypair(&lair_dir) {
         Ok((priv_path, pub_path)) => {
+            debug!("[init] SSH keypair ready at {}", priv_path.display());
             println!("SSH keypair ready:");
             println!("  private: {}", priv_path.display());
             println!("  public:  {}", pub_path.display());
         }
-        Err(e) => eprintln!("warning: could not ensure SSH keypair: {e:#}"),
+        Err(e) => {
+            warn!("[init] could not ensure SSH keypair: {e:#}");
+            eprintln!("warning: could not ensure SSH keypair: {e:#}");
+        }
     }
 
     println!("Operator config: {}.", octo_core::config_path().display());
@@ -124,6 +132,10 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
     if let Some(seed) = opts.mcp_seed {
         seed_server_names = crate::mcp::server_names_from_json(&seed.json)?;
         seed_source_display = Some(seed.source.display().to_string());
+        debug!(
+            "[init] seeding {} into {} ({} server(s))",
+            seed.source.display(), mcp_dest.display(), seed_server_names.len(),
+        );
         write_secret_file(&mcp_dest, &seed.json)?;
         println!("Seeded MCP config from {} -> {}", seed.source.display(), mcp_dest.display());
     }
@@ -148,9 +160,11 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
         }
     }
     write_secret_file(&env_path, &serialize_env_file(&entries))?;
+    debug!("[init] wrote env file {} ({} entries)", env_path.display(), entries.len());
     println!("Wrote env file: {} ({} entries)", env_path.display(), entries.len());
 
     let image = service::resolve_image(opts.image);
+    info!("[init] pulling lair image {image}");
     println!("Pulling lair image: {image}");
     service::docker_pull(&image)?;
 
@@ -173,6 +187,7 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
 
     println!("Waiting for lair to be ready...");
     service::wait_for_health(opts.http_port, std::time::Duration::from_secs(60)).await?;
+    info!("[init] lair is healthy on http port {}", opts.http_port);
 
     // If we seeded an mcp.json, verify every server actually connected
     // inside lair before declaring init successful. `init_mcp_pool` is
@@ -192,6 +207,7 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
             .cloned()
             .collect();
         if !failures.is_empty() {
+            error!("[init] {} MCP server(s) failed to start: {}", failures.len(), failures.join(", "));
             eprintln!("\nMCP startup failures detected during init:");
             eprint!("{}", crate::mcp::format_marker_report(&results, &seed_server_names));
 
@@ -200,22 +216,26 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
             // the operator had before (or delete it if there was nothing
             // before). Image is left in the local cache — pulls are cheap
             // on re-run and the operator may just need to fix mcp.json.
+            warn!("[init] rolling back init due to MCP startup failures");
             eprintln!("\nRolling back init:");
             eprintln!("  - stopping lair container '{}'", service::LAIR_CONTAINER_NAME);
             service::stop_lair_if_running();
 
             let launch_path = service::launch_config_path();
             if launch_path.exists() {
+                debug!("[init] rollback: removing launch record {}", launch_path.display());
                 eprintln!("  - removing {}", launch_path.display());
                 let _ = fs::remove_file(&launch_path);
             }
 
             match prior_mcp {
                 Some(text) => {
+                    debug!("[init] rollback: restoring previous {}", mcp_dest.display());
                     eprintln!("  - restoring previous {}", mcp_dest.display());
                     write_secret_file(&mcp_dest, &text)?;
                 }
                 None => {
+                    debug!("[init] rollback: removing seeded {}", mcp_dest.display());
                     eprintln!("  - removing seeded {}", mcp_dest.display());
                     let _ = fs::remove_file(&mcp_dest);
                 }
@@ -236,8 +256,12 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
     }
 
     let ip = match service::detect_public_ip().await {
-        Ok(ip) => ip,
+        Ok(ip) => {
+            debug!("[init] detected public IP {ip}");
+            ip
+        }
         Err(e) => {
+            warn!("[init] could not detect public IP ({e:#}); falling back to 127.0.0.1");
             eprintln!("warning: could not detect public IP ({e:#}). Falling back to 127.0.0.1.");
             "127.0.0.1".to_string()
         }
@@ -254,21 +278,28 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
         .build();
     println!("{image}");
 
+    info!("[init] run complete; lair live at {ip}:{}", opts.noise_port);
     Ok(())
 }
 
 fn ensure_noise_keypair(path: &Path) -> Result<String> {
     if let Ok(bytes) = fs::read(path) {
         if bytes.len() == 64 {
+            warn!("[init] reusing existing Noise keypair at {}", path.display());
             println!("Reusing existing Noise keypair at {}.", path.display());
             return Ok(BASE32_NOPAD.encode(&bytes[32..]));
         }
+        warn!(
+            "[init] {} is {} bytes (expected 64); regenerating Noise keypair",
+            path.display(), bytes.len(),
+        );
         eprintln!(
             "warning: {} is {} bytes (expected 64) — regenerating Noise keypair.",
             path.display(),
             bytes.len(),
         );
     }
+    debug!("[init] generating new Noise_XX_25519 keypair");
     println!("Generating Noise_XX_25519 keypair...");
     let builder = snow::Builder::new(
         "Noise_XX_25519_ChaChaPoly_SHA256".parse().context("parse noise params")?,
@@ -288,6 +319,7 @@ fn ensure_noise_keypair(path: &Path) -> Result<String> {
         perms.set_mode(0o600);
         fs::set_permissions(path, perms).ok();
     }
+    debug!("[init] wrote Noise keypair (64 bytes, chmod 0600) to {}", path.display());
     println!("Wrote Noise keypair to {}.", path.display());
     Ok(BASE32_NOPAD.encode(&kp.public))
 }
@@ -346,10 +378,14 @@ pub fn serialize_env_file(entries: &[(String, String)]) -> String {
 /// Stop + respawn the lair container with the persisted launch record. Used
 /// by `octo reload` and `octo env set/unset`.
 pub async fn restart_lair(reason: &str) -> Result<()> {
-    let rec = service::read_launch().ok_or_else(|| anyhow::anyhow!(
-        "~/.octo/lair-launch.json is missing. Re-run `octo init` once to record \
-         launch parameters; subsequent `{reason}` calls won't need flags."
-    ))?;
+    info!("[init] restarting lair (reason: {reason})");
+    let rec = service::read_launch().ok_or_else(|| {
+        error!("[init] cannot restart lair: ~/.octo/lair-launch.json is missing");
+        anyhow::anyhow!(
+            "~/.octo/lair-launch.json is missing. Re-run `octo init` once to record \
+             launch parameters; subsequent `{reason}` calls won't need flags."
+        )
+    })?;
     let cfg_dir = service::config_dir();
     let env_path = service::env_file_path();
     let image = service::resolve_image(rec.image.as_deref());
@@ -364,11 +400,13 @@ pub async fn restart_lair(reason: &str) -> Result<()> {
     service::start_lair(&launch)?;
     println!("Waiting for lair to be ready...");
     service::wait_for_health(rec.http_port, std::time::Duration::from_secs(60)).await?;
+    info!("[init] lair restart complete (reason: {reason})");
     println!("lair ready.");
     Ok(())
 }
 
 pub fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
+    debug!("[init] writing secret file {} (chmod 0600, {} bytes)", path.display(), contents.len());
     fs::write(path, contents)
         .with_context(|| format!("write {}", path.display()))?;
     #[cfg(unix)]

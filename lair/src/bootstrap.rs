@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::time::Duration;
 use tokio::process::Command;
-use tracing::{info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Resolve the host that the QR code advertises to mobile clients.
 ///
@@ -22,6 +22,7 @@ use tracing::{info, warn};
 pub async fn resolve_public_host(role_log_prefix: &str) -> Result<String> {
     if let Ok(host) = std::env::var("PUBLIC_HOST") {
         if !host.is_empty() {
+            info!("[{role_log_prefix}] PUBLIC_HOST override: {host}");
             return Ok(host);
         }
     }
@@ -29,6 +30,7 @@ pub async fn resolve_public_host(role_log_prefix: &str) -> Result<String> {
         info!("[{role_log_prefix}] DEV mode: using PUBLIC_HOST=127.0.0.1");
         return Ok("127.0.0.1".to_string());
     }
+    debug!("[{role_log_prefix}] auto-detecting public IP via api.ipify.org");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -53,10 +55,11 @@ pub async fn resolve_public_host(role_log_prefix: &str) -> Result<String> {
 pub async fn run_startup_script(role_log_prefix: &str) -> Result<()> {
     let Ok(script) = std::env::var("STARTUP_SCRIPT") else { return Ok(()); };
     if script.is_empty() { return Ok(()); }
-    info!("[{role_log_prefix}] running STARTUP_SCRIPT...");
+    info!("[{role_log_prefix}] running STARTUP_SCRIPT ({} chars)...", script.len());
     let status = Command::new("bash").arg("-c").arg(&script).status().await
         .context("spawn STARTUP_SCRIPT bash")?;
     if !status.success() {
+        error!("[{role_log_prefix}] STARTUP_SCRIPT exited with {status}");
         anyhow::bail!("STARTUP_SCRIPT exited with {status}");
     }
     info!("[{role_log_prefix}] STARTUP_SCRIPT complete");
@@ -85,6 +88,7 @@ pub async fn ensure_workspace(
     std::fs::create_dir_all(workspace)
         .with_context(|| format!("create workspace {}", workspace.display()))?;
 
+    debug!("[bootstrap] ensure_workspace at {} (git_url={})", workspace.display(), git_url.unwrap_or("(none)"));
     let Some(url) = git_url.map(str::trim).filter(|s| !s.is_empty()) else {
         // No GIT_URL — but the workspace may have been populated by lair
         // out-of-band (remote-agent flow: lair clones via SSH after the
@@ -154,6 +158,7 @@ async fn run_git(args: &[&str]) -> Result<()> {
     let status = Command::new("git").args(args).status().await
         .with_context(|| format!("spawn `git {}`", args.join(" ")))?;
     if !status.success() {
+        error!("[bootstrap] `git {}` exited with {status}", args.join(" "));
         anyhow::bail!("`git {}` exited with {status}", args.join(" "));
     }
     Ok(())

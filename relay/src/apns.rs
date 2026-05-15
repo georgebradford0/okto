@@ -10,6 +10,7 @@ use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::Client as HttpClient;
 use serde::Serialize;
 use std::{path::Path, sync::Mutex, time::{Duration, Instant}};
+use tracing::{debug, error, info, warn};
 
 const APNS_PROD: &str = "https://api.push.apple.com";
 const APNS_SANDBOX: &str = "https://api.sandbox.push.apple.com";
@@ -55,6 +56,8 @@ impl Client {
             .pool_idle_timeout(Duration::from_secs(60 * 30))
             .build()
             .context("build HTTP/2 client")?;
+        info!("[apns] client initialized; gateway={} key_id={}",
+            if production { APNS_PROD } else { APNS_SANDBOX }, key_id);
         Ok(Self {
             http,
             base_url: if production { APNS_PROD } else { APNS_SANDBOX },
@@ -69,6 +72,7 @@ impl Client {
         let mut cached = self.cached.lock().unwrap();
         if let Some((tok, minted)) = cached.as_ref() {
             if minted.elapsed() < TOKEN_TTL {
+                debug!("[apns] JWT cache hit; age={}s", minted.elapsed().as_secs());
                 return Ok(tok.clone());
             }
         }
@@ -81,17 +85,23 @@ impl Client {
         let claims = JwtClaims { iss: &self.team_id, iat: now };
         let tok = encode(&header, &claims, &self.enc_key).context("sign APNs JWT")?;
         *cached = Some((tok.clone(), Instant::now()));
+        info!("[apns] minted new ES256 JWT; key_id={} iat={}", self.key_id, now);
         Ok(tok)
     }
 
     /// Send an alert push. `payload` should be a complete APNs payload object
     /// (i.e. include the `aps` key); the relay just wraps in HTTP/2 + auth.
     pub async fn push(&self, device_token: &str, bundle_id: &str, payload: &serde_json::Value) -> PushOutcome {
+        let tok_tail = tail4(device_token);
         let jwt = match self.jwt() {
             Ok(j) => j,
-            Err(e) => return PushOutcome::Failed(format!("jwt: {e}")),
+            Err(e) => {
+                error!("[apns] JWT mint failed for token=…{tok_tail}: {e:#}");
+                return PushOutcome::Failed(format!("jwt: {e}"));
+            }
         };
         let url = format!("{}/3/device/{device_token}", self.base_url);
+        debug!("[apns] POST /3/device for token=…{tok_tail} topic={bundle_id}");
         let res = self.http
             .post(&url)
             .header("authorization", format!("bearer {jwt}"))
@@ -103,20 +113,38 @@ impl Client {
         match res {
             Ok(r) => {
                 let status = r.status();
+                let apns_id = r.headers()
+                    .get("apns-id")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("-")
+                    .to_string();
                 if status.is_success() {
+                    debug!("[apns] delivered token=…{tok_tail} status={status} apns-id={apns_id}");
                     PushOutcome::Delivered
                 } else if status == 410 {
+                    warn!("[apns] token rejected (410 Unregistered) token=…{tok_tail} apns-id={apns_id}");
                     PushOutcome::InvalidToken
                 } else {
                     let body = r.text().await.unwrap_or_default();
                     if status == 400 && body.contains("BadDeviceToken") {
+                        warn!("[apns] token rejected (400 BadDeviceToken) token=…{tok_tail} apns-id={apns_id}");
                         PushOutcome::InvalidToken
                     } else {
+                        error!("[apns] push failed token=…{tok_tail} status={status} apns-id={apns_id}: {body}");
                         PushOutcome::Failed(format!("APNs {status}: {body}"))
                     }
                 }
             }
-            Err(e) => PushOutcome::Failed(e.to_string()),
+            Err(e) => {
+                error!("[apns] HTTP request error for token=…{tok_tail}: {e}");
+                PushOutcome::Failed(e.to_string())
+            }
         }
     }
+}
+
+/// Last 4 chars of a device token, for log correlation without exposing the
+/// full token (PII / push-target secret).
+fn tail4(s: &str) -> &str {
+    if s.len() <= 4 { s } else { &s[s.len() - 4..] }
 }

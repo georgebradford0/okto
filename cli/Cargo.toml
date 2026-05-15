@@ -22,6 +22,7 @@ qrcode            = "0.14"
 reqwest           = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 futures-util      = "0.3"
 tracing           = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # Vendor openssl-sys so the aarch64 cross-compile in cli.yml doesn't try to
 # pkg-config a host OpenSSL it can't find. octo-core's git2 dep transitively
 # pulls in openssl-sys; this forces the entire dep tree to use an in-tree

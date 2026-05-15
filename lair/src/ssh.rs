@@ -17,7 +17,7 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
-use tracing::{debug, warn};
+use tracing::{debug, error, info, warn};
 
 /// Where the agent process publishes its identity on the remote VM. The
 /// agent container has `OCTO_DATA_DIR=/data/lair` baked in by the image and
@@ -88,6 +88,7 @@ async fn try_read_once(
         let stderr = String::from_utf8_lossy(&output.stderr);
         if let Some(code) = output.status.code() {
             if code == 255 {
+                error!("[ssh] {host}: ssh transport failed (exit 255): {}", stderr.trim());
                 anyhow::bail!("ssh to {host} failed: {}", stderr.trim());
             }
         }
@@ -99,10 +100,12 @@ async fn try_read_once(
         .context("ssh stdout is not utf-8")?
         .trim();
     if stdout.is_empty() {
+        debug!("[ssh] {host} agent-info.json exists but is empty");
         return Ok(None);
     }
     let info: AgentInfo = serde_json::from_str(stdout)
         .with_context(|| format!("parse agent-info.json from {host}"))?;
+    debug!("[ssh] {host} published agent-info: port={}", info.port);
     Ok(Some(info))
 }
 
@@ -115,11 +118,15 @@ pub async fn await_agent_info(
     total_timeout: Duration,
     poll_every:    Duration,
 ) -> Result<AgentInfo> {
+    info!("[ssh] {host}: polling for agent-info.json (timeout {total_timeout:?}, every {poll_every:?})");
     let deadline = tokio::time::Instant::now() + total_timeout;
     let mut last_err: Option<anyhow::Error> = None;
     while tokio::time::Instant::now() < deadline {
         match try_read_once(host, ssh_user, key_path, /*connect_secs=*/10).await {
-            Ok(Some(info)) => return Ok(info),
+            Ok(Some(info)) => {
+                info!("[ssh] {host}: agent-info.json retrieved (port={})", info.port);
+                return Ok(info);
+            }
             Ok(None) => {
                 last_err = None;
                 tokio::time::sleep(poll_every).await;
@@ -131,6 +138,7 @@ pub async fn await_agent_info(
             }
         }
     }
+    error!("[ssh] {host}: timed out waiting for agent-info.json after {total_timeout:?}");
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!(
         "timed out waiting for {host} to publish agent-info.json after {:?}",
         total_timeout
@@ -168,7 +176,12 @@ where
     let mut last_err: Option<anyhow::Error> = None;
     for attempt in 1..=SSH_OP_ATTEMPTS {
         match op().await {
-            Ok(v) => return Ok(v),
+            Ok(v) => {
+                if attempt > 1 {
+                    info!("[ssh] {label} succeeded on attempt {attempt}/{SSH_OP_ATTEMPTS}");
+                }
+                return Ok(v);
+            }
             Err(e) => {
                 if attempt < SSH_OP_ATTEMPTS {
                     warn!("[ssh] {label} attempt {attempt}/{SSH_OP_ATTEMPTS} failed ({e:#}); retrying in {:?}", delay);
@@ -176,6 +189,7 @@ where
                     tokio::time::sleep(delay).await;
                     delay *= 2;
                 } else {
+                    error!("[ssh] {label} failed after {SSH_OP_ATTEMPTS} attempts: {e:#}");
                     return Err(e.context(format!("{label} failed after {SSH_OP_ATTEMPTS} attempts")));
                 }
             }
@@ -217,6 +231,7 @@ async fn write_file_once(
     let mut argv = ssh_argv(key_path, &target);
     argv.push(remote_cmd);
 
+    debug!("[ssh] {host}: writing {} byte(s) to {remote_path} (mode {mode:o})", content.len());
     let mut child = tokio::process::Command::new("ssh")
         .args(&argv)
         .stdin(std::process::Stdio::piped())
@@ -237,6 +252,7 @@ async fn write_file_once(
             String::from_utf8_lossy(&output.stderr).trim(),
         );
     }
+    debug!("[ssh] {host}: wrote {remote_path}");
     Ok(())
 }
 
@@ -263,6 +279,7 @@ async fn run_script_once(
     let mut argv = ssh_argv(key_path, &target);
     argv.push("bash -s".to_string());
 
+    debug!("[ssh] {host}: running remote script ({} chars)", script.len());
     let mut child = tokio::process::Command::new("ssh")
         .args(&argv)
         .stdin(std::process::Stdio::piped())
@@ -283,6 +300,7 @@ async fn run_script_once(
             String::from_utf8_lossy(&output.stderr).trim(),
         );
     }
+    debug!("[ssh] {host}: remote script completed");
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 

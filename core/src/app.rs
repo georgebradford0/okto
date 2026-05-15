@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 // ── Buffer + subscriber fanout ────────────────────────────────────────────────
 
@@ -57,7 +57,12 @@ impl Default for StreamState {
 pub fn buffer_and_fanout(state: &Mutex<StreamState>, json: String) {
     let mut ss = state.lock().unwrap();
     ss.buffer.push(json.clone());
+    let before = ss.subs.len();
     ss.subs.retain(|tx| tx.send(json.clone()).is_ok());
+    let pruned = before - ss.subs.len();
+    if pruned > 0 {
+        debug!("[app] fanout pruned {pruned} dead subscriber(s), {} remain", ss.subs.len());
+    }
 }
 
 // ── Session persistence ───────────────────────────────────────────────────────
@@ -127,12 +132,17 @@ pub fn load_tasks(data_dir: &Path, log_prefix: &str) -> Vec<TaskRecord> {
     };
     let now = now_secs();
     let mut tasks = raw;
+    let mut orphaned = 0usize;
     for t in tasks.iter_mut() {
         if t.status == TaskStatus::Running {
             t.status       = TaskStatus::Error;
             t.completed_at = Some(now);
             t.summary      = Some("interrupted by server restart".to_string());
+            orphaned += 1;
         }
+    }
+    if orphaned > 0 {
+        warn!("[{log_prefix}] {orphaned} task(s) were Running at restart, marked Error");
     }
     info!("[{log_prefix}] loaded {} task(s) from {}", tasks.len(), path.display());
     tasks

@@ -180,7 +180,11 @@ pub fn effective_repo() -> String {
 pub fn write_config(cfg: &Config) {
     let path = config_path();
     fs::create_dir_all(path.parent().unwrap()).ok();
-    fs::write(path, serde_json::to_string(cfg).unwrap()).ok();
+    if let Err(e) = fs::write(&path, serde_json::to_string(cfg).unwrap()) {
+        error!("[config] failed to write {}: {e}", path.display());
+    } else {
+        info!("[config] wrote config to {}", path.display());
+    }
 }
 
 pub fn resolve_api_key() -> Option<String> {
@@ -588,7 +592,10 @@ async fn execute_tool_inner(
                 .stderr(std::process::Stdio::piped())
                 .spawn()
             {
-                Err(e) => format!("error: {e}"),
+                Err(e) => {
+                    error!("[core/tool] bash spawn failed cwd={cwd}: {e}");
+                    format!("error: {e}")
+                }
                 Ok(mut child) => {
                     let stdout_pipe = child.stdout.take().expect("stdout piped");
                     let stderr_pipe = child.stderr.take().expect("stderr piped");
@@ -615,6 +622,7 @@ async fn execute_tool_inner(
                                 _ => break,
                             },
                             _ = cancel.cancelled() => {
+                                debug!("[core/tool] bash interrupted, killing child");
                                 child.kill().await.ok();
                                 return "error: interrupted".to_string();
                             }
@@ -646,7 +654,10 @@ async fn execute_tool_inner(
             let offset = input["offset"].as_u64().unwrap_or(0) as usize;
             let limit  = input["limit"].as_u64().map(|v| v as usize);
             match fs::File::open(&full) {
-                Err(e) => format!("error: {e}"),
+                Err(e) => {
+                    warn!("[core/tool] read_file open failed path={}: {e}", full.display());
+                    format!("error: {e}")
+                }
                 Ok(file) => {
                     let reader = BufReader::new(file);
                     let mut numbered = Vec::new();
@@ -679,18 +690,29 @@ async fn execute_tool_inner(
             let new_str = input["new_str"].as_str().unwrap_or("");
             let full    = resolve_path(p, cwd);
             match fs::read_to_string(&full) {
-                Err(e) => format!("error reading file: {e}"),
+                Err(e) => {
+                    warn!("[core/tool] edit_file read failed path={}: {e}", full.display());
+                    format!("error reading file: {e}")
+                }
                 Ok(content) => {
                     let count = content.matches(old_str).count();
                     if count == 0 {
+                        warn!("[core/tool] edit_file old_str not found path={}", full.display());
                         "error: old_str not found in file".to_string()
                     } else if count > 1 {
+                        warn!("[core/tool] edit_file old_str matches {count} locations path={}", full.display());
                         format!("error: old_str matches {count} locations — make it more specific")
                     } else {
                         let updated = content.replacen(old_str, new_str, 1);
                         match fs::write(&full, updated) {
-                            Ok(_)  => "ok".to_string(),
-                            Err(e) => format!("error writing file: {e}"),
+                            Ok(_)  => {
+                                debug!("[core/tool] edit_file wrote path={}", full.display());
+                                "ok".to_string()
+                            }
+                            Err(e) => {
+                                error!("[core/tool] edit_file write failed path={}: {e}", full.display());
+                                format!("error writing file: {e}")
+                            }
                         }
                     }
                 }
@@ -702,8 +724,14 @@ async fn execute_tool_inner(
             let full    = resolve_path(p, cwd);
             if let Some(parent) = full.parent() { fs::create_dir_all(parent).ok(); }
             match fs::write(&full, content) {
-                Ok(_)  => "ok".to_string(),
-                Err(e) => format!("error: {e}"),
+                Ok(_)  => {
+                    debug!("[core/tool] write_file wrote {} bytes path={}", content.len(), full.display());
+                    "ok".to_string()
+                }
+                Err(e) => {
+                    error!("[core/tool] write_file failed path={}: {e}", full.display());
+                    format!("error: {e}")
+                }
             }
         }
         "glob" => {
@@ -718,7 +746,10 @@ async fn execute_tool_inner(
                         .map(|r| r.to_string_lossy().to_string())
                         .unwrap_or_else(|_| p.to_string_lossy().to_string()))
                     .collect::<Vec<_>>().join("\n"),
-                Err(e) => format!("error: {e}"),
+                Err(e) => {
+                    warn!("[core/tool] glob pattern invalid '{full_pattern}': {e}");
+                    format!("error: {e}")
+                }
             }
         }
         "grep" => {
@@ -738,20 +769,33 @@ async fn execute_tool_inner(
                 .current_dir(cwd).output().await
             {
                 Ok(o)  => String::from_utf8_lossy(&o.stdout).to_string(),
-                Err(e) => format!("error: {e}"),
+                Err(e) => {
+                    error!("[core/tool] grep spawn failed cwd={cwd}: {e}");
+                    format!("error: {e}")
+                }
             }
         }
         "web_fetch" => {
             let url = input["url"].as_str().unwrap_or("");
             if url.is_empty() { return "error: url is required".to_string(); }
+            debug!("[core/tool] web_fetch GET {url}");
             match http_client().get(url)
                 .header("User-Agent", "Mozilla/5.0 (compatible; octo/1.0)")
                 .send().await {
-                Err(e)   => format!("error: {e}"),
+                Err(e)   => {
+                    warn!("[core/tool] web_fetch request failed url={url}: {e}");
+                    format!("error: {e}")
+                }
                 Ok(resp) => {
                     let status = resp.status();
+                    if !status.is_success() {
+                        warn!("[core/tool] web_fetch non-2xx url={url} status={status}");
+                    }
                     match resp.text().await {
-                        Err(e)   => format!("error reading response: {e}"),
+                        Err(e)   => {
+                            warn!("[core/tool] web_fetch body read failed url={url}: {e}");
+                            format!("error reading response: {e}")
+                        }
                         Ok(body) => {
                             let text = strip_html(&body);
                             if status.is_success() { text }
@@ -766,8 +810,12 @@ async fn execute_tool_inner(
             if query.is_empty() { return "error: query is required".to_string(); }
             let api_key = match std::env::var("BRAVE_API_KEY").ok().filter(|s| !s.is_empty()) {
                 Some(k) => k,
-                None    => return "error: BRAVE_API_KEY environment variable not set".to_string(),
+                None    => {
+                    warn!("[core/tool] web_search: BRAVE_API_KEY not set");
+                    return "error: BRAVE_API_KEY environment variable not set".to_string();
+                }
             };
+            debug!("[core/tool] web_search query='{query}'");
             match http_client()
                 .get("https://api.search.brave.com/res/v1/web/search")
                 .query(&[("q", query), ("count", "10")])
@@ -775,9 +823,15 @@ async fn execute_tool_inner(
                 .header("X-Subscription-Token", api_key)
                 .send().await
             {
-                Err(e)   => format!("error: {e}"),
+                Err(e)   => {
+                    warn!("[core/tool] web_search request failed: {e}");
+                    format!("error: {e}")
+                }
                 Ok(resp) => match resp.json::<serde_json::Value>().await {
-                    Err(e) => format!("error parsing response: {e}"),
+                    Err(e) => {
+                        warn!("[core/tool] web_search response parse failed: {e}");
+                        format!("error parsing response: {e}")
+                    }
                     Ok(v)  => match v["web"]["results"].as_array() {
                         None        => "no results".to_string(),
                         Some(items) => items.iter().map(|r| {
@@ -792,7 +846,10 @@ async fn execute_tool_inner(
         }
         _ => match extra_executor {
             Some(f) => f(name.to_string(), input.clone()).await,
-            None    => format!("unknown tool: {name}"),
+            None    => {
+                warn!("[core/tool] unknown tool requested: {name}");
+                format!("unknown tool: {name}")
+            }
         },
     }
 }
@@ -1118,6 +1175,7 @@ async fn stream_anthropic(
                 }
                 "error" => {
                     let msg = v["error"]["message"].as_str().unwrap_or("unknown streaming error");
+                    error!("[core/stream/anthropic] API stream error: {msg}");
                     return Err(format!("API stream error: {msg}"));
                 }
                 _ => {} // message_stop, ping — no-op
@@ -1292,6 +1350,7 @@ pub async fn call_turn(
             if !response.status().is_success() {
                 let status = response.status();
                 let text   = response.text().await.unwrap_or_default();
+                error!("[core/call_turn] anthropic API error {status}: {text}");
                 return Err(format!("API error {status}: {text}"));
             }
             if cancel.is_cancelled() { return Err("__interrupted__".to_string()); }
@@ -1333,6 +1392,7 @@ pub async fn call_turn(
             if !response.status().is_success() {
                 let status = response.status();
                 let text   = response.text().await.unwrap_or_default();
+                error!("[core/call_turn/openai] API error {status}: {text}");
                 return Err(format!("API error {status}: {text}"));
             }
             if cancel.is_cancelled() { return Err("__interrupted__".to_string()); }
@@ -1373,6 +1433,7 @@ pub async fn send_message(
     let tx = event_tx.unwrap_or(dummy_tx);
 
     let all_tools = tool_definitions_with_mcp(extra_tools);
+    debug!("[core/send_message] starting model={model} messages={} cwd={cwd}", messages.len());
 
     let mut turn = 0usize;
     loop {
@@ -1434,6 +1495,7 @@ pub async fn send_message(
                 if !response.status().is_success() {
                     let status = response.status();
                     let text   = response.text().await.unwrap_or_default();
+                    error!("[send_message] turn={turn} anthropic API error {status}: {text}");
                     return Err((format!("API error {status}: {text}"), messages));
                 }
                 let (blocks, stop_reason, usage) = match stream_anthropic(response, &cancel, &tx, &all_tools).await {
@@ -1442,7 +1504,10 @@ pub async fn send_message(
                         tx.send(ChatEvent::InterruptAck).await.ok();
                         return Ok((last_text, total_cost, messages));
                     }
-                    Err(e) => return Err((e, messages)),
+                    Err(e) => {
+                        error!("[send_message] turn={turn} anthropic stream error: {e}");
+                        return Err((e, messages));
+                    }
                 };
                 info!(
                     "[send_message] turn={turn} stop_reason={stop_reason} in={} out={} cache_create={} cache_read={}",
@@ -1483,6 +1548,7 @@ pub async fn send_message(
                 if !response.status().is_success() {
                     let status = response.status();
                     let text   = response.text().await.unwrap_or_default();
+                    error!("[send_message/openai] turn={turn} API error {status}: {text}");
                     return Err((format!("API error {status}: {text}"), messages));
                 }
                 let (blocks, stop_reason, usage) = match stream_openai(response, &cancel, &tx, &all_tools).await {
@@ -1491,7 +1557,10 @@ pub async fn send_message(
                         tx.send(ChatEvent::InterruptAck).await.ok();
                         return Ok((last_text, total_cost, messages));
                     }
-                    Err(e) => return Err((e, messages)),
+                    Err(e) => {
+                        error!("[send_message/openai] turn={turn} stream error: {e}");
+                        return Err((e, messages));
+                    }
                 };
                 info!(
                     "[send_message/openai] turn={turn} stop_reason={stop_reason} in={} out={}",
@@ -1518,6 +1587,7 @@ pub async fn send_message(
         messages.push(ApiMessage { role: "assistant".to_string(), content: blocks });
 
         if stop_reason != "tool_use" || tool_uses.is_empty() {
+            info!("[core/send_message] done turns={turn} cost=${total_cost:.4}");
             return Ok((text_buf, total_cost, messages));
         }
 
@@ -1779,9 +1849,16 @@ fn background_task_note() -> &'static str {
 }
 
 pub fn build_system_prompt(repo_path: &str) -> String {
-    let claude_md = std::fs::read_to_string(format!("{}/CLAUDE.md", repo_path))
-        .map(|s| format!("\n\n# Project instructions (CLAUDE.md)\n{}", s))
-        .unwrap_or_default();
+    let claude_md = match std::fs::read_to_string(format!("{}/CLAUDE.md", repo_path)) {
+        Ok(s) => {
+            debug!("[core] including CLAUDE.md ({} chars) from {repo_path}", s.len());
+            format!("\n\n# Project instructions (CLAUDE.md)\n{}", s)
+        }
+        Err(_) => {
+            debug!("[core] no CLAUDE.md at {repo_path}");
+            String::new()
+        }
+    };
 
     let tool_guidance    = shared_tool_guidance();
     let bg_task_note      = background_task_note();
@@ -1843,9 +1920,15 @@ fn spawn_capability_note() -> String {
 
 pub fn get_branches_for_repo(repo: &str) -> Result<Vec<Branch>, String> {
     if repo.is_empty() { return Ok(vec![]); }
-    let repo_obj = git2::Repository::open(repo).map_err(|e| e.to_string())?;
+    let repo_obj = git2::Repository::open(repo).map_err(|e| {
+        warn!("[git] failed to open repo {repo}: {e}");
+        e.to_string()
+    })?;
     let mut branches = Vec::new();
-    let iter = repo_obj.branches(Some(git2::BranchType::Local)).map_err(|e| e.to_string())?;
+    let iter = repo_obj.branches(Some(git2::BranchType::Local)).map_err(|e| {
+        warn!("[git] failed to list branches for {repo}: {e}");
+        e.to_string()
+    })?;
     for item in iter {
         let (b, _) = item.map_err(|e| e.to_string())?;
         let name   = b.name().ok().flatten().unwrap_or("").to_string();
@@ -1854,6 +1937,7 @@ pub fn get_branches_for_repo(repo: &str) -> Result<Vec<Branch>, String> {
             .unwrap_or_default();
         branches.push(Branch { name, commit });
     }
+    debug!("[git] {repo}: {} local branch(es)", branches.len());
     Ok(branches)
 }
 

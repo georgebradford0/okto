@@ -22,6 +22,7 @@ use std::{
 use anyhow::{Context, Result};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use tracing::{debug, info, warn};
 
 const TOKEN_BYTES: usize = 32;
 
@@ -57,13 +58,14 @@ impl AgentTokens {
                 match serde_json::from_str::<OnDisk>(&text) {
                     Ok(f) => f.tokens,
                     Err(e) => {
-                        tracing::warn!("[agent_tokens] {} is corrupt ({e}); starting empty", path.display());
+                        warn!("[agent_tokens] {} is corrupt ({e}); starting empty", path.display());
                         HashMap::new()
                     }
                 }
             }
             _ => HashMap::new(),
         };
+        info!("[agent_tokens] loaded {} token(s) from {}", tokens.len(), path.display());
         Ok(Self { tokens, path })
     }
 
@@ -84,6 +86,7 @@ impl AgentTokens {
     /// If `name` already has a token, returns the existing one unchanged.
     pub fn ensure(&mut self, name: &str, now: u64) -> Result<String> {
         if let Some(existing) = self.tokens.get(name) {
+            debug!("[agent_tokens] reusing existing capability token for agent='{name}'");
             return Ok(existing.token.clone());
         }
         let mut buf = [0u8; TOKEN_BYTES];
@@ -91,6 +94,7 @@ impl AgentTokens {
         let token = base64_url(&buf);
         self.tokens.insert(name.to_string(), TokenEntry { token: token.clone(), created_at: now });
         self.save()?;
+        info!("[agent_tokens] minted capability token for agent='{name}'");
         Ok(token)
     }
 
@@ -98,6 +102,7 @@ impl AgentTokens {
     pub fn remove(&mut self, name: &str) -> Result<()> {
         if self.tokens.remove(name).is_some() {
             self.save()?;
+            info!("[agent_tokens] removed capability token for agent='{name}'");
         }
         Ok(())
     }

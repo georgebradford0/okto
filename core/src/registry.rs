@@ -14,6 +14,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use tracing::{debug, info, warn};
 
 /// Lifecycle state of an agent process. Mirrors the strings emitted to the
 /// mobile wire protocol.
@@ -132,13 +133,14 @@ impl Registry {
                 match serde_json::from_str::<RegistryFile>(&text) {
                     Ok(f) => f.agents,
                     Err(e) => {
-                        tracing::warn!("[registry] {} is corrupt ({e}); starting empty", path.display());
+                        warn!("[registry] {} is corrupt ({e}); starting empty", path.display());
                         Vec::new()
                     }
                 }
             }
             _ => Vec::new(),
         };
+        info!("[registry] loaded {} agent(s) from {}", agents.len(), path.display());
         Ok(Self { agents, path })
     }
 
@@ -154,18 +156,23 @@ impl Registry {
 
     /// Insert or replace a row by name, preserving insertion order on updates.
     pub fn set(&mut self, record: AgentRecord) -> Result<()> {
+        let name = record.name.clone();
         if let Some(slot) = self.agents.iter_mut().find(|a| a.name == record.name) {
             *slot = record;
+            debug!("[registry] updated agent '{name}'");
         } else {
             self.agents.push(record);
+            debug!("[registry] inserted agent '{name}'");
         }
         self.save()
     }
 
     pub fn add(&mut self, record: AgentRecord) -> Result<()> {
         if self.agents.iter().any(|a| a.name == record.name) {
+            warn!("[registry] add rejected: agent '{}' already exists", record.name);
             anyhow::bail!("agent '{}' already exists in registry", record.name);
         }
+        info!("[registry] added agent '{}' port={}", record.name, record.port);
         self.agents.push(record);
         self.save()
     }
@@ -174,13 +181,19 @@ impl Registry {
         let before = self.agents.len();
         self.agents.retain(|a| a.name != name);
         let removed = self.agents.len() != before;
-        if removed { self.save()?; }
+        if removed {
+            info!("[registry] removed agent '{name}'");
+            self.save()?;
+        } else {
+            debug!("[registry] remove no-op: agent '{name}' not found");
+        }
         Ok(removed)
     }
 
     pub fn update_status(&mut self, name: &str, status: AgentStatus) -> Result<bool> {
         let Some(r) = self.get_mut(name) else { return Ok(false); };
         if r.status == status { return Ok(false); }
+        info!("[registry] agent '{name}' status {} -> {}", r.status.as_wire_str(), status.as_wire_str());
         r.status = status;
         self.save()?;
         Ok(true)
@@ -195,6 +208,7 @@ impl Registry {
     pub fn update_pid(&mut self, name: &str, pid: Option<u32>) -> Result<bool> {
         let Some(r) = self.get_mut(name) else { return Ok(false); };
         if r.pid == pid { return Ok(false); }
+        debug!("[registry] agent '{name}' pid {:?} -> {:?}", r.pid, pid);
         r.pid = pid;
         self.save()?;
         Ok(true)

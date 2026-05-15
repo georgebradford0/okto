@@ -35,7 +35,19 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     match args.role {
-        Role::Lair  => lair::run(args.print_pubkey).await,
-        Role::Agent => agent::run().await,
+        Role::Lair => {
+            let result = lair::run(args.print_pubkey).await;
+            if let Err(e) = &result {
+                tracing::error!("[main] lair role exited with error: {e:#}");
+            }
+            result
+        }
+        Role::Agent => {
+            let result = agent::run().await;
+            if let Err(e) = &result {
+                tracing::error!("[main] agent role exited with error: {e:#}");
+            }
+            result
+        }
     }
 }

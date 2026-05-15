@@ -18,6 +18,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use tracing::{debug, error, info, warn};
 
 pub const LAIR_DEFAULT_HTTP_PORT:  u16 = 8000;
 pub const LAIR_DEFAULT_NOISE_PORT: u16 = 8443;
@@ -74,6 +75,7 @@ pub fn ensure_mgmt_token() -> Result<String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).ok();
     }
+    debug!("[service] minting new management token at {}", path.display());
     let token = random_hex(32);
     fs::write(&path, &token)
         .with_context(|| format!("write {}", path.display()))?;
@@ -122,6 +124,7 @@ pub fn write_launch(rec: &LaunchRecord) -> Result<()> {
     fs::create_dir_all(path.parent().unwrap()).ok();
     let body = serde_json::to_string_pretty(rec).context("encode lair-launch.json")?;
     fs::write(&path, body).with_context(|| format!("write {}", path.display()))?;
+    debug!("[service] wrote launch record {}", path.display());
     Ok(())
 }
 
@@ -164,21 +167,36 @@ pub fn ensure_docker_present() -> Result<()> {
 }
 
 fn docker_status(args: &[&str]) -> Result<std::process::ExitStatus> {
-    std::process::Command::new("docker")
+    debug!("[service] shelling out: docker {}", args.join(" "));
+    let status = std::process::Command::new("docker")
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .with_context(|| format!("spawn `docker {}`", args.join(" ")))
+        .with_context(|| format!("spawn `docker {}`", args.join(" ")))?;
+    debug!("[service] `docker {}` exited with {status}", args.join(" "));
+    Ok(status)
 }
 
 fn docker_output(args: &[&str]) -> Result<std::process::Output> {
-    std::process::Command::new("docker")
+    debug!("[service] shelling out: docker {}", args.join(" "));
+    let out = std::process::Command::new("docker")
         .args(args)
         .stdin(Stdio::null())
         .output()
-        .with_context(|| format!("spawn `docker {}`", args.join(" ")))
+        .with_context(|| format!("spawn `docker {}`", args.join(" ")))?;
+    if out.status.success() {
+        debug!("[service] `docker {}` exited with {}", args.join(" "), out.status);
+    } else {
+        debug!(
+            "[service] `docker {}` exited with {}: {}",
+            args.join(" "),
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim(),
+        );
+    }
+    Ok(out)
 }
 
 /// Run a command inside the lair container via `docker exec` and return its
@@ -187,13 +205,16 @@ fn docker_output(args: &[&str]) -> Result<std::process::Output> {
 pub fn docker_exec_status(args: &[&str]) -> Result<std::process::ExitStatus> {
     let mut full: Vec<&str> = vec!["exec", LAIR_CONTAINER_NAME];
     full.extend_from_slice(args);
-    std::process::Command::new("docker")
+    debug!("[service] shelling out: docker {}", full.join(" "));
+    let status = std::process::Command::new("docker")
         .args(&full)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .with_context(|| format!("spawn `docker exec {LAIR_CONTAINER_NAME} {}`", args.join(" ")))
+        .with_context(|| format!("spawn `docker exec {LAIR_CONTAINER_NAME} {}`", args.join(" ")))?;
+    debug!("[service] `docker exec {LAIR_CONTAINER_NAME} {}` exited with {status}", args.join(" "));
+    Ok(status)
 }
 
 /// Read the last `tail` lines of `docker logs <LAIR_CONTAINER_NAME>` as a
@@ -222,6 +243,7 @@ pub fn lair_binary_version() -> Result<String> {
     let out = docker_output(&["exec", LAIR_CONTAINER_NAME, "octo-lair", "--version"])?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
+        error!("[service] `octo-lair --version` exited with {}: {stderr}", out.status);
         anyhow::bail!("`octo-lair --version` exited with {}: {stderr}", out.status);
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -275,6 +297,7 @@ pub fn start_lair(launch: &LairLaunch<'_>) -> Result<String> {
     // docker errors out on a missing --env-file, so make sure it exists even
     // if the operator hasn't run `octo env set` yet.
     if !launch.env_file.exists() {
+        debug!("[service] creating empty env file {}", launch.env_file.display());
         fs::write(launch.env_file, "").ok();
     }
 
@@ -315,29 +338,43 @@ pub fn start_lair(launch: &LairLaunch<'_>) -> Result<String> {
         launch.image,
     ];
 
+    info!(
+        "[service] starting lair container '{LAIR_CONTAINER_NAME}' (image={}, noise_port={}, http_port={})",
+        launch.image, launch.noise_port, launch.http_port,
+    );
     let out = docker_output(&args)?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
+        error!("[service] `docker run` failed: {}", stderr.trim());
         anyhow::bail!("docker run failed: {stderr}");
     }
     let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    info!("[service] lair container started: {}", id.chars().take(12).collect::<String>());
     Ok(id)
 }
 
 /// Stop + remove the lair container if one exists. Idempotent.
 pub fn stop_lair_if_running() {
     if !container_exists() { return; }
-    let _ = docker_status(&["rm", "-f", LAIR_CONTAINER_NAME]);
+    debug!("[service] removing existing lair container '{LAIR_CONTAINER_NAME}'");
+    match docker_status(&["rm", "-f", LAIR_CONTAINER_NAME]) {
+        Ok(s) if s.success() => info!("[service] lair container '{LAIR_CONTAINER_NAME}' removed"),
+        Ok(s)  => warn!("[service] `docker rm -f {LAIR_CONTAINER_NAME}` exited with {s}"),
+        Err(e) => warn!("[service] failed to remove lair container: {e:#}"),
+    }
 }
 
 /// `docker pull <image>`. Used by `octo lair update`.
 pub fn docker_pull(image: &str) -> Result<()> {
     ensure_docker_present()?;
+    debug!("[service] shelling out: docker pull {image}");
     let status = std::process::Command::new("docker")
         .args(["pull", image])
         .status()
         .with_context(|| format!("spawn `docker pull {image}`"))?;
+    debug!("[service] `docker pull {image}` exited with {status}");
     if !status.success() {
+        error!("[service] `docker pull {image}` failed with {status}");
         anyhow::bail!("`docker pull {image}` exited with {status}");
     }
     Ok(())
@@ -350,13 +387,18 @@ pub async fn wait_for_health(port: u16, timeout: Duration) -> Result<()> {
         .build()
         .unwrap();
     let url = format!("http://127.0.0.1:{port}/health");
+    debug!("[service] polling lair health endpoint GET {url} (timeout {timeout:?})");
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         if tokio::time::Instant::now() > deadline {
+            error!("[service] lair did not become ready within {timeout:?} (GET {url})");
             anyhow::bail!("lair did not become ready within {:?}", timeout);
         }
         match client.get(&url).send().await {
-            Ok(r) if r.status().is_success() => return Ok(()),
+            Ok(r) if r.status().is_success() => {
+                debug!("[service] lair health check GET {url} -> {}", r.status());
+                return Ok(());
+            }
             _ => tokio::time::sleep(Duration::from_secs(1)).await,
         }
     }
@@ -366,8 +408,10 @@ pub async fn detect_public_ip() -> Result<String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()?;
+    debug!("[service] detecting public IP via GET https://api.ipify.org");
     let resp = client.get("https://api.ipify.org").send().await
         .context("detect public IP via api.ipify.org")?;
+    debug!("[service] api.ipify.org responded {}", resp.status());
     let body = resp.text().await.context("read ipify body")?;
     Ok(body.trim().to_string())
 }
@@ -389,8 +433,11 @@ pub async fn stream_lair_logs(follow: bool) -> Result<()> {
     cmd.args(["logs", "--tail", "1000"]);
     if follow { cmd.arg("--follow"); }
     cmd.arg(LAIR_CONTAINER_NAME);
+    debug!("[service] shelling out: docker logs --tail 1000{} {LAIR_CONTAINER_NAME}", if follow { " --follow" } else { "" });
     let status = cmd.status().context("spawn `docker logs`")?;
+    debug!("[service] `docker logs {LAIR_CONTAINER_NAME}` exited with {status}");
     if !status.success() {
+        error!("[service] `docker logs {LAIR_CONTAINER_NAME}` exited with {status}");
         anyhow::bail!("`docker logs {LAIR_CONTAINER_NAME}` exited with {status}");
     }
     Ok(())

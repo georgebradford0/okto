@@ -12,7 +12,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use axum::{
     extract::{
@@ -95,6 +95,7 @@ fn spawn_turn(state: Arc<AppState>, user_text: Option<String>) {
         let api_key = match resolve_api_key() {
             Some(k) => k,
             None => {
+                error!("[agent/stream] no API key configured — aborting turn");
                 let errmsg = "no API key configured".to_string();
                 {
                     let mut msgs = state.messages.lock().unwrap();
@@ -145,6 +146,7 @@ fn spawn_turn(state: Arc<AppState>, user_text: Option<String>) {
             match send_message(messages, &system, &model, &api_key, &cwd, Some(event_tx), cancel.clone(), &extra_tools, executor).await {
                 Ok((_, cost_usd, mut updated)) => {
                     if cancel.is_cancelled() {
+                        info!("[agent/stream] turn interrupted, cost=${cost_usd:.4}");
                         updated.push(ApiMessage {
                             role:    "interrupted".to_string(),
                             content: vec![ContentBlock::Text { text: "interrupted".to_string() }],
@@ -154,6 +156,7 @@ fn spawn_turn(state: Arc<AppState>, user_text: Option<String>) {
                         *state_arc.last_cost_usd.lock().unwrap() = Some(cost_usd);
                         done_tx.send(ChatEvent::Interrupted { cost_usd }).await.ok();
                     } else {
+                        info!("[agent/stream] turn finished, cost=${cost_usd:.4}");
                         *msgs_arc.lock().unwrap() = updated.clone();
                         save_messages(&updated);
                         *state_arc.last_cost_usd.lock().unwrap() = Some(cost_usd);
@@ -163,6 +166,7 @@ fn spawn_turn(state: Arc<AppState>, user_text: Option<String>) {
                     }
                 }
                 Err((e, mut partial)) => {
+                    error!("[agent/stream] turn failed: {e}");
                     partial.push(ApiMessage {
                         role:    "error".to_string(),
                         content: vec![ContentBlock::Text { text: e.clone() }],
@@ -218,9 +222,11 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
 
     let ready = serde_json::json!({"type":"ready","session_id":"","resumed":resumed}).to_string();
     if ws_tx.send(WsMessage::Text(ready)).await.is_err() {
+        debug!("[agent/stream] client disconnected before ready frame");
         return;
     }
     if ws_tx.send(WsMessage::Text(tasks_wire_json(&state.stream_state))).await.is_err() {
+        debug!("[agent/stream] client disconnected before tasks frame");
         return;
     }
     if !replay.is_empty() {
@@ -368,7 +374,10 @@ async fn get_branches_handler(State(state): State<Arc<AppState>>) -> impl IntoRe
     }
     match get_branches_for_repo(&state.cwd) {
         Ok(b)  => Json(b).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => {
+            warn!("[agent/branches] failed to list branches for {}: {e}", state.cwd);
+            (StatusCode::INTERNAL_SERVER_ERROR, e).into_response()
+        }
     }
 }
 
@@ -493,9 +502,11 @@ fn make_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
 
 async fn exec_spawn_agent(input: serde_json::Value) -> String {
     let Some(token) = std::env::var("OCTO_AGENT_TOKEN").ok().filter(|s| !s.is_empty()) else {
+        warn!("[agent/spawn_agent] refused: no OCTO_AGENT_TOKEN in env");
         return "error: this agent has no spawn capability (no OCTO_AGENT_TOKEN in env).".to_string();
     };
     let Some(base)  = std::env::var("LAIR_INTERNAL_URL").ok().filter(|s| !s.is_empty()) else {
+        warn!("[agent/spawn_agent] refused: LAIR_INTERNAL_URL unset");
         return "error: LAIR_INTERNAL_URL is unset; cannot reach lair management API.".to_string();
     };
     let client = match reqwest::Client::builder()
@@ -503,9 +514,13 @@ async fn exec_spawn_agent(input: serde_json::Value) -> String {
         .build()
     {
         Ok(c)  => c,
-        Err(e) => return format!("error: build http client: {e}"),
+        Err(e) => {
+            error!("[agent/spawn_agent] build http client failed: {e}");
+            return format!("error: build http client: {e}");
+        }
     };
     let url = format!("{base}/agents/child");
+    info!("[agent/spawn_agent] requesting child spawn via {url}");
     let resp = match client.post(&url)
         .header("X-Octo-Agent-Token", token)
         .json(&input)
@@ -513,11 +528,20 @@ async fn exec_spawn_agent(input: serde_json::Value) -> String {
         .await
     {
         Ok(r)  => r,
-        Err(e) => return format!("error: POST {url}: {e}"),
+        Err(e) => {
+            error!("[agent/spawn_agent] POST {url} failed: {e}");
+            return format!("error: POST {url}: {e}");
+        }
     };
     let status = resp.status();
     let body   = resp.text().await.unwrap_or_default();
-    if status.is_success() { body } else { format!("error ({status}): {body}") }
+    if status.is_success() {
+        info!("[agent/spawn_agent] child spawn succeeded");
+        body
+    } else {
+        warn!("[agent/spawn_agent] child spawn rejected ({status})");
+        format!("error ({status}): {body}")
+    }
 }
 
 async fn exec_terminate_agent(input: serde_json::Value) -> String {
@@ -526,9 +550,11 @@ async fn exec_terminate_agent(input: serde_json::Value) -> String {
         _ => return "error: missing 'name' field".to_string(),
     };
     let Some(token) = std::env::var("OCTO_AGENT_TOKEN").ok().filter(|s| !s.is_empty()) else {
+        warn!("[agent/terminate_agent] refused: no OCTO_AGENT_TOKEN in env");
         return "error: this agent has no terminate capability (no OCTO_AGENT_TOKEN in env).".to_string();
     };
     let Some(base)  = std::env::var("LAIR_INTERNAL_URL").ok().filter(|s| !s.is_empty()) else {
+        warn!("[agent/terminate_agent] refused: LAIR_INTERNAL_URL unset");
         return "error: LAIR_INTERNAL_URL is unset; cannot reach lair management API.".to_string();
     };
     let client = match reqwest::Client::builder()
@@ -536,22 +562,31 @@ async fn exec_terminate_agent(input: serde_json::Value) -> String {
         .build()
     {
         Ok(c)  => c,
-        Err(e) => return format!("error: build http client: {e}"),
+        Err(e) => {
+            error!("[agent/terminate_agent] build http client failed: {e}");
+            return format!("error: build http client: {e}");
+        }
     };
     let url = format!("{base}/agents/child/{name}");
+    info!("[agent/terminate_agent] requesting termination of '{name}' via {url}");
     let resp = match client.delete(&url)
         .header("X-Octo-Agent-Token", token)
         .send()
         .await
     {
         Ok(r)  => r,
-        Err(e) => return format!("error: DELETE {url}: {e}"),
+        Err(e) => {
+            error!("[agent/terminate_agent] DELETE {url} failed: {e}");
+            return format!("error: DELETE {url}: {e}");
+        }
     };
     let status = resp.status();
     let body   = resp.text().await.unwrap_or_default();
     if status.is_success() {
+        info!("[agent/terminate_agent] '{name}' terminated");
         format!("Terminated '{name}' and any descendants.")
     } else {
+        warn!("[agent/terminate_agent] termination of '{name}' rejected ({status})");
         format!("error ({status}): {body}")
     }
 }
@@ -774,7 +809,10 @@ pub async fn run() -> anyhow::Result<()> {
 
     let addr = format!("127.0.0.1:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await
-        .map_err(|e| anyhow::anyhow!("failed to bind agent HTTP port {addr}: {e}"))?;
+        .map_err(|e| {
+            error!("[agent] failed to bind agent HTTP port {addr}: {e}");
+            anyhow::anyhow!("failed to bind agent HTTP port {addr}: {e}")
+        })?;
     info!("[agent] HTTP listening on {addr} (cwd: {})", state.cwd);
 
     if let Ok(prompt) = std::env::var("STARTUP_PROMPT") {

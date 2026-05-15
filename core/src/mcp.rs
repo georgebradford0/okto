@@ -153,8 +153,15 @@ impl McpClient {
             Err(e) => { error!("[mcp] failed to spawn '{}': {e}", cfg.name); return None; }
         };
 
-        let stdin  = child.stdin.take()?;
-        let stdout = BufReader::new(child.stdout.take()?);
+        let Some(stdin) = child.stdin.take() else {
+            error!("[mcp] '{}' spawned process has no stdin pipe", cfg.name);
+            return None;
+        };
+        let Some(stdout_pipe) = child.stdout.take() else {
+            error!("[mcp] '{}' spawned process has no stdout pipe", cfg.name);
+            return None;
+        };
+        let stdout = BufReader::new(stdout_pipe);
         std::mem::forget(child); // detach — not reaped on drop
 
         let client = McpClient {

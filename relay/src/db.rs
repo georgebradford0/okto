@@ -8,6 +8,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::{path::Path, sync::Mutex};
+use tracing::{debug, error, info};
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS subscriptions (
@@ -44,7 +45,12 @@ impl Db {
             std::fs::create_dir_all(parent).ok();
         }
         let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
-        conn.execute_batch(SCHEMA).context("apply schema")?;
+        info!("[db] opened SQLite database at {}", path.display());
+        conn.execute_batch(SCHEMA).map_err(|e| {
+            error!("[db] schema migration failed: {e}");
+            e
+        }).context("apply schema")?;
+        info!("[db] schema migrations applied (subscriptions, nonces)");
         // Pragmas for the access pattern: tiny writes, point reads.
         conn.pragma_update(None, "journal_mode", "WAL").ok();
         conn.pragma_update(None, "synchronous", "NORMAL").ok();
@@ -59,7 +65,11 @@ impl Db {
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(device_token, lair_pubkey) DO UPDATE SET platform=excluded.platform",
             params![device_token, platform, lair_pubkey, now],
-        )?;
+        ).map_err(|e| {
+            error!("[db] upsert_subscription failed for pubkey={lair_pubkey}: {e}");
+            e
+        })?;
+        debug!("[db] subscription upserted; platform={platform} pubkey={lair_pubkey}");
         Ok(())
     }
 
@@ -68,7 +78,11 @@ impl Db {
         let n = conn.execute(
             "DELETE FROM subscriptions WHERE device_token = ?1 AND lair_pubkey = ?2",
             params![device_token, lair_pubkey],
-        )?;
+        ).map_err(|e| {
+            error!("[db] delete_subscription failed for pubkey={lair_pubkey}: {e}");
+            e
+        })?;
+        debug!("[db] delete_subscription removed {n} row(s) for pubkey={lair_pubkey}");
         Ok(n)
     }
 
@@ -76,15 +90,22 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT device_token, platform FROM subscriptions WHERE lair_pubkey = ?1",
-        )?;
+        ).map_err(|e| {
+            error!("[db] subscriptions_for_pubkey prepare failed: {e}");
+            e
+        })?;
         let rows = stmt.query_map(params![lair_pubkey], |r| {
             Ok(Subscription {
                 device_token: r.get(0)?,
                 platform:     r.get(1)?,
             })
+        }).map_err(|e| {
+            error!("[db] subscriptions_for_pubkey query failed for pubkey={lair_pubkey}: {e}");
+            e
         })?;
         let mut out = Vec::new();
         for r in rows { out.push(r?); }
+        debug!("[db] subscriptions_for_pubkey returned {} row(s) for pubkey={lair_pubkey}", out.len());
         Ok(out)
     }
 
@@ -96,23 +117,36 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         // GC nonces older than 5 minutes — well past the 60s freshness check
         // applied to ts in the route handler.
-        conn.execute(
+        let gc = conn.execute(
             "DELETE FROM nonces WHERE seen_at < ?1",
             params![now - 300],
-        )?;
+        ).map_err(|e| {
+            error!("[db] nonce GC failed: {e}");
+            e
+        })?;
+        if gc > 0 {
+            debug!("[db] GC'd {gc} expired nonce row(s)");
+        }
         let inserted = conn.execute(
             "INSERT OR IGNORE INTO nonces(pubkey, nonce, seen_at) VALUES (?1, ?2, ?3)",
             params![pubkey, nonce, now],
-        )?;
+        ).map_err(|e| {
+            error!("[db] record_nonce insert failed for pubkey={pubkey}: {e}");
+            e
+        })?;
         Ok(inserted == 1)
     }
 
     pub fn forget_invalid_token(&self, device_token: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute(
+        let n = conn.execute(
             "DELETE FROM subscriptions WHERE device_token = ?1",
             params![device_token],
-        )?;
+        ).map_err(|e| {
+            error!("[db] forget_invalid_token failed: {e}");
+            e
+        })?;
+        info!("[db] forgot invalid device token; removed {n} subscription row(s)");
         Ok(())
     }
 }

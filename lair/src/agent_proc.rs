@@ -15,7 +15,7 @@ use std::{
 use anyhow::{Context, Result};
 use octo_core::mcp::McpServerConfig;
 use tokio::process::{Child, Command};
-use tracing::{info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Legacy non-root uid/gid baked into the lair image as the `octo-agent`
 /// user (see `lair/Dockerfile`). Used as a fallback when the supervisor
@@ -119,6 +119,10 @@ impl AgentSupervisor {
             Ok(p) if !p.is_empty() => PathBuf::from(p),
             _ => std::env::current_exe().context("locate current octo-lair binary")?,
         };
+        info!(
+            "[agent_proc] supervisor ready: agents_root={} binary={}",
+            agents_root.display(), binary_path.display(),
+        );
         Ok(Arc::new(Self {
             agents:      Mutex::new(HashMap::new()),
             agents_root,
@@ -135,6 +139,13 @@ impl AgentSupervisor {
     /// matching `AgentRecord` into the registry — the supervisor doesn't
     /// touch the registry directly.
     pub async fn spawn(&self, p: &SpawnParams<'_>) -> Result<u32> {
+        info!(
+            "[agent_proc] spawning agent='{}' port={} git={} token={}",
+            p.name,
+            p.port,
+            p.git_url.unwrap_or("(none)"),
+            if p.agent_token.is_some() { "yes" } else { "no" },
+        );
         let agent_dir     = self.agent_dir(p.name);
         let data_dir      = self.data_dir(p.name);
         let workspace_dir = self.workspace_dir(p.name);
@@ -149,6 +160,7 @@ impl AgentSupervisor {
         // child runs as its own uid so siblings can't read each other's
         // `OCTO_AGENT_TOKEN` from `/proc/<pid>/environ`.
         let (uid, gid) = uid_for_port(p.port);
+        debug!("[agent_proc] agent='{}' will run as uid={uid} gid={gid}", p.name);
 
         // Drop the new dirs (and the existing log file) to the agent uid so
         // the child can write to them despite running non-root. Best-effort:
@@ -230,8 +242,15 @@ impl AgentSupervisor {
         cmd.uid(uid).gid(gid);
 
         let child = cmd.spawn()
+            .map_err(|e| {
+                error!("[agent_proc] failed to spawn agent process for '{}': {e}", p.name);
+                e
+            })
             .with_context(|| format!("spawn agent process for {}", p.name))?;
-        let pid = child.id().ok_or_else(|| anyhow::anyhow!("spawned child has no pid"))?;
+        let pid = child.id().ok_or_else(|| {
+            error!("[agent_proc] spawned child for '{}' has no pid", p.name);
+            anyhow::anyhow!("spawned child has no pid")
+        })?;
         info!("[supervisor] spawned agent='{}' pid={} port={}", p.name, pid, p.port);
 
         let proc = Arc::new(AgentProc {
@@ -257,12 +276,14 @@ impl AgentSupervisor {
 
         // SIGTERM first.
         // SAFETY: standard libc::kill signal call.
+        debug!("[agent_proc] stop({name}): sending SIGTERM to pid={pid}");
         unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
         for _ in 0..30 {
             if !Self::is_alive(pid) { break; }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         if Self::is_alive(pid) {
+            warn!("[agent_proc] stop({name}): pid={pid} ignored SIGTERM after 3s grace, escalating to SIGKILL");
             unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL); }
         }
         if let Some(child) = owned_child.as_mut() {
@@ -279,6 +300,8 @@ impl AgentSupervisor {
         if dir.exists() {
             if let Err(e) = std::fs::remove_dir_all(&dir) {
                 warn!("[supervisor] remove_dir_all {}: {e}", dir.display());
+            } else {
+                info!("[supervisor] terminated agent='{name}' and removed {}", dir.display());
             }
         }
         Ok(())
@@ -298,7 +321,10 @@ impl AgentSupervisor {
     /// `stop` / `terminate` calls find a handle. The pid is checked with
     /// `is_alive` first; if it's dead, the entry is skipped.
     pub fn adopt(&self, name: &str, pid: u32) {
-        if !Self::is_alive(pid) { return; }
+        if !Self::is_alive(pid) {
+            debug!("[supervisor] adopt({name}): recorded pid={pid} is no longer alive, skipping");
+            return;
+        }
         let proc = Arc::new(AgentProc {
             pid,
             child: Mutex::new(None), // we don't own the handle; can't reap

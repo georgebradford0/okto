@@ -154,6 +154,7 @@ async fn require_mgmt_token(
         .get("x-octo-token")
         .and_then(|v| v.to_str().ok());
     if supplied != Some(expected) {
+        warn!("[lair/auth] rejected {} {}: missing or invalid X-Octo-Token", req.method(), req.uri().path());
         return (StatusCode::FORBIDDEN, "missing or invalid X-Octo-Token").into_response();
     }
     next.run(req).await
@@ -182,13 +183,16 @@ async fn require_agent_token(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
     let Some(token) = supplied.filter(|s| !s.is_empty()) else {
+        warn!("[lair/auth] rejected {} {}: missing X-Octo-Agent-Token", req.method(), req.uri().path());
         return (StatusCode::FORBIDDEN, "missing X-Octo-Agent-Token").into_response();
     };
     let name = state.agent_tokens.lock().unwrap()
         .name_for_token(&token).map(str::to_string);
     let Some(name) = name else {
+        warn!("[lair/auth] rejected {} {}: invalid X-Octo-Agent-Token", req.method(), req.uri().path());
         return (StatusCode::FORBIDDEN, "invalid X-Octo-Agent-Token").into_response();
     };
+    debug!("[lair/auth] agent-token request authenticated as '{name}': {} {}", req.method(), req.uri().path());
     req.extensions_mut().insert(AgentCaller { name });
     next.run(req).await
 }
@@ -226,6 +230,7 @@ fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
         let api_key = match resolve_api_key() {
             Some(k) => k,
             None => {
+                error!("[lair/stream] no API key configured — aborting turn");
                 let json = serde_json::json!({"type":"error","message":"no API key configured"}).to_string();
                 buffer_and_fanout(&state.stream_state, json);
                 state.is_streaming.store(false, Ordering::Relaxed);
@@ -267,6 +272,7 @@ fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
             match send_message(messages, &system, &model, &api_key, "/", Some(event_tx), cancel.clone(), &extra_tools, executor).await {
                 Ok((_, cost_usd, mut updated)) => {
                     if cancel.is_cancelled() {
+                        info!("[lair/stream] turn interrupted, cost=${cost_usd:.4}");
                         updated.push(ApiMessage {
                             role:    "interrupted".to_string(),
                             content: vec![ContentBlock::Text { text: "interrupted".to_string() }],
@@ -275,6 +281,7 @@ fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
                         *state_arc.last_cost_usd.lock().unwrap() = Some(cost_usd);
                         done_tx.send(ChatEvent::Interrupted { cost_usd }).await.ok();
                     } else {
+                        info!("[lair/stream] turn finished, cost=${cost_usd:.4}");
                         commit_turn(&msgs_arc, snapshot_len, updated);
                         *state_arc.last_cost_usd.lock().unwrap() = Some(cost_usd);
                         done_tx.send(ChatEvent::Result {
@@ -283,6 +290,7 @@ fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
                     }
                 }
                 Err((e, mut partial)) => {
+                    error!("[lair/stream] turn failed: {e}");
                     partial.push(ApiMessage {
                         role:    "error".to_string(),
                         content: vec![ContentBlock::Text { text: e.clone() }],
@@ -353,16 +361,19 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
 
     let ready = serde_json::json!({"type":"ready","session_id":"","resumed":resumed}).to_string();
     if ws_tx.send(WsMessage::Text(ready)).await.is_err() {
+        debug!("[lair/stream] client disconnected before ready frame");
         return;
     }
     {
         let snapshot = state.agents_rx.borrow().clone();
         let json = serde_json::json!({"type":"agents","agents":snapshot}).to_string();
         if ws_tx.send(WsMessage::Text(json)).await.is_err() {
+            debug!("[lair/stream] client disconnected before agents frame");
             return;
         }
     }
     if ws_tx.send(WsMessage::Text(tasks_wire_json(&state.stream_state))).await.is_err() {
+        debug!("[lair/stream] client disconnected before tasks frame");
         return;
     }
     if !replay.is_empty() {
@@ -510,9 +521,14 @@ async fn clear_handler(State(state): State<Arc<AppState>>) -> StatusCode {
 
 /// Re-spawn a stopped agent by name. Re-uses its existing data_dir/workspace.
 async fn start_agent_by_name(state: &AppState, name: &str) -> Result<(), String> {
+    info!("[lair/start_agent] starting agent='{name}'");
     let record = state.registry.lock().unwrap().get(name).cloned()
-        .ok_or_else(|| format!("agent '{name}' not found"))?;
+        .ok_or_else(|| {
+            warn!("[lair/start_agent] agent='{name}' not found in registry");
+            format!("agent '{name}' not found")
+        })?;
     if record.is_remote() {
+        warn!("[lair/start_agent] agent='{name}' is remote — start/stop not managed by lair");
         return Err(format!(
             "agent '{name}' is a remote agent — start/stop is managed by the cloud \
              provider, not lair. Use the provisioning MCP to bring its VM up/down."
@@ -547,12 +563,16 @@ async fn start_agent_by_name(state: &AppState, name: &str) -> Result<(), String>
         // from lair happens once at create time, not on every restart.
         mcp:               None,
     };
-    let pid = state.supervisor.spawn(&params).await.map_err(|e| e.to_string())?;
+    let pid = state.supervisor.spawn(&params).await.map_err(|e| {
+        error!("[lair/start_agent] spawn failed for agent='{name}': {e:#}");
+        e.to_string()
+    })?;
     {
         let mut reg = state.registry.lock().unwrap();
         let _ = reg.update_pid(name, Some(pid));
         let _ = reg.update_status(name, AgentStatus::Pending);
     }
+    info!("[lair/start_agent] agent='{name}' started pid={pid} port={}", record.port);
     state.poll_trigger.notify_one();
     Ok(())
 }
@@ -563,16 +583,21 @@ async fn start_agent_by_name(state: &AppState, name: &str) -> Result<(), String>
 /// initial target is a remote agent (its local sub-agents — if any — would
 /// still live in this container).
 async fn terminate_agent_by_name(state: &AppState, name: &str) -> Result<(), String> {
+    info!("[lair/terminate] terminating agent='{name}' (cascade)");
     // Snapshot the registry tree once; we don't want a race to spawn a new
     // descendant mid-tear-down.
     let (target, descendants) = {
         let reg = state.registry.lock().unwrap();
         let Some(target) = reg.get(name).cloned() else {
+            warn!("[lair/terminate] agent='{name}' not found in registry");
             return Err(format!("agent '{name}' not found"));
         };
         let descendants = reg.descendants_leaves_first(name);
         (target, descendants)
     };
+    if !descendants.is_empty() {
+        info!("[lair/terminate] agent='{name}' has {} descendant(s) to tear down", descendants.len());
+    }
 
     if target.is_remote() && descendants.is_empty() {
         return Err(format!(
@@ -612,6 +637,7 @@ async fn terminate_agent_by_name(state: &AppState, name: &str) -> Result<(), Str
     }
     let _ = state.agent_tokens.lock().unwrap().remove(name);
 
+    info!("[lair/terminate] agent='{name}' and descendants torn down");
     state.poll_trigger.notify_one();
     Ok(())
 }
@@ -720,15 +746,19 @@ async fn forward_http(
         .timeout(Duration::from_secs(30))
         .build()
         .unwrap();
-    let mut req = client.request(method, child_url);
+    let mut req = client.request(method.clone(), child_url);
     if let Some(b) = body { req = req.json(&b); }
+    debug!("[lair/proxy] forwarding {method} {child_url}");
     match req.send().await {
         Ok(resp) => {
             let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
             let body = resp.bytes().await.unwrap_or_default();
             (status, body).into_response()
         }
-        Err(e) => (StatusCode::BAD_GATEWAY, format!("proxy error: {e}")).into_response(),
+        Err(e) => {
+            warn!("[lair/proxy] forward {method} {child_url} failed: {e}");
+            (StatusCode::BAD_GATEWAY, format!("proxy error: {e}")).into_response()
+        }
     }
 }
 
@@ -776,7 +806,10 @@ async fn proxy_agent_http(
     };
     let base = match child_http_base(&record, state.lair_priv.clone()).await {
         Ok(u)  => u,
-        Err(e) => return (StatusCode::BAD_GATEWAY, e).into_response(),
+        Err(e) => {
+            warn!("[lair/proxy] cannot resolve base URL for agent='{name}': {e}");
+            return (StatusCode::BAD_GATEWAY, e).into_response();
+        }
     };
     forward_http(method, &format!("{base}{sub}"), None).await
 }
@@ -818,7 +851,10 @@ async fn proxy_agent_stream_handler(
         let reg = state.registry.lock().unwrap();
         match reg.get(&name) {
             Some(r) => r.clone(),
-            None    => return (StatusCode::NOT_FOUND, format!("agent '{name}' not found")).into_response(),
+            None    => {
+                warn!("[lair/proxy] stream request for unknown agent='{name}'");
+                return (StatusCode::NOT_FOUND, format!("agent '{name}' not found")).into_response();
+            }
         }
     };
     let lair_priv = state.lair_priv.clone();
@@ -1418,8 +1454,12 @@ async fn exec_mint_bootstrap_userdata(state: Arc<AppState>, input: serde_json::V
 
     let lair_pubkey = match ssh_ops::read_lair_public_key() {
         Ok(k) => k,
-        Err(e) => return format!("error reading lair SSH public key: {e:#}"),
+        Err(e) => {
+            error!("[lair/mint_bootstrap_userdata] reading lair SSH public key failed: {e:#}");
+            return format!("error reading lair SSH public key: {e:#}");
+        }
     };
+    info!("[lair/mint_bootstrap_userdata] minted userdata for agent='{name}' (image={image})");
 
     // Lair's Noise static pubkey — embedded as `LAIR_PUBKEY` so the remote
     // agent's responder rejects any Noise XX handshake from an initiator
@@ -1588,6 +1628,7 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
     // yet) doesn't get false-positived as unreachable.
     info!("[lair/register_remote_agent] {host}: pre-flight TCP probe on port 22");
     if let Err(e) = probe_tcp_reachable(&host, 22, Duration::from_secs(30)).await {
+        error!("[lair/register_remote_agent] {host}:22 unreachable: {e}");
         return format!(
             "error: {host}:22 is not reachable from lair after 30s ({e}).\n\
              \n\
@@ -1616,7 +1657,10 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
         Duration::from_secs(8),
     ).await {
         Ok(i) => i,
-        Err(e) => return format!("error: could not pull agent info from {host}: {e:#}"),
+        Err(e) => {
+            error!("[lair/register_remote_agent] {host}: could not pull agent-info.json: {e:#}");
+            return format!("error: could not pull agent info from {host}: {e:#}");
+        }
     };
 
     // Insert / refresh Pending row.
@@ -1662,6 +1706,7 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
         &cfg_str,
         0o600,
     ).await {
+        error!("[lair/register_remote_agent] {host}: writing config.json failed: {e:#}");
         return format!(
             "error writing config.json to {host}: {e:#}. Re-run register_remote_agent to retry.",
         );
@@ -1675,6 +1720,7 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
         let script = build_remote_clone_script(&url, &token, &user_name, &user_email);
         info!("[lair/register_remote_agent] {host}: cloning {url}");
         if let Err(e) = ssh_ops::run_script(&host, "root", &key_path, &script).await {
+            error!("[lair/register_remote_agent] {host}: git clone failed: {e:#}");
             return format!(
                 "error cloning git repo on {host}: {e:#}. Re-run register_remote_agent to retry.",
             );
@@ -1687,6 +1733,7 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
         &host, "root", &key_path,
         "set -e; systemctl restart octo-agent",
     ).await {
+        error!("[lair/register_remote_agent] {host}: systemctl restart failed: {e:#}");
         return format!(
             "error restarting octo-agent on {host}: {e:#}. Re-run register_remote_agent to retry.",
         );
@@ -1722,9 +1769,11 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
         parent:         None,
     };
     if let Err(e) = state.registry.lock().unwrap().set(record) {
+        error!("[lair/register_remote_agent] finalising registry row for '{name}' failed: {e:#}");
         return format!("error finalising registry row for '{name}': {e:#}");
     }
     state.poll_trigger.notify_one();
+    info!("[lair/register_remote_agent] '{name}' registered at {host}:{} (Running)", info.port);
     let verb = if resuming { "Resumed and registered" } else { "Registered" };
     format!(
         "{verb} remote agent '{name}' at {host}:{} (pubkey={}). \
@@ -1797,11 +1846,15 @@ async fn exec_forget_agent(state: Arc<AppState>, input: serde_json::Value) -> St
     let removed = state.registry.lock().unwrap().remove(&name);
     match removed {
         Ok(true) => {
+            info!("[lair/forget_agent] removed registry row for remote agent='{name}'");
             state.poll_trigger.notify_one();
             format!("Forgot '{name}' — registry row removed; no VM action taken.")
         }
         Ok(false) => format!("'{name}' was not in the registry"),
-        Err(e)    => format!("error: {e:#}"),
+        Err(e)    => {
+            error!("[lair/forget_agent] removing '{name}' failed: {e:#}");
+            format!("error: {e:#}")
+        }
     }
 }
 
@@ -1941,6 +1994,11 @@ async fn cli_create_agent(
     State(state): State<Arc<AppState>>,
     Json(body):   Json<CreateAgentBody>,
 ) -> Response {
+    info!(
+        "[lair/http] POST /agents (name={} git={})",
+        body.name.as_deref().unwrap_or("(auto)"),
+        body.git_url.as_deref().unwrap_or("(none)"),
+    );
     let mut input = serde_json::Map::new();
     if let Some(v) = body.name           { input.insert("name".into(),           serde_json::Value::String(v)); }
     if let Some(v) = body.git_url        { input.insert("git_url".into(),        serde_json::Value::String(v)); }
@@ -1960,9 +2018,13 @@ async fn cli_start_agent(
     AxumPath(name): AxumPath<String>,
     State(state):   State<Arc<AppState>>,
 ) -> Response {
+    info!("[lair/http] POST /agents/{name}/start");
     match start_agent_by_name(&state, &name).await {
         Ok(_)  => (StatusCode::OK, "ok").into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => {
+            warn!("[lair/http] start agent='{name}' failed: {e}");
+            (StatusCode::BAD_REQUEST, e).into_response()
+        }
     }
 }
 
@@ -1970,8 +2032,10 @@ async fn cli_stop_agent(
     AxumPath(name): AxumPath<String>,
     State(state):   State<Arc<AppState>>,
 ) -> Response {
+    info!("[lair/http] POST /agents/{name}/stop");
     let exists = state.registry.lock().unwrap().get(&name).is_some();
     if !exists {
+        warn!("[lair/http] stop agent='{name}': not found");
         return (StatusCode::NOT_FOUND, format!("agent '{name}' not found")).into_response();
     }
     match state.supervisor.stop(&name).await {
@@ -1981,10 +2045,14 @@ async fn cli_stop_agent(
                 let _ = reg.update_pid(&name, None);
                 let _ = reg.update_status(&name, AgentStatus::Stopped);
             }
+            info!("[lair/http] agent='{name}' stopped");
             state.poll_trigger.notify_one();
             (StatusCode::OK, "ok").into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            error!("[lair/http] stop agent='{name}' failed: {e:#}");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
     }
 }
 
@@ -1992,9 +2060,13 @@ async fn cli_delete_agent(
     AxumPath(name): AxumPath<String>,
     State(state):   State<Arc<AppState>>,
 ) -> Response {
+    info!("[lair/http] DELETE /agents/{name}");
     match terminate_agent_by_name(&state, &name).await {
         Ok(_)  => (StatusCode::OK, "ok").into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => {
+            warn!("[lair/http] delete agent='{name}' failed: {e}");
+            (StatusCode::BAD_REQUEST, e).into_response()
+        }
     }
 }
 
@@ -2025,6 +2097,7 @@ async fn agent_create_child(
     axum::Extension(caller): axum::Extension<AgentCaller>,
     Json(body):    Json<CreateChildAgentBody>,
 ) -> Response {
+    info!("[lair/http] POST /agents/child (caller='{}')", caller.name);
     // Enforce spawn caps before doing any work.
     let cfg = octo_core::read_config();
     let (max_depth, max_descendants) = resolve_agent_spawn_caps(&cfg);
@@ -2033,6 +2106,10 @@ async fn agent_create_child(
         let caller_depth = reg.depth_of(&caller.name).unwrap_or(0);
         // The *new* child sits one level below the caller.
         if caller_depth + 1 > max_depth {
+            warn!(
+                "[lair/http] agent='{}' spawn refused: depth {} exceeds max {max_depth}",
+                caller.name, caller_depth + 1,
+            );
             return (
                 StatusCode::FORBIDDEN,
                 format!(
@@ -2044,6 +2121,10 @@ async fn agent_create_child(
         }
         let current_descendants = reg.descendants_leaves_first(&caller.name).len();
         if current_descendants + 1 > max_descendants {
+            warn!(
+                "[lair/http] agent='{}' spawn refused: {current_descendants} descendant(s) exceeds max {max_descendants}",
+                caller.name,
+            );
             return (
                 StatusCode::FORBIDDEN,
                 format!(
@@ -2078,11 +2159,13 @@ async fn agent_delete_child(
     State(state):   State<Arc<AppState>>,
     axum::Extension(caller): axum::Extension<AgentCaller>,
 ) -> Response {
+    info!("[lair/http] DELETE /agents/child/{name} (caller='{}')", caller.name);
     let is_descendant = {
         let reg = state.registry.lock().unwrap();
         reg.descendants_leaves_first(&caller.name).iter().any(|n| n == &name)
     };
     if !is_descendant {
+        warn!("[lair/http] agent='{}' refused terminate of '{name}': not a descendant", caller.name);
         return (
             StatusCode::FORBIDDEN,
             format!(
@@ -2094,7 +2177,10 @@ async fn agent_delete_child(
     }
     match terminate_agent_by_name(&state, &name).await {
         Ok(_)  => (StatusCode::OK, "ok").into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => {
+            warn!("[lair/http] agent-scoped delete of '{name}' failed: {e}");
+            (StatusCode::BAD_REQUEST, e).into_response()
+        }
     }
 }
 
@@ -2104,11 +2190,15 @@ async fn cli_agent_logs(
 ) -> Response {
     let exists = state.registry.lock().unwrap().get(&name).is_some();
     if !exists {
+        warn!("[lair/http] GET /agents/{name}/logs: agent not found");
         return (StatusCode::NOT_FOUND, format!("agent '{name}' not found")).into_response();
     }
     match state.supervisor.log_tail(&name, 1024 * 1024) {
         Ok(s)  => (StatusCode::OK, s).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            warn!("[lair/http] log_tail for agent='{name}' failed: {e:#}");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
     }
 }
 
@@ -2359,13 +2449,19 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
 
         let addr = format!("0.0.0.0:{http_port}");
         let listener = tokio::net::TcpListener::bind(&addr).await
-            .map_err(|e| anyhow::anyhow!("failed to bind HTTP port {addr}: {e}"))?;
+            .map_err(|e| {
+                error!("[lair] failed to bind HTTP port {addr}: {e}");
+                anyhow::anyhow!("failed to bind HTTP port {addr}: {e}")
+            })?;
         info!("[lair] HTTP listening on {addr} (Noise proxy on 0.0.0.0:{noise_port})");
 
         crate::bootstrap::print_qr("lair", &public_host, public_port, &pubkey_b32);
 
         axum::serve(listener, app).await
-            .map_err(|e| anyhow::anyhow!("axum serve error: {e}"))?;
+            .map_err(|e| {
+                error!("[lair] axum serve error: {e}");
+                anyhow::anyhow!("axum serve error: {e}")
+            })?;
     }
     Ok(())
 }
