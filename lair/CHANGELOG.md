@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-05-14
+
+### Fixed
+
+- **Image now pins `NOISE_PORT=8443`** in `lair/Dockerfile`'s runtime ENV block. Prior 0.9.0 and 0.10.x images shipped with this unset, so lair fell back to its 9000 default inside the container while `EXPOSE` and the CLI's `-p` mapping both target 8443 — mobile's Noise handshake landed on an unbound port and HTTP-through-proxy failed with "Network request failed." Image-only change; the Rust code is unaffected.
+
 ## [0.10.1] - 2026-05-14
 
 ### Fixed
