@@ -1,4 +1,5 @@
 mod agents;
+mod icon;
 mod init;
 mod mcp;
 mod service;
