@@ -113,10 +113,19 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
 
     println!("Operator config: {}.", octo_core::config_path().display());
 
+    // Snapshot the prior mcp.json (if any) so we can restore it if MCP
+    // startup ends up failing after we seed the new one. `seed_server_names`
+    // is the list of names whose connect markers we'll scan for once lair is
+    // healthy.
+    let mcp_dest = lair_dir.join("mcp.json");
+    let prior_mcp = fs::read_to_string(&mcp_dest).ok();
+    let mut seed_server_names: Vec<String> = Vec::new();
+    let mut seed_source_display: Option<String> = None;
     if let Some(seed) = opts.mcp_seed {
-        let dest = lair_dir.join("mcp.json");
-        write_secret_file(&dest, &seed.json)?;
-        println!("Seeded MCP config from {} -> {}", seed.source.display(), dest.display());
+        seed_server_names = crate::mcp::server_names_from_json(&seed.json)?;
+        seed_source_display = Some(seed.source.display().to_string());
+        write_secret_file(&mcp_dest, &seed.json)?;
+        println!("Seeded MCP config from {} -> {}", seed.source.display(), mcp_dest.display());
     }
 
     // Ensure `<lair_dir>/noise_key.bin` (priv || pub, 64 bytes) exists.
@@ -164,6 +173,67 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
 
     println!("Waiting for lair to be ready...");
     service::wait_for_health(opts.http_port, std::time::Duration::from_secs(60)).await?;
+
+    // If we seeded an mcp.json, verify every server actually connected
+    // inside lair before declaring init successful. `init_mcp_pool` is
+    // awaited synchronously before the HTTP server binds, so by the time
+    // /health passes the markers are already in `docker logs`. We still use
+    // a small polling window in case the docker log relay is briefly behind.
+    if !seed_server_names.is_empty() {
+        println!("Verifying MCP server(s) started in lair...");
+        let results = crate::mcp::wait_for_mcp_markers(crate::mcp::WaitOpts {
+            agent:    crate::mcp::LAIR_AGENT_NAME,
+            names:    &seed_server_names,
+            timeout:  std::time::Duration::from_secs(10),
+            baseline: 0,
+        }).await;
+        let failures: Vec<String> = seed_server_names.iter()
+            .filter(|n| !results.get(*n).map(|m| m.is_success()).unwrap_or(false))
+            .cloned()
+            .collect();
+        if !failures.is_empty() {
+            eprintln!("\nMCP startup failures detected during init:");
+            eprint!("{}", crate::mcp::format_marker_report(&results, &seed_server_names));
+
+            // Roll back the entire init: stop the just-started container,
+            // forget the launch record, and restore mcp.json to whatever
+            // the operator had before (or delete it if there was nothing
+            // before). Image is left in the local cache — pulls are cheap
+            // on re-run and the operator may just need to fix mcp.json.
+            eprintln!("\nRolling back init:");
+            eprintln!("  - stopping lair container '{}'", service::LAIR_CONTAINER_NAME);
+            service::stop_lair_if_running();
+
+            let launch_path = service::launch_config_path();
+            if launch_path.exists() {
+                eprintln!("  - removing {}", launch_path.display());
+                let _ = fs::remove_file(&launch_path);
+            }
+
+            match prior_mcp {
+                Some(text) => {
+                    eprintln!("  - restoring previous {}", mcp_dest.display());
+                    write_secret_file(&mcp_dest, &text)?;
+                }
+                None => {
+                    eprintln!("  - removing seeded {}", mcp_dest.display());
+                    let _ = fs::remove_file(&mcp_dest);
+                }
+            }
+
+            let source = seed_source_display.as_deref().unwrap_or("<mcp config>");
+            anyhow::bail!(
+                "init aborted — {} MCP server(s) from {} failed to start: {}. \
+                 Fix the entries (ensure their commands exist inside the lair image, \
+                 or switch to HTTP transport) and re-run `octo init`.",
+                failures.len(),
+                source,
+                failures.join(", "),
+            );
+        }
+        println!("All MCP server(s) connected:");
+        print!("{}", crate::mcp::format_marker_report(&results, &seed_server_names));
+    }
 
     let ip = match service::detect_public_ip().await {
         Ok(ip) => ip,

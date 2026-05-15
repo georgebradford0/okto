@@ -181,6 +181,35 @@ fn docker_output(args: &[&str]) -> Result<std::process::Output> {
         .with_context(|| format!("spawn `docker {}`", args.join(" ")))
 }
 
+/// Run a command inside the lair container via `docker exec` and return its
+/// exit status. The container must already be running. Used by callers that
+/// only care whether the command succeeded (e.g. `command -v` probes).
+pub fn docker_exec_status(args: &[&str]) -> Result<std::process::ExitStatus> {
+    let mut full: Vec<&str> = vec!["exec", LAIR_CONTAINER_NAME];
+    full.extend_from_slice(args);
+    std::process::Command::new("docker")
+        .args(&full)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| format!("spawn `docker exec {LAIR_CONTAINER_NAME} {}`", args.join(" ")))
+}
+
+/// Read the last `tail` lines of `docker logs <LAIR_CONTAINER_NAME>` as a
+/// single string. Used by callers that scan startup-time markers (MCP
+/// connect / spawn-fail) without needing to stream.
+pub fn read_lair_logs(tail: u32) -> Result<String> {
+    let tail_arg = tail.to_string();
+    let out = docker_output(&["logs", "--tail", &tail_arg, LAIR_CONTAINER_NAME])?;
+    // `docker logs` writes container stdout to its own stdout and container
+    // stderr to its own stderr; combine both so the caller doesn't have to
+    // know which stream a given marker landed in.
+    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    Ok(s)
+}
+
 /// True if a container named `LAIR_CONTAINER_NAME` is running on this host.
 pub fn is_running() -> bool {
     let out = match docker_output(&[
