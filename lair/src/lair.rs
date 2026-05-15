@@ -53,7 +53,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::agent_proc::{AgentSupervisor, SpawnParams};
 use crate::agent_tokens::AgentTokens;
 use crate::ssh as ssh_ops;
-use octo_core::{AgentRecord, AgentStatus, Registry, resolve_agent_spawn_caps, status_from_alive};
+use octo_core::{AgentRecord, AgentStatus, Registry, resolve_agent_spawn_caps};
 
 const RELAY_SIGNING_KEY_FILE: &str = "relay_signing_key.bin";
 const DEFAULT_RELAY_URL:      &str = "https://octorelay.directto.link";
@@ -644,37 +644,75 @@ async fn terminate_agent_by_name(state: &AppState, name: &str) -> Result<(), Str
 
 // ── Agent poller ──────────────────────────────────────────────────────────────
 
+/// Probe a local child agent's loopback `/health`. A child binds its HTTP
+/// port only *after* git clone + startup script + MCP pool init, whereas
+/// `kill(pid,0)` goes true at fork/exec — so liveness alone would report a
+/// still-bootstrapping agent as `running`. Readiness must be probed here.
+async fn probe_agent_ready(client: &reqwest::Client, port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{port}/health");
+    matches!(client.get(&url).send().await, Ok(r) if r.status().is_success())
+}
+
 async fn poll_agents(state: Arc<AppState>, ready_tx: watch::Sender<bool>) {
     info!("[agents] poller starting, initial delay 2s");
     tokio::time::sleep(Duration::from_secs(2)).await;
+    // Short timeout so a hung child can't stall the whole poll cycle.
+    let health_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
     let mut first_iter = true;
     loop {
-        debug!("[agents] reconciling registry against pid liveness");
+        debug!("[agents] reconciling registry against pid liveness + readiness");
+
+        // Phase 1 — snapshot the registry under the lock, then release it so
+        // the `/health` probes below don't hold the std Mutex across `.await`.
+        let snapshot: Vec<AgentRecord> = state.registry.lock().unwrap().list().to_vec();
+
+        // Phase 2 — classify each agent. Local agents are probed for
+        // *readiness* (`/health`), not just liveness: a pid-alive child that
+        // hasn't bound its HTTP port yet is `Pending`, not `Running`.
+        let mut classified: Vec<(AgentRecord, AgentStatus)> = Vec::with_capacity(snapshot.len());
+        for record in snapshot {
+            let status = if record.is_remote() {
+                // Remote agents aren't continuously probed — surface whatever
+                // status the registration / terminate flow set.
+                record.status
+            } else {
+                let alive = record.pid
+                    .map(AgentSupervisor::is_alive)
+                    .unwrap_or(false);
+                if !alive {
+                    AgentStatus::Stopped
+                } else if probe_agent_ready(&health_client, record.port).await {
+                    AgentStatus::Running
+                } else {
+                    AgentStatus::Pending
+                }
+            };
+            classified.push((record, status));
+        }
+        let any_pending = classified.iter().any(|(_, s)| *s == AgentStatus::Pending);
+
+        // Phase 3 — write reconciled statuses back and build the wire list.
+        // An agent may have been removed between phases (terminate); skip it.
         let new_agents: Vec<AgentWire> = {
             let mut reg = state.registry.lock().unwrap();
             let now = octo_core::now_secs();
-            let snapshot = reg.list().to_vec();
-            let mut out = Vec::with_capacity(snapshot.len());
-            for record in snapshot {
-                let kind = if record.is_remote() { "remote" } else { "local" };
-                let status = if record.is_remote() {
-                    // Remote agents aren't continuously probed — surface
-                    // whatever status the registration / terminate flow set.
-                    record.status
-                } else {
-                    let alive = record.pid
-                        .map(AgentSupervisor::is_alive)
-                        .unwrap_or(false);
-                    let s = status_from_alive(alive);
-                    let _ = reg.update_status(&record.name, s);
-                    if alive { let _ = reg.update_last_seen(&record.name, now); }
-                    s
-                };
+            let mut out = Vec::with_capacity(classified.len());
+            for (record, status) in &classified {
+                if reg.get(&record.name).is_none() { continue; }
+                if !record.is_remote() {
+                    let _ = reg.update_status(&record.name, *status);
+                    if *status != AgentStatus::Stopped {
+                        let _ = reg.update_last_seen(&record.name, now);
+                    }
+                }
                 out.push(AgentWire {
                     id:     record.name.clone(),
                     name:   record.name.clone(),
                     status: status.as_wire_str().to_string(),
-                    kind,
+                    kind:   if record.is_remote() { "remote" } else { "local" },
                     parent: record.parent.clone(),
                 });
             }
@@ -694,8 +732,16 @@ async fn poll_agents(state: Arc<AppState>, ready_tx: watch::Sender<bool>) {
             ready_tx.send_replace(true);
             info!("[agents] first poll complete — server marked ready");
         }
+        // Poll fast while an agent is mid-bootstrap so it flips to `running`
+        // promptly once its HTTP server binds; fall back to a lazy cadence
+        // once everything has settled.
+        let interval = if any_pending {
+            Duration::from_secs(2)
+        } else {
+            Duration::from_secs(10)
+        };
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(10)) => {
+            _ = tokio::time::sleep(interval) => {
                 debug!("[agents] poll interval elapsed");
             }
             _ = state.poll_trigger.notified() => {

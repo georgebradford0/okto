@@ -284,8 +284,3 @@ impl Registry {
         Ok(())
     }
 }
-
-/// Map a Unix `kill(pid, 0)` liveness result to a status.
-pub fn status_from_alive(alive: bool) -> AgentStatus {
-    if alive { AgentStatus::Running } else { AgentStatus::Stopped }
-}

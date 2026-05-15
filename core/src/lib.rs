@@ -40,7 +40,7 @@ pub mod ssh;
 pub use ssh::{ensure_ssh_keypair, SSH_PRIVATE_KEY_FILE, SSH_PUBLIC_KEY_FILE};
 
 pub mod registry;
-pub use registry::{AgentRecord, AgentStatus, Registry, status_from_alive};
+pub use registry::{AgentRecord, AgentStatus, Registry};
 
 // ── Shared HTTP client ────────────────────────────────────────────────────────
 
