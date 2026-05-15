@@ -693,12 +693,42 @@ async fn probe_agent_ready(client: &reqwest::Client, port: u16) -> bool {
     matches!(client.get(&url).send().await, Ok(r) if r.status().is_success())
 }
 
+/// Probe a remote agent's `/health` over a one-shot outbound Noise tunnel.
+/// Remote agents have no local pid for `kill(pid,0)`, so this is their only
+/// liveness signal. Returns true only if the agent answers 200. `client`
+/// carries a timeout generous enough for the cross-internet tunnel + Noise
+/// handshake yet short enough that a dead VM can't stall the poll cycle.
+async fn probe_remote_agent_ready(
+    client:    &reqwest::Client,
+    record:    &AgentRecord,
+    lair_priv: Vec<u8>,
+) -> bool {
+    let base = match child_http_base(record, lair_priv).await {
+        Ok(b)  => b,
+        Err(e) => {
+            debug!("[agents] remote probe '{}': tunnel setup failed: {e}", record.name);
+            return false;
+        }
+    };
+    matches!(
+        client.get(format!("{base}/health")).send().await,
+        Ok(r) if r.status().is_success(),
+    )
+}
+
 async fn poll_agents(state: Arc<AppState>, ready_tx: watch::Sender<bool>) {
     info!("[agents] poller starting, initial delay 2s");
     tokio::time::sleep(Duration::from_secs(2)).await;
     // Short timeout so a hung child can't stall the whole poll cycle.
     let health_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    // Remote probes cross the public internet + a Noise handshake, so they
+    // get a more generous timeout — but still bounded so a dead VM can't
+    // stall the cycle. Remote agents are probed concurrently below.
+    let remote_health_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(6))
         .build()
         .unwrap();
     let mut first_iter = true;
@@ -709,29 +739,43 @@ async fn poll_agents(state: Arc<AppState>, ready_tx: watch::Sender<bool>) {
         // the `/health` probes below don't hold the std Mutex across `.await`.
         let snapshot: Vec<AgentRecord> = state.registry.lock().unwrap().list().to_vec();
 
-        // Phase 2 — classify each agent. Local agents are probed for
-        // *readiness* (`/health`), not just liveness: a pid-alive child that
-        // hasn't bound its HTTP port yet is `Pending`, not `Running`.
-        let mut classified: Vec<(AgentRecord, AgentStatus)> = Vec::with_capacity(snapshot.len());
-        for record in snapshot {
-            let status = if record.is_remote() {
-                // Remote agents aren't continuously probed — surface whatever
-                // status the registration / terminate flow set.
-                record.status
-            } else {
-                let alive = record.pid
-                    .map(AgentSupervisor::is_alive)
-                    .unwrap_or(false);
-                if !alive {
-                    AgentStatus::Stopped
-                } else if probe_agent_ready(&health_client, record.port).await {
-                    AgentStatus::Running
+        // Phase 2 — classify each agent, all probes running concurrently so
+        // one slow/dead agent can't stall the cycle. Local agents: pid
+        // liveness + loopback `/health` (a pid-alive child that hasn't bound
+        // its HTTP port yet is `Pending`, not `Running`). Remote agents have
+        // no local pid, so they're probed for `/health` over a one-shot Noise
+        // tunnel — unreachable means `Stopped`. A registration still in
+        // flight owns its `Pending` remote row, so leave that untouched.
+        let classify = snapshot.into_iter().map(|record| {
+            let local_client  = &health_client;
+            let remote_client = &remote_health_client;
+            let lair_priv     = state.lair_priv.clone();
+            async move {
+                let status = if record.is_remote() {
+                    if matches!(record.status, AgentStatus::Pending) {
+                        AgentStatus::Pending
+                    } else if probe_remote_agent_ready(remote_client, &record, lair_priv).await {
+                        AgentStatus::Running
+                    } else {
+                        AgentStatus::Stopped
+                    }
                 } else {
-                    AgentStatus::Pending
-                }
-            };
-            classified.push((record, status));
-        }
+                    let alive = record.pid
+                        .map(AgentSupervisor::is_alive)
+                        .unwrap_or(false);
+                    if !alive {
+                        AgentStatus::Stopped
+                    } else if probe_agent_ready(local_client, record.port).await {
+                        AgentStatus::Running
+                    } else {
+                        AgentStatus::Pending
+                    }
+                };
+                (record, status)
+            }
+        });
+        let classified: Vec<(AgentRecord, AgentStatus)> =
+            futures_util::future::join_all(classify).await;
         let any_pending = classified.iter().any(|(_, s)| *s == AgentStatus::Pending);
 
         // Phase 3 — write reconciled statuses back and build the wire list.
@@ -742,11 +786,9 @@ async fn poll_agents(state: Arc<AppState>, ready_tx: watch::Sender<bool>) {
             let mut out = Vec::with_capacity(classified.len());
             for (record, status) in &classified {
                 if reg.get(&record.name).is_none() { continue; }
-                if !record.is_remote() {
-                    let _ = reg.update_status(&record.name, *status);
-                    if *status != AgentStatus::Stopped {
-                        let _ = reg.update_last_seen(&record.name, now);
-                    }
+                let _ = reg.update_status(&record.name, *status);
+                if *status == AgentStatus::Running {
+                    let _ = reg.update_last_seen(&record.name, now);
                 }
                 out.push(AgentWire {
                     id:     record.name.clone(),
