@@ -534,6 +534,14 @@ async fn start_agent_by_name(state: &AppState, name: &str) -> Result<(), String>
              provider, not lair. Use the provisioning MCP to bring its VM up/down."
         ));
     }
+    // No-op if the process is still alive. The status may be `Pending` (the
+    // child is mid-bootstrap and hasn't bound its HTTP port yet) rather than
+    // `Running`, but spawning again would put a second process on the same
+    // port. The poller will flip it to `Running` once `/health` answers.
+    if record.pid.map(AgentSupervisor::is_alive).unwrap_or(false) {
+        info!("[lair/start_agent] agent='{name}' already running (pid={:?}) — no-op", record.pid);
+        return Ok(());
+    }
     let cfg = octo_core::read_config();
     let gh_token = std::env::var("GH_TOKEN").ok().filter(|s| !s.is_empty());
     // git_url isn't stored in the registry — the workspace dir already holds
