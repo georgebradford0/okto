@@ -801,15 +801,16 @@ const ChatPane = memo(function ChatPane({
   const closingRef        = useRef(false)
   const streamingIdRef    = useRef<string>(uid())
   const hasAssistantMsgRef = useRef<boolean>(false)
-  // True for the duration of an agentic turn after the user message has been
-  // scrolled into view: suppresses content-grew auto-scroll so streaming text
-  // doesn't drag the viewport down while the user is reading. Released only
-  // when the turn ends (done / interrupted / error). User scroll never
+  // True for the duration of an agentic turn after the turn's anchor row has
+  // been scrolled into view: suppresses content-grew auto-scroll so streaming
+  // text doesn't drag the viewport down while the user is reading. Released
+  // only when the turn ends (done / interrupted / error). User scroll never
   // releases — they can read or peek freely without forfeiting the lock.
   const streamingLockRef    = useRef<boolean>(false)
-  // One-shot flag set in sendMessage and consumed by onContentSizeChange the
-  // very next time it auto-scrolls — engages streamingLockRef immediately
-  // after the user message is on screen.
+  // One-shot flag, set when a turn begins — by sendMessage for local turns,
+  // by armTurnScroll for auto-turns (bg_complete) and resumed-WS replays.
+  // Consumed by onContentSizeChange the next time it auto-scrolls, engaging
+  // streamingLockRef once the turn's anchor row is on screen.
   const scrollOnceAndLockRef = useRef<boolean>(false)
   // Per-WS counters for the mobile→server keepalive. The WS effect emits
   // `ping { id: ++clientPingNextRef }` every KEEPALIVE_INTERVAL_MS and the
@@ -860,6 +861,17 @@ const ChatPane = memo(function ChatPane({
     if (sendFrameRef) sendFrameRef.current = sendFrame
   }, [sendFrame, sendFrameRef])
 
+  // Arm the scroll-once-and-lock one-shot for a turn that began without a
+  // local sendMessage — an auto-turn triggered by bg_complete, or a turn
+  // replayed after a resumed-WS join. Mirrors sendMessage so streaming
+  // content from any turn brings its anchor into view once, then stops
+  // dragging the viewport. No-op if a turn is already armed or locked.
+  const armTurnScroll = useCallback(() => {
+    if (!streamingLockRef.current && !scrollOnceAndLockRef.current) {
+      scrollOnceAndLockRef.current = true
+    }
+  }, [])
+
   const handleStreamEvent = useCallback((raw: string) => {
     const event = parseServerEvent(raw)
     if (!event) return
@@ -895,6 +907,7 @@ const ChatPane = memo(function ChatPane({
         break
       }
       case 'text': {
+        armTurnScroll()
         const chunk = event.text
         if (!hasAssistantMsgRef.current) {
           hasAssistantMsgRef.current = true
@@ -907,6 +920,7 @@ const ChatPane = memo(function ChatPane({
         break
       }
       case 'tool_use': {
+        armTurnScroll()
         // Bump streaming id so the *next* text block becomes a fresh message
         // after the tool, not appended to pre-tool text.
         hasAssistantMsgRef.current = false
@@ -1029,7 +1043,7 @@ const ChatPane = memo(function ChatPane({
         }
         break
     }
-  }, [updateStatus, sendFrame, onContainersUpdate, onTasksUpdate])
+  }, [updateStatus, sendFrame, onContainersUpdate, onTasksUpdate, armTurnScroll])
 
   // Keep a stable ref to loadHistory so reattachStream can call it without
   // being listed as a dependency (avoids circular dep: loadHistory → reattachStream → loadHistory).
@@ -1074,10 +1088,12 @@ const ChatPane = memo(function ChatPane({
         // `done`/`interrupted`/`error` at turn end), so loadHistory no longer
         // needs to drive it from `is_streaming`.
         setTimeout(() => {
-          // Only re-pin to the bottom if the user was already there. Otherwise
-          // the user is reading earlier content and an autoscroll on every
-          // history reconcile (e.g. end-of-turn) would yank them away.
-          if (!isAtBottomRef.current) return
+          // Only re-pin to the bottom if the user was already there and no
+          // turn lock is engaged. Otherwise the user is reading earlier
+          // content — or a turn is deliberately holding the viewport still —
+          // and a history reconcile (e.g. end-of-turn, foreground return)
+          // would yank them away.
+          if (!isAtBottomRef.current || streamingLockRef.current) return
           const offset = Math.max(0, contentHeightRef.current - listHeightRef.current)
           listRef.current?.scrollToOffset({ offset, animated: false })
         }, 50)
