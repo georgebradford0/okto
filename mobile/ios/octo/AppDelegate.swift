@@ -55,6 +55,19 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
   ) {
     Push.handleRegistrationError(error)
   }
+
+  // Silent (content-available) pushes — the relay uses these to deliver
+  // registration-challenge nonces. Forwarded into PushModule, which hands the
+  // nonce to the waiting JS registration flow. Requires the
+  // `remote-notification` UIBackgroundMode (see Info.plist).
+  func application(
+    _ application: UIApplication,
+    didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+    fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+  ) {
+    Push.handleRemoteNotification(userInfo)
+    completionHandler(.noData)
+  }
 }
 
 class ReactNativeDelegate: RCTDefaultReactNativeFactoryDelegate {

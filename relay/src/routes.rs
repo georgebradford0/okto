@@ -1,8 +1,15 @@
 //! HTTP handlers.
 //!
-//! `/register` and `/unregister` are unauthenticated — accepting fake
-//! (token, pubkey) pairs costs nothing because a real lair pushing to a
-//! non-existent device tokens just gets dropped at APNs.
+//! `/register` is a two-step, ownership-proving flow. `POST /register/challenge`
+//! makes the relay send a silent push carrying a random nonce to the named
+//! device token; only the device that actually holds that token can receive
+//! it. `POST /register` must then echo that nonce back — so a caller who
+//! merely *knows* a device token cannot bind it to a key they control. The
+//! nonce is never returned in an HTTP response; it travels solely via the push.
+//!
+//! `/unregister` only validates the `lair_pubkey` shape; a caller who knows a
+//! victim's token + pubkey can delete that subscription (the victim
+//! re-registers on next chat-mount) — a lower-stakes gap tracked separately.
 //!
 //! `/notify` requires an Ed25519 signature over the request body, with the
 //! pubkey supplied in the `X-Lair-Pubkey` header (base32, no padding). Fresh
@@ -19,12 +26,47 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
+use rand::RngCore;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 const FRESH_WINDOW_SECS: i64 = 60;
+
+/// Upper bound on a stored `device_token`. APNs tokens are 32 bytes (64 hex
+/// chars) and FCM tokens run longer; 512 clears both and caps how much an
+/// unauthenticated `/register` can persist per row.
+const MAX_DEVICE_TOKEN_LEN: usize = 512;
+
+/// A registration-challenge nonce is valid this long after issue — the window
+/// in which the device must receive the silent push and echo the nonce back
+/// to `POST /register`.
+const CHALLENGE_TTL_SECS: i64 = 300;
+
+/// Minimum gap between challenge pushes for the same device token. Caps how
+/// fast a caller can make the relay push at a device they do not control.
+const CHALLENGE_COOLDOWN_SECS: i64 = 30;
+
+/// A fresh 128-bit registration-challenge nonce, hex-encoded.
+fn gen_nonce() -> String {
+    let mut b = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut b);
+    hex::encode(b)
+}
+
+/// True if `s` is a syntactically valid relay-signing public key: RFC4648
+/// base32 (no padding) decoding to a 32-byte Ed25519 key. Mirrors the check
+/// `/notify` applies to the `X-Lair-Pubkey` header.
+fn valid_lair_pubkey(s: &str) -> bool {
+    match base32::decode(base32::Alphabet::Rfc4648 { padding: false }, s) {
+        Some(v) if v.len() == PUBLIC_KEY_LENGTH => {
+            let arr: [u8; PUBLIC_KEY_LENGTH] = v.try_into().unwrap();
+            VerifyingKey::from_bytes(&arr).is_ok()
+        }
+        _ => false,
+    }
+}
 
 pub async fn health() -> &'static str {
     debug!("[routes] /health probe");
@@ -36,6 +78,10 @@ pub struct RegisterBody {
     device_token: String,
     platform:     String,
     lair_pubkey:  String,
+    /// Required by `/register` — the nonce from the challenge push. Ignored by
+    /// `/unregister`, which shares this struct.
+    #[serde(default)]
+    challenge_nonce: Option<String>,
 }
 
 pub async fn register(
@@ -51,6 +97,35 @@ pub async fn register(
         warn!("[routes] /register rejected: empty device_token or lair_pubkey");
         return (StatusCode::BAD_REQUEST, "device_token and lair_pubkey required").into_response();
     }
+    if body.device_token.len() > MAX_DEVICE_TOKEN_LEN {
+        warn!("[routes] /register rejected: device_token over {MAX_DEVICE_TOKEN_LEN} bytes");
+        return (StatusCode::BAD_REQUEST, "device_token too long").into_response();
+    }
+    if !valid_lair_pubkey(&body.lair_pubkey) {
+        warn!("[routes] /register rejected: lair_pubkey not a valid base32 Ed25519 key");
+        return (StatusCode::BAD_REQUEST, "lair_pubkey: not a valid base32 Ed25519 key").into_response();
+    }
+    // Proof of device-token ownership: the caller must echo the nonce the
+    // relay pushed to this token in the /register/challenge step. A caller
+    // who only knows the token string never received that push.
+    let nonce = match body.challenge_nonce.as_deref() {
+        Some(n) if !n.is_empty() => n,
+        _ => {
+            warn!("[routes] /register rejected: missing challenge_nonce");
+            return (StatusCode::UNAUTHORIZED, "challenge_nonce required — call /register/challenge first").into_response();
+        }
+    };
+    match state.db.consume_challenge(&body.device_token, nonce, CHALLENGE_TTL_SECS) {
+        Ok(true) => {}
+        Ok(false) => {
+            warn!("[routes] /register rejected: invalid or expired challenge; token=…{}", tail4(&body.device_token));
+            return (StatusCode::UNAUTHORIZED, "invalid or expired challenge_nonce").into_response();
+        }
+        Err(e) => {
+            error!("[routes] /register challenge check db error: {e:#}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response();
+        }
+    }
     if let Err(e) = state.db.upsert_subscription(&body.device_token, &body.platform, &body.lair_pubkey) {
         error!("[routes] /register db error: {e:#}");
         return (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response();
@@ -62,12 +137,85 @@ pub async fn register(
     StatusCode::NO_CONTENT.into_response()
 }
 
+#[derive(Deserialize)]
+pub struct ChallengeBody {
+    device_token: String,
+    platform:     String,
+}
+
+/// Step one of registration: prove the caller controls `device_token` by
+/// having the relay push a nonce to it. The nonce is recorded server-side and
+/// delivered *only* via APNs — never in this response (a 202 with no body) —
+/// so a caller who merely knows the token string cannot learn it.
+pub async fn register_challenge(
+    State(state): State<Arc<AppState>>,
+    Json(body):   Json<ChallengeBody>,
+) -> impl IntoResponse {
+    debug!("[routes] /register/challenge received; platform={}", body.platform);
+    if body.platform != "ios" {
+        warn!("[routes] /register/challenge rejected: unsupported platform={}", body.platform);
+        return (StatusCode::BAD_REQUEST, "platform must be ios").into_response();
+    }
+    if body.device_token.is_empty() || body.device_token.len() > MAX_DEVICE_TOKEN_LEN {
+        warn!("[routes] /register/challenge rejected: bad device_token length");
+        return (StatusCode::BAD_REQUEST, "device_token required, <= 512 bytes").into_response();
+    }
+    // APNs device tokens are hex; rejecting non-hex also keeps the value safe
+    // to interpolate into the APNs request path.
+    if !body.device_token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        warn!("[routes] /register/challenge rejected: device_token not hex");
+        return (StatusCode::BAD_REQUEST, "device_token must be hex").into_response();
+    }
+
+    let nonce = gen_nonce();
+    match state.db.upsert_challenge(&body.device_token, &nonce, CHALLENGE_COOLDOWN_SECS, CHALLENGE_TTL_SECS) {
+        Ok(true) => {
+            // Silent push: wakes the app and carries the nonce, shows no alert.
+            let payload = json!({
+                "aps": { "content-available": 1 },
+                "octo_challenge": nonce,
+            });
+            match state.apns.push_background(&body.device_token, &state.bundle_id, &payload).await {
+                PushOutcome::Delivered => {
+                    info!("[routes] /register/challenge: nonce push sent; token=…{}", tail4(&body.device_token));
+                }
+                PushOutcome::InvalidToken => {
+                    warn!("[routes] /register/challenge: APNs rejected token=…{}", tail4(&body.device_token));
+                    if let Err(e) = state.db.forget_invalid_token(&body.device_token) {
+                        error!("[routes] /register/challenge: failed to forget invalid token: {e:#}");
+                    }
+                    return (StatusCode::BAD_REQUEST, "device_token rejected by APNs").into_response();
+                }
+                PushOutcome::Failed(msg) => {
+                    warn!("[routes] /register/challenge: APNs push failed token=…{}: {msg}", tail4(&body.device_token));
+                    return (StatusCode::BAD_GATEWAY, "push delivery failed").into_response();
+                }
+            }
+        }
+        Ok(false) => {
+            // Within cooldown — the prior challenge is still valid, so the
+            // device can finish /register with the nonce it already received.
+            info!("[routes] /register/challenge: within cooldown, no new push; token=…{}", tail4(&body.device_token));
+        }
+        Err(e) => {
+            error!("[routes] /register/challenge db error: {e:#}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response();
+        }
+    }
+    // 202 with an empty body — the nonce is delivered solely via the push.
+    StatusCode::ACCEPTED.into_response()
+}
+
 pub async fn unregister(
     State(state): State<Arc<AppState>>,
     Json(body):   Json<RegisterBody>,
 ) -> impl IntoResponse {
     debug!("[routes] /unregister received; pubkey={} token=…{}",
         body.lair_pubkey, tail4(&body.device_token));
+    if !valid_lair_pubkey(&body.lair_pubkey) {
+        warn!("[routes] /unregister rejected: lair_pubkey not a valid base32 Ed25519 key");
+        return (StatusCode::BAD_REQUEST, "lair_pubkey: not a valid base32 Ed25519 key").into_response();
+    }
     match state.db.delete_subscription(&body.device_token, &body.lair_pubkey) {
         Ok(n) => {
             info!("[routes] /unregister: device unregistered; removed {n} row(s) for pubkey={} token=…{}",

@@ -24,6 +24,19 @@ export interface Spec extends TurboModule {
 
   /** Current notification permission state — call before re-prompting. */
   getAuthorizationStatus(): Promise<AuthorizationStatus>
+
+  /**
+   * Wait for the relay's registration-challenge push to arrive and return the
+   * nonce it carries.
+   *
+   * Resolves with:
+   *   - the challenge nonce (string) once the silent push is received, or
+   *   - `null` if none arrives within `timeoutMs`.
+   *
+   * A push that arrives before this is called is latched natively and
+   * returned immediately, so the caller may request the challenge first.
+   */
+  awaitRegistrationChallenge(timeoutMs: number): Promise<string | null>
 }
 
 const NativePush = TurboModuleRegistry.get<Spec>('Push')

@@ -120,4 +120,77 @@ final class Push: NSObject, UNUserNotificationCenterDelegate {
             resolve(s)
         }
     }
+
+    // ── Registration-challenge handling ────────────────────────────────────
+    //
+    // The relay proves a device controls its APNs token by sending a silent
+    // push carrying a nonce; `/register` then requires that nonce echoed back.
+    // AppDelegate forwards every remote notification here. If it is a
+    // challenge push we hand the nonce to a waiting JS promise, or latch it
+    // until JS asks — the push can land before JS calls `await`.
+    //
+    // `challengeGeneration` identifies the current waiter so a stale timeout
+    // (whose waiter was already consumed or superseded) cannot settle a newer
+    // call's promise.
+
+    private static var latchedNonce: String?
+    private static var challengeWaiter: ((Any?) -> Void)?
+    private static var challengeGeneration: Int = 0
+
+    // Called by AppDelegate for every received remote notification.
+    @objc static func handleRemoteNotification(_ userInfo: [AnyHashable: Any]) {
+        guard let nonce = userInfo["octo_challenge"] as? String else { return }
+        print("[push] registration challenge received")
+
+        lock.lock()
+        if let waiter = challengeWaiter {
+            challengeWaiter = nil
+            challengeGeneration += 1
+            lock.unlock()
+            waiter(nonce)
+        } else {
+            latchedNonce = nonce
+            lock.unlock()
+        }
+    }
+
+    @objc func awaitRegistrationChallenge(
+        _ timeoutMs: NSNumber,
+        resolver resolve: @escaping (Any?) -> Void,
+        rejecter reject: @escaping (String?, String?, Error?) -> Void
+    ) {
+        Push.lock.lock()
+        // Push already arrived before JS asked? hand it over immediately.
+        if let n = Push.latchedNonce {
+            Push.latchedNonce = nil
+            Push.lock.unlock()
+            resolve(n)
+            return
+        }
+        // Supersede any previous waiter so its JS promise doesn't hang.
+        if let prev = Push.challengeWaiter {
+            Push.challengeWaiter = nil
+            Push.challengeGeneration += 1
+            prev(nil)
+        }
+        Push.challengeGeneration += 1
+        let myGeneration = Push.challengeGeneration
+        Push.challengeWaiter = resolve
+        Push.lock.unlock()
+
+        // Timeout: resolve null if this same call is still the waiter.
+        let seconds = max(0, timeoutMs.doubleValue / 1000.0)
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+            Push.lock.lock()
+            if Push.challengeWaiter != nil && Push.challengeGeneration == myGeneration {
+                let waiter = Push.challengeWaiter
+                Push.challengeWaiter = nil
+                Push.challengeGeneration += 1
+                Push.lock.unlock()
+                waiter?(nil)
+            } else {
+                Push.lock.unlock()
+            }
+        }
+    }
 }

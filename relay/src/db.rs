@@ -6,7 +6,7 @@
 //! every insert so the table stays bounded.
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::{path::Path, sync::Mutex};
 use tracing::{debug, error, info};
 
@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     platform     TEXT NOT NULL CHECK(platform IN ('ios','android')),
     lair_pubkey  TEXT NOT NULL,
     created_at   INTEGER NOT NULL,
+    last_seen    INTEGER NOT NULL,
     PRIMARY KEY (device_token, lair_pubkey)
 );
 CREATE INDEX IF NOT EXISTS idx_subs_pubkey ON subscriptions(lair_pubkey);
@@ -27,6 +28,15 @@ CREATE TABLE IF NOT EXISTS nonces (
     PRIMARY KEY (pubkey, nonce)
 );
 CREATE INDEX IF NOT EXISTS idx_nonces_seen ON nonces(seen_at);
+
+-- One pending registration challenge per device token. Created by
+-- POST /register/challenge, consumed (deleted) by a matching POST /register;
+-- stale rows are GC'd on every insert.
+CREATE TABLE IF NOT EXISTS register_challenges (
+    device_token TEXT PRIMARY KEY,
+    nonce        TEXT NOT NULL,
+    created_at   INTEGER NOT NULL
+);
 "#;
 
 pub struct Db {
@@ -50,7 +60,26 @@ impl Db {
             error!("[db] schema migration failed: {e}");
             e
         }).context("apply schema")?;
-        info!("[db] schema migrations applied (subscriptions, nonces)");
+
+        // Migrate pre-`last_seen` databases — the column is absent on relays
+        // created before push-challenge registration shipped. Backfill
+        // existing rows from `created_at` so they aren't pruned immediately.
+        let has_last_seen = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('subscriptions') WHERE name = 'last_seen'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        if !has_last_seen {
+            conn.execute_batch(
+                "ALTER TABLE subscriptions ADD COLUMN last_seen INTEGER NOT NULL DEFAULT 0;
+                 UPDATE subscriptions SET last_seen = created_at WHERE last_seen = 0;",
+            ).context("migrate subscriptions.last_seen")?;
+            info!("[db] migrated subscriptions: added last_seen column");
+        }
+        info!("[db] schema migrations applied (subscriptions, nonces, register_challenges)");
         // Pragmas for the access pattern: tiny writes, point reads.
         conn.pragma_update(None, "journal_mode", "WAL").ok();
         conn.pragma_update(None, "synchronous", "NORMAL").ok();
@@ -61,9 +90,10 @@ impl Db {
         let now = unix_now();
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO subscriptions(device_token, platform, lair_pubkey, created_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(device_token, lair_pubkey) DO UPDATE SET platform=excluded.platform",
+            "INSERT INTO subscriptions(device_token, platform, lair_pubkey, created_at, last_seen)
+             VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(device_token, lair_pubkey)
+             DO UPDATE SET platform=excluded.platform, last_seen=excluded.last_seen",
             params![device_token, platform, lair_pubkey, now],
         ).map_err(|e| {
             error!("[db] upsert_subscription failed for pubkey={lair_pubkey}: {e}");
@@ -148,6 +178,86 @@ impl Db {
         })?;
         info!("[db] forgot invalid device token; removed {n} subscription row(s)");
         Ok(())
+    }
+
+    /// Delete subscriptions whose `last_seen` predates `cutoff`. Live devices
+    /// re-register on every chat-mount so their rows stay fresh; abandoned or
+    /// abusively-created rows age out, bounding table growth.
+    pub fn prune_stale_subscriptions(&self, cutoff: i64) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "DELETE FROM subscriptions WHERE last_seen < ?1",
+            params![cutoff],
+        ).map_err(|e| {
+            error!("[db] prune_stale_subscriptions failed: {e}");
+            e
+        })?;
+        if n > 0 {
+            info!("[db] pruned {n} stale subscription row(s)");
+        }
+        Ok(n)
+    }
+
+    /// Record a registration challenge for `device_token`, replacing any prior
+    /// one, and GC challenges older than `ttl_secs`. Returns `Ok(false)`
+    /// *without* recording if a challenge was already issued within
+    /// `cooldown_secs` — the caller should then skip sending another push so a
+    /// caller cannot spam challenge pushes at a device.
+    pub fn upsert_challenge(
+        &self,
+        device_token: &str,
+        nonce: &str,
+        cooldown_secs: i64,
+        ttl_secs: i64,
+    ) -> Result<bool> {
+        let now = unix_now();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM register_challenges WHERE created_at < ?1",
+            params![now - ttl_secs],
+        ).map_err(|e| {
+            error!("[db] register_challenges GC failed: {e}");
+            e
+        })?;
+        let recent: Option<i64> = conn.query_row(
+            "SELECT created_at FROM register_challenges WHERE device_token = ?1",
+            params![device_token],
+            |r| r.get(0),
+        ).optional()?;
+        if let Some(ts) = recent {
+            if now - ts < cooldown_secs {
+                debug!("[db] challenge suppressed: within {cooldown_secs}s cooldown");
+                return Ok(false);
+            }
+        }
+        conn.execute(
+            "INSERT INTO register_challenges(device_token, nonce, created_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(device_token) DO UPDATE SET nonce=excluded.nonce, created_at=excluded.created_at",
+            params![device_token, nonce, now],
+        ).map_err(|e| {
+            error!("[db] upsert_challenge failed: {e}");
+            e
+        })?;
+        debug!("[db] registration challenge recorded");
+        Ok(true)
+    }
+
+    /// Atomically verify and consume a registration challenge: deletes the row
+    /// iff `(device_token, nonce)` matches a challenge no older than
+    /// `ttl_secs`. Returns `true` on a successful single-use consume.
+    pub fn consume_challenge(&self, device_token: &str, nonce: &str, ttl_secs: i64) -> Result<bool> {
+        let now = unix_now();
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "DELETE FROM register_challenges
+             WHERE device_token = ?1 AND nonce = ?2 AND created_at >= ?3",
+            params![device_token, nonce, now - ttl_secs],
+        ).map_err(|e| {
+            error!("[db] consume_challenge failed: {e}");
+            e
+        })?;
+        Ok(n == 1)
     }
 }
 

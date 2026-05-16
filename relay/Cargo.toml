@@ -24,4 +24,5 @@ tracing-subscriber  = { version = "0.3", features = ["env-filter"] }
 base32              = "0.5"
 base64              = "0.22"
 hex                 = "0.4"
+rand                = "0.8"
 clap                = { version = "4", features = ["derive", "env"] }

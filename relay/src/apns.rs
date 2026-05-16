@@ -92,6 +92,24 @@ impl Client {
     /// Send an alert push. `payload` should be a complete APNs payload object
     /// (i.e. include the `aps` key); the relay just wraps in HTTP/2 + auth.
     pub async fn push(&self, device_token: &str, bundle_id: &str, payload: &serde_json::Value) -> PushOutcome {
+        self.send(device_token, bundle_id, payload, "alert", "10").await
+    }
+
+    /// Send a silent/background push (`content-available`, no alert). Apple
+    /// requires `apns-push-type: background` and `apns-priority: 5` for these;
+    /// the relay uses them to deliver registration-challenge nonces.
+    pub async fn push_background(&self, device_token: &str, bundle_id: &str, payload: &serde_json::Value) -> PushOutcome {
+        self.send(device_token, bundle_id, payload, "background", "5").await
+    }
+
+    async fn send(
+        &self,
+        device_token: &str,
+        bundle_id: &str,
+        payload: &serde_json::Value,
+        push_type: &str,
+        priority: &str,
+    ) -> PushOutcome {
         let tok_tail = tail4(device_token);
         let jwt = match self.jwt() {
             Ok(j) => j,
@@ -101,12 +119,13 @@ impl Client {
             }
         };
         let url = format!("{}/3/device/{device_token}", self.base_url);
-        debug!("[apns] POST /3/device for token=…{tok_tail} topic={bundle_id}");
+        debug!("[apns] POST /3/device for token=…{tok_tail} topic={bundle_id} type={push_type}");
         let res = self.http
             .post(&url)
             .header("authorization", format!("bearer {jwt}"))
             .header("apns-topic", bundle_id)
-            .header("apns-push-type", "alert")
+            .header("apns-push-type", push_type)
+            .header("apns-priority", priority)
             .json(payload)
             .send()
             .await;

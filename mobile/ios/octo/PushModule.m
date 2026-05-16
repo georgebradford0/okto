@@ -10,6 +10,10 @@ RCT_EXTERN_METHOD(requestPermissionAndRegister:(RCTPromiseResolveBlock)resolve
 RCT_EXTERN_METHOD(getAuthorizationStatus:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
+RCT_EXTERN_METHOD(awaitRegistrationChallenge:(nonnull NSNumber *)timeoutMs
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
 + (BOOL)requiresMainQueueSetup { return NO; }
 
 @end

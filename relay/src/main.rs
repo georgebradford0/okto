@@ -11,7 +11,7 @@
 use anyhow::Context;
 use axum::{routing::{get, post}, Router};
 use clap::Parser;
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -51,6 +51,12 @@ struct Args {
     /// against TestFlight/sandbox tokens.
     #[arg(long, env = "APNS_PRODUCTION", default_value_t = true, action = clap::ArgAction::Set)]
     apns_production: bool,
+
+    /// Subscriptions not re-registered within this many days are pruned. The
+    /// mobile client re-registers on every chat-mount, so live devices stay;
+    /// abandoned or abusively-created rows age out, bounding table growth.
+    #[arg(long, env = "RELAY_SUBSCRIPTION_TTL_DAYS", default_value_t = 30)]
+    subscription_ttl_days: i64,
 }
 
 pub struct AppState {
@@ -82,11 +88,28 @@ async fn main() -> anyhow::Result<()> {
         bundle_id: args.apns_bundle_id,
     });
 
+    // Periodically prune subscriptions that no live device has refreshed.
+    {
+        let state = state.clone();
+        let ttl_secs = args.subscription_ttl_days.max(1) * 86_400;
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(6 * 3600));
+            loop {
+                tick.tick().await;
+                match state.db.prune_stale_subscriptions(unix_now() - ttl_secs) {
+                    Ok(n)  => tracing::debug!("[relay] subscription prune: {n} removed"),
+                    Err(e) => tracing::warn!("[relay] subscription prune failed: {e:#}"),
+                }
+            }
+        });
+    }
+
     let app = Router::new()
-        .route("/health",     get(routes::health))
-        .route("/register",   post(routes::register))
-        .route("/unregister", post(routes::unregister))
-        .route("/notify",     post(routes::notify))
+        .route("/health",             get(routes::health))
+        .route("/register",           post(routes::register))
+        .route("/register/challenge", post(routes::register_challenge))
+        .route("/unregister",         post(routes::unregister))
+        .route("/notify",             post(routes::notify))
         .with_state(state)
         .layer(TraceLayer::new_for_http());
 
@@ -95,4 +118,11 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("[relay] listening on {}", args.listen);
     axum::serve(listener, app).await.context("serve")?;
     Ok(())
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
