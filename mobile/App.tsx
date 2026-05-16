@@ -826,9 +826,6 @@ const ChatPane = memo(function ChatPane({
   const listHeightRef     = useRef(0)
   const lastToolIdRef     = useRef<string | null>(null)
   const historyAbortRef   = useRef<AbortController | null>(null)
-  const messagesRef       = useRef<Message[]>([])
-
-  useEffect(() => { messagesRef.current = messages }, [messages])
 
   // Expose imperative handles to the parent.
   useEffect(() => {
@@ -1071,19 +1068,31 @@ const ChatPane = memo(function ChatPane({
           ...(m.cost_usd != null ? { cost: m.cost_usd } : {}),
           ...(m.output    != null ? { output: m.output } : {}),
         })))
-        const prev = messagesRef.current
-        const eq = (a: Message, b: Message) =>
-          a.role === b.role && a.text === b.text && a.cost === b.cost && a.output === b.output
-        const prefixMatch = prev.length <= msgs.length && prev.every((m, i) => eq(m, msgs[i]))
-        if (!prefixMatch) {
-          // History diverged (clear/edit) — full replace
-          setMessages(msgs)
-        } else if (msgs.length > prev.length) {
-          // Server added messages — append only, preserving existing ids
-          const tail = msgs.slice(prev.length)
-          setMessages(cur => [...cur, ...tail.map((m, j) => ({ ...m, prevRole: j === 0 ? (cur.length > 0 ? cur[cur.length - 1].role : undefined) : tail[j - 1].role }))])
-        }
-        // else identical — no update.
+        // Reconcile the live conversation against the server's canonical
+        // history with a longest-common-prefix merge: matched rows are kept
+        // verbatim so they retain their ids and FlatList reuses the mounted
+        // bubbles. A naive full replace re-keys every row, remounting the
+        // whole list and re-running each bubble's fade-in — the flicker.
+        setMessages(cur => {
+          // Tool rows are matched leniently: the client renders a tool as
+          // `label (arg)` while /history projects it as `name(arg)`, so a
+          // strict text compare would diverge on the first tool row and
+          // force a full replace. They're the same event — match by role
+          // and keep the client's already-rendered row.
+          const eq = (a: Message, b: Message) => {
+            if (a.role !== b.role) return false
+            if (a.role === 'tool') return true
+            return a.text === b.text && a.cost === b.cost && a.output === b.output
+          }
+          let common = 0
+          while (common < cur.length && common < msgs.length && eq(cur[common], msgs[common])) common++
+          // Server history is a prefix of what we already have — identical,
+          // or we're live-ahead via the stream. Nothing to apply.
+          if (common === msgs.length) return cur
+          // Divergence at `common`: keep the matched prefix verbatim, take
+          // the rest fresh from history. Only the suffix remounts.
+          return [...cur.slice(0, common), ...msgs.slice(common)]
+        })
         // Status is driven entirely by /stream events now (`ready` on connect,
         // `done`/`interrupted`/`error` at turn end), so loadHistory no longer
         // needs to drive it from `is_streaming`.
