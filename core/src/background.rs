@@ -296,8 +296,8 @@ where
 /// at `<data_dir>/session/tasks.json` so a process restart preserves the list.
 ///
 /// Returns the shared live output buffer to hand to `spawn_background_command`;
-/// it is also stored in `StreamState.task_outputs` keyed by `task_id` so a
-/// monitor attaching later (`monitor_process` with `task_id`) can find it.
+/// it is also stored in `StreamState.task_outputs` keyed by `task_id` so an
+/// attached monitor loop can read the running command's progress.
 pub fn register_task(
     state:    &Mutex<StreamState>,
     data_dir: &Path,
@@ -409,27 +409,23 @@ pub const MIN_WAKE_INTERVAL_SECS: u64 = 15;
 pub fn monitor_process_tool() -> AnthropicTool {
     AnthropicTool {
         name: "monitor_process".to_string(),
-        description: "Watch a long-running process and get woken with its output while it runs, \
-                      so you can react mid-run — to a failing build, a milestone, an error in a \
-                      log — instead of only seeing the result at the end. Provide EITHER \
-                      `command` to start and watch a new process, OR `task_id` to attach to a \
-                      background task you already started with `run_command_in_background`. You \
-                      are woken at most once every `wake_interval_secs`, and only when there is \
-                      new output. The process is killed / detached when its task is cancelled. \
-                      When you only need the final result, use `run_command_in_background` \
-                      instead. When woken, take action only if the output warrants it — \
-                      otherwise reply with one short acknowledgement line."
+        description: "Run a long-running process as a background task and get woken with its \
+                      output while it runs, so you can react mid-run — to a failing build, a \
+                      milestone, an error in a log — instead of only seeing the result at the \
+                      end. The `command` is started as its own background task and watched. \
+                      You are woken at most once every `wake_interval_secs` while it produces \
+                      new output, and once more when it exits. The process is killed when its \
+                      task is cancelled. When you only need the final result, use \
+                      `run_command_in_background` instead. When woken mid-run, take action \
+                      only if the output warrants it — otherwise reply with one short \
+                      acknowledgement line."
             .to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "Shell command to run and watch, executed via `bash -c` — e.g. `tail -f build.log`, a test run, or `ssh host '...'` to watch a remote process. Provide this OR task_id, not both."
-                },
-                "task_id": {
-                    "type": "string",
-                    "description": "Id of an existing background task (from run_command_in_background) to attach a monitor to. Provide this OR command, not both."
+                    "description": "Shell command to run and watch, executed via `bash -c` — e.g. `tail -f build.log`, a test run, or `ssh host '...'` to watch a remote process."
                 },
                 "wake_interval_secs": {
                     "type": "integer",
@@ -440,7 +436,7 @@ pub fn monitor_process_tool() -> AnthropicTool {
                     "description": "Optional short note on what you are watching for; echoed back to you on each wake-up for context."
                 }
             },
-            "required": []
+            "required": ["command"]
         }),
         display_label: Some("Monitoring process".into()),
     }
@@ -465,5 +461,30 @@ pub fn monitor_progress_message(task_id: &str, label: &str, new_output: &str) ->
     ApiMessage {
         role:    "bg_progress".to_string(),
         content: vec![ContentBlock::Text { text: monitor_progress_text(task_id, label, new_output) }],
+    }
+}
+
+/// The text of a monitor's final wake-up, delivered once when the watched
+/// process exits. `label` is the watched command or the model-supplied
+/// `purpose`; `status` is the task's terminal status (`done` / `error` /
+/// `cancelled`). Shared by the persisted `bg_complete` ApiMessage and the live
+/// `BgComplete` wire event so a `/history` reload reconciles cleanly.
+pub fn monitor_complete_text(task_id: &str, label: &str, status: &str, final_output: &str) -> String {
+    let tail = final_output.trim_end();
+    let tail = if tail.is_empty() { "(no further output)" } else { tail };
+    format!(
+        "[monitor] Background process {task_id} ({label}) exited (status={status}).\n\n\
+         Final output:\n{tail}\n\n\
+         The process has finished — take any follow-up action it warrants.",
+    )
+}
+
+/// Build the `bg_complete` ApiMessage injected when a monitored process exits.
+/// The role `bg_complete` is persisted-only — `compact_history` rewrites it to
+/// `user` before the API call.
+pub fn monitor_complete_message(task_id: &str, label: &str, status: &str, final_output: &str) -> ApiMessage {
+    ApiMessage {
+        role:    "bg_complete".to_string(),
+        content: vec![ContentBlock::Text { text: monitor_complete_text(task_id, label, status, final_output) }],
     }
 }

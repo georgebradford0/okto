@@ -30,6 +30,7 @@ pub use background::{
     BackgroundCommandParams, BackgroundCommandResult, TaskOutput, TaskRecord, TaskStatus,
     DEFAULT_WAKE_INTERVAL_SECS, MIN_WAKE_INTERVAL_SECS,
     cancel_task, completion_chat_event, finalize_task,
+    monitor_complete_message, monitor_complete_text,
     monitor_process_tool, monitor_progress_message, monitor_progress_text,
     register_task, run_command_in_background_tool, spawn_background_command,
     tasks_wire_json,
