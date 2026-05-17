@@ -1,6 +1,6 @@
 # Built-in Tools
 
-The tools the agentic loop exposes to Claude without any MCP servers configured.
+The tools the agentic loop exposes to the LLM without any MCP servers configured.
 "Built-in" here means compiled into the Rust binary — for runtime-added tools, see
 [Runtime MCP Tools](mcp-tools.md).
 
