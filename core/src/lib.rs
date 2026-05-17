@@ -184,7 +184,7 @@ pub fn effective_repo() -> String {
 pub fn write_config(cfg: &Config) {
     let path = config_path();
     fs::create_dir_all(path.parent().unwrap()).ok();
-    if let Err(e) = fs::write(&path, serde_json::to_string(cfg).unwrap()) {
+    if let Err(e) = fs::write(&path, serde_json::to_string_pretty(cfg).unwrap()) {
         error!("[config] failed to write {}: {e}", path.display());
     } else {
         info!("[config] wrote config to {}", path.display());
