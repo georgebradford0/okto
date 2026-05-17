@@ -93,7 +93,6 @@ pub fn load_seed_mcp_config(path: &Path) -> Result<String> {
 
 pub async fn run(opts: InitOptions<'_>) -> Result<()> {
     info!("[init] run starting");
-    print!("{}", crate::icon::render(44));
     service::ensure_docker_present()?;
 
     let cfg_dir    = service::config_dir();
