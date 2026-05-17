@@ -35,8 +35,9 @@ use octo_core::{
     build_tools_with_mcp, chain_executor_with_mcp,
     cancel_task as core_cancel_task, completion_chat_event, ensure_ssh_keypair, finalize_task,
     from_base32, init_mcp_pool, init_shell_env, load_or_generate_keypair, now_secs,
-    open_noise_tunnel, record_task_progress,
-    register_task, tasks_wire_json, TaskRecord, TaskStatus,
+    monitor_process_tool, monitor_progress_message, monitor_progress_text, open_noise_tunnel,
+    register_task, tasks_wire_json, TaskOutput, TaskRecord, TaskStatus,
+    DEFAULT_WAKE_INTERVAL_SECS, MIN_WAKE_INTERVAL_SECS,
     relay as relay_client, RelaySigner,
     resolve_api_key, resolve_model, run_noise_proxy, run_command_in_background_tool, send_message,
     send_notification_tool, NOTIFY_CATEGORY_AGENT_MESSAGE,
@@ -112,6 +113,11 @@ struct AppState {
     cancel:        Mutex<CancellationToken>,
     is_streaming:  AtomicBool,
     stream_state:  Mutex<StreamState>,
+    /// Background-task injections (`bg_complete` / `bg_progress`) waiting to be
+    /// folded into the conversation. Staged here and drained into `messages`
+    /// by `try_continue_auto` only when no turn is running, so a turn's
+    /// end-of-turn message commit never clobbers them.
+    pending_injections: Mutex<Vec<ApiMessage>>,
     /// Flips to true once subsystem init completes (first agent poll done).
     ready_rx:      watch::Receiver<bool>,
     relay_signer:  Arc<RelaySigner>,
@@ -358,19 +364,34 @@ fn commit_turn(msgs_arc: &Arc<Mutex<Vec<ApiMessage>>>, snapshot_len: usize, upda
     save_messages(&current);
 }
 
+/// Drain any queued background-task injections into the conversation and spawn
+/// an auto-turn so the model reacts. No-op when nothing is queued. If a turn is
+/// already running the queue is left in place — that turn's own end-of-turn
+/// call drains it once it finishes, which is also why injections never touch
+/// `messages` mid-turn.
 fn try_continue_auto(state: Arc<AppState>) {
-    let needs_turn = matches!(
-        state.messages.lock().unwrap().last().map(|m| m.role.as_str()),
-        Some("bg_complete")
-    );
-    if !needs_turn { return; }
+    if state.pending_injections.lock().unwrap().is_empty() { return; }
     if state.is_streaming
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
         return;
     }
-    info!("[lair/stream] auto-turn triggered by bg_complete");
+    let drained: Vec<ApiMessage> = {
+        let mut pending = state.pending_injections.lock().unwrap();
+        std::mem::take(&mut *pending)
+    };
+    if drained.is_empty() {
+        // Lost the race — another drain emptied the queue first.
+        state.is_streaming.store(false, Ordering::Relaxed);
+        return;
+    }
+    {
+        let mut msgs = state.messages.lock().unwrap();
+        msgs.extend(drained);
+        save_messages(&msgs);
+    }
+    info!("[lair/stream] auto-turn triggered by queued background injection");
     spawn_turn(state, TurnTrigger::Auto);
 }
 
@@ -1128,6 +1149,7 @@ octo can host any kind of agent workload, not only coding agents — don't assum
 - **`forget_agent(name)`** — *registry-only.* Removes a remote agent's row without touching the VM. Use after the provisioning MCP has terminated the instance. Don't use on a live local agent — use `terminate_agent` instead.
 - **`restart_all_agents`** — restart every managed *local* agent. Use after upgrading the lair binary; no effect on remote agents.
 - **`run_command_in_background(command)`** — run a shell command in the background. The user is notified when it finishes. For long builds, big test suites, large downloads. Prefer the regular `bash` tool for anything fast. When it completes, the output is injected into this conversation autonomously — if no follow-up action is genuinely useful, reply with one short acknowledgement line rather than producing prose.
+- **`monitor_process(command? | task_id?, wake_interval_secs?)`** — watch a process and get woken with its output *while it runs* so you can react mid-run. Pass a `command` to start and watch a new process, or a `task_id` to attach to a background task you already started. Pick `wake_interval_secs` to suit the process. Use `run_command_in_background` instead when you only need the final result.
 
 # General tools (shared with children)
 - `bash` — shell commands; use for git, gh, curl, one-offs.
@@ -1384,6 +1406,7 @@ fn lair_extra_tools() -> Vec<AnthropicTool> {
         forget_agent_tool(),
         restart_all_agents_tool(),
         run_command_in_background_tool(),
+        monitor_process_tool(),
         send_notification_tool(),
     ]
 }
@@ -1404,6 +1427,7 @@ fn lair_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
                 "forget_agent"              => exec_forget_agent(state, input).await,
                 "restart_all_agents"        => exec_restart_all_agents(state).await,
                 "run_command_in_background" => exec_run_command_in_background(state, input).await,
+                "monitor_process"           => exec_monitor_process(state, input).await,
                 "send_notification"         => exec_send_notification(state, input).await,
                 other => format!("unknown tool: {other}"),
             }
@@ -2075,7 +2099,7 @@ async fn exec_run_command_in_background(state: Arc<AppState>, input: serde_json:
     info!("[lair/run_command_in_background] spawning {task_id} ({} chars)", command.len());
 
     let cancel = CancellationToken::new();
-    register_task(&state.stream_state, &data_dir(), TaskRecord {
+    let output = register_task(&state.stream_state, &data_dir(), TaskRecord {
         task_id:      task_id.clone(),
         command:      command.clone(),
         status:       TaskStatus::Running,
@@ -2083,51 +2107,54 @@ async fn exec_run_command_in_background(state: Arc<AppState>, input: serde_json:
         completed_at: None,
         summary:      None,
         cost_usd:     None,
+        wake_interval_secs: None,
     }, cancel.clone());
     buffer_and_fanout(&state.stream_state, tasks_wire_json(&state.stream_state));
 
+    run_tracked_command(state, task_id.clone(), command, cancel, output);
+    format!("Background command {task_id} started. The user will be notified when it completes.")
+}
+
+/// Spawn a registered background task and wire up the standard completion
+/// handling: finalize the registry row, fan out the `bg_complete` event, queue
+/// the `bg_complete` injection, fire a push, and kick `try_continue_auto`.
+fn run_tracked_command(
+    state:   Arc<AppState>,
+    task_id: String,
+    command: String,
+    cancel:  CancellationToken,
+    output:  Arc<Mutex<TaskOutput>>,
+) {
     let params = BackgroundCommandParams {
-        task_id: task_id.clone(),
+        task_id,
         command,
-        cwd:     "/".to_string(),
+        cwd: "/".to_string(),
     };
-
-    let progress_state   = state.clone();
-    let progress_task_id = task_id.clone();
-    let progress = move |output_tail: &str| {
-        record_task_progress(&progress_state.stream_state, &progress_task_id, output_tail);
-        buffer_and_fanout(&progress_state.stream_state, tasks_wire_json(&progress_state.stream_state));
-    };
-
-    let stream_state_arc = state.clone();
-    spawn_background_command(params, cancel, progress, move |outcome| {
-        finalize_task(&stream_state_arc.stream_state, &data_dir(), &outcome);
-        buffer_and_fanout(&stream_state_arc.stream_state, tasks_wire_json(&stream_state_arc.stream_state));
+    let deliver_state = state.clone();
+    spawn_background_command(params, cancel, output, move |outcome| {
+        finalize_task(&deliver_state.stream_state, &data_dir(), &outcome);
+        buffer_and_fanout(&deliver_state.stream_state, tasks_wire_json(&deliver_state.stream_state));
         let injection = format!(
             "Background command {} completed (status={}). Command: {}\n\nOutput:\n{}",
             outcome.task_id, outcome.status, outcome.command, outcome.summary
         );
-        {
-            let mut msgs = stream_state_arc.messages.lock().unwrap();
-            msgs.push(ApiMessage {
-                role:    "bg_complete".to_string(),
-                content: vec![ContentBlock::Text { text: injection.clone() }],
-            });
-            save_messages(&msgs);
-        }
+        deliver_state.pending_injections.lock().unwrap().push(ApiMessage {
+            role:    "bg_complete".to_string(),
+            content: vec![ContentBlock::Text { text: injection.clone() }],
+        });
         let bg_event = ChatEvent::BgComplete {
             task_id: outcome.task_id.clone(),
             text:    injection,
         };
         if let Some(json) = chat_event_to_wire_json(&bg_event) {
-            buffer_and_fanout(&stream_state_arc.stream_state, json.to_string());
+            buffer_and_fanout(&deliver_state.stream_state, json.to_string());
         }
         let event = completion_chat_event(&outcome);
         if let Some(json) = chat_event_to_wire_json(&event) {
-            buffer_and_fanout(&stream_state_arc.stream_state, json.to_string());
+            buffer_and_fanout(&deliver_state.stream_state, json.to_string());
         }
-        let signer = stream_state_arc.relay_signer.clone();
-        let url    = stream_state_arc.relay_url.clone();
+        let signer = deliver_state.relay_signer.clone();
+        let url    = deliver_state.relay_url.clone();
         if !url.is_empty() {
             let title = format!("Background command {}", outcome.status);
             let body  = outcome.summary.chars().take(120).collect::<String>();
@@ -2135,10 +2162,131 @@ async fn exec_run_command_in_background(state: Arc<AppState>, input: serde_json:
                 relay_client::notify(&url, &signer, "task_complete", Some(&title), Some(&body)).await;
             });
         }
-        try_continue_auto(stream_state_arc.clone());
+        try_continue_auto(deliver_state.clone());
     });
+}
 
-    format!("Background command {task_id} started. The user will be notified when it completes.")
+async fn exec_monitor_process(state: Arc<AppState>, input: serde_json::Value) -> String {
+    let command = input.get("command").and_then(|v| v.as_str())
+        .map(str::trim).filter(|s| !s.is_empty());
+    let task_id_in = input.get("task_id").and_then(|v| v.as_str())
+        .map(str::trim).filter(|s| !s.is_empty());
+    let purpose = input.get("purpose").and_then(|v| v.as_str())
+        .map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+    let interval = input.get("wake_interval_secs").and_then(|v| v.as_u64())
+        .unwrap_or(DEFAULT_WAKE_INTERVAL_SECS)
+        .max(MIN_WAKE_INTERVAL_SECS);
+
+    match (command, task_id_in) {
+        (Some(_), Some(_)) =>
+            "error: provide either 'command' or 'task_id', not both".to_string(),
+        (None, None) =>
+            "error: provide either 'command' (new process) or 'task_id' (existing task)".to_string(),
+        (Some(command), None) => {
+            let command = command.to_string();
+            let task_id = format!("bg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+            info!("[lair/monitor_process] spawning {task_id} ({} chars) interval={interval}s", command.len());
+            let cancel = CancellationToken::new();
+            let output = register_task(&state.stream_state, &data_dir(), TaskRecord {
+                task_id:      task_id.clone(),
+                command:      command.clone(),
+                status:       TaskStatus::Running,
+                started_at:   now_secs(),
+                completed_at: None,
+                summary:      None,
+                cost_usd:     None,
+                wake_interval_secs: Some(interval),
+            }, cancel.clone());
+            buffer_and_fanout(&state.stream_state, tasks_wire_json(&state.stream_state));
+            let label = purpose.unwrap_or_else(|| command.clone());
+            run_tracked_command(state.clone(), task_id.clone(), command, cancel.clone(), output);
+            spawn_monitor(state, task_id.clone(), label, interval, cancel);
+            format!("Monitoring background process {task_id}. You'll be woken with new output \
+                     roughly every {interval}s while it runs.")
+        }
+        (None, Some(task_id)) => {
+            let task_id = task_id.to_string();
+            let resolved = {
+                let mut ss = state.stream_state.lock().unwrap();
+                match ss.tasks.iter_mut().find(|t| t.task_id == task_id) {
+                    Some(t) if t.status == TaskStatus::Running => {
+                        t.wake_interval_secs = Some(interval);
+                        let command = t.command.clone();
+                        let cancel  = ss.task_cancellers.get(&task_id).cloned();
+                        Some((command, cancel))
+                    }
+                    _ => None,
+                }
+            };
+            let Some((command, cancel)) = resolved else {
+                return format!("error: task '{task_id}' not found or no longer running");
+            };
+            let Some(cancel) = cancel else {
+                return format!("error: task '{task_id}' has no live handle to monitor");
+            };
+            buffer_and_fanout(&state.stream_state, tasks_wire_json(&state.stream_state));
+            info!("[lair/monitor_process] attaching monitor to {task_id} interval={interval}s");
+            let label = purpose.unwrap_or(command);
+            spawn_monitor(state, task_id.clone(), label, interval, cancel);
+            format!("Monitoring background task {task_id}. You'll be woken with new output \
+                     roughly every {interval}s while it runs.")
+        }
+    }
+}
+
+/// Detached loop that wakes the model with a monitored task's new output. Runs
+/// until the task leaves `Running` or its cancel token fires.
+fn spawn_monitor(
+    state:    Arc<AppState>,
+    task_id:  String,
+    label:    String,
+    interval: u64,
+    cancel:   CancellationToken,
+) {
+    tokio::spawn(async move {
+        let period = Duration::from_secs(interval);
+        let mut cursor = 0usize;
+        info!("[lair/monitor] watching {task_id} every {interval}s");
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(period) => {}
+                _ = cancel.cancelled() => {
+                    info!("[lair/monitor] {task_id} cancelled, stopping");
+                    break;
+                }
+            }
+            let (output, running) = {
+                let ss = state.stream_state.lock().unwrap();
+                let output  = ss.task_outputs.get(&task_id).cloned();
+                let running = ss.tasks.iter().find(|t| t.task_id == task_id)
+                    .map(|t| t.status == TaskStatus::Running)
+                    .unwrap_or(false);
+                (output, running)
+            };
+            let Some(output) = output else {
+                info!("[lair/monitor] {task_id} buffer gone, stopping");
+                break;
+            };
+            let (new_text, new_cursor) = output.lock().unwrap().read_since(cursor);
+            if !new_text.trim().is_empty() {
+                cursor = new_cursor;
+                state.pending_injections.lock().unwrap()
+                    .push(monitor_progress_message(&task_id, &label, &new_text));
+                let ev = ChatEvent::BgProgress {
+                    task_id: task_id.clone(),
+                    text:    monitor_progress_text(&task_id, &label, &new_text),
+                };
+                if let Some(json) = chat_event_to_wire_json(&ev) {
+                    buffer_and_fanout(&state.stream_state, json.to_string());
+                }
+                try_continue_auto(state.clone());
+            }
+            if !running {
+                info!("[lair/monitor] {task_id} task ended, stopping");
+                break;
+            }
+        }
+    });
 }
 
 // ── Management HTTP API (CLI ↔ lair on loopback) ───────────────────────────────
@@ -2543,6 +2691,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             mcp_pool,
             cancel:        Mutex::new(CancellationToken::new()),
             is_streaming:  AtomicBool::new(false),
+            pending_injections: Mutex::new(Vec::new()),
             stream_state:  Mutex::new({
                 let mut ss = StreamState::new();
                 ss.tasks = octo_core::load_tasks(&data_dir(), "lair");

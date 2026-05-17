@@ -9,6 +9,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
+    time::Duration,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -28,8 +29,10 @@ use octo_core::{
     self,
     build_agent_system_prompt, build_system_prompt,
     build_tools_with_mcp, cancel_task as core_cancel_task, chain_executor_with_mcp,
-    completion_chat_event, data_dir, finalize_task, from_base32, now_secs, record_task_progress,
-    register_task, tasks_wire_json, TaskRecord, TaskStatus,
+    completion_chat_event, data_dir, finalize_task, from_base32, now_secs,
+    monitor_process_tool, monitor_progress_message, monitor_progress_text,
+    register_task, tasks_wire_json, TaskOutput, TaskRecord, TaskStatus,
+    DEFAULT_WAKE_INTERVAL_SECS, MIN_WAKE_INTERVAL_SECS,
     get_branches_for_repo, init_mcp_pool, init_shell_env,
     load_or_generate_keypair, read_config,
     resolve_api_key, resolve_model, run_command_in_background_tool,
@@ -66,6 +69,11 @@ struct AppState {
     is_streaming:  AtomicBool,
     cancel:        Mutex<CancellationToken>,
     mcp_pool:      McpPool,
+    /// Background-task injections (`bg_complete` / `bg_progress`) waiting to be
+    /// folded into the conversation. A turn never appends to `messages`
+    /// concurrently with itself, so injections are staged here and drained
+    /// into `messages` by `try_continue_auto` only when no turn is running.
+    pending_injections: Mutex<Vec<ApiMessage>>,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -191,19 +199,34 @@ fn spawn_turn(state: Arc<AppState>, user_text: Option<String>) {
     });
 }
 
+/// Drain any queued background-task injections into the conversation and spawn
+/// an auto-turn so the model reacts. No-op when nothing is queued. If a turn is
+/// already running the queue is left in place — that turn's own end-of-turn
+/// call drains it once it finishes, which is also why injections never touch
+/// `messages` mid-turn (avoiding the turn-end overwrite clobbering them).
 fn try_continue_auto(state: Arc<AppState>) {
-    let needs_turn = matches!(
-        state.messages.lock().unwrap().last().map(|m| m.role.as_str()),
-        Some("bg_complete")
-    );
-    if !needs_turn { return; }
+    if state.pending_injections.lock().unwrap().is_empty() { return; }
     if state.is_streaming
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
         return;
     }
-    info!("[agent/stream] auto-turn triggered by bg_complete");
+    let drained: Vec<ApiMessage> = {
+        let mut pending = state.pending_injections.lock().unwrap();
+        std::mem::take(&mut *pending)
+    };
+    if drained.is_empty() {
+        // Lost the race — another drain emptied the queue first.
+        state.is_streaming.store(false, Ordering::Relaxed);
+        return;
+    }
+    {
+        let mut msgs = state.messages.lock().unwrap();
+        msgs.extend(drained);
+        save_messages(&msgs);
+    }
+    info!("[agent/stream] auto-turn triggered by queued background injection");
     spawn_turn(state, None);
 }
 
@@ -401,7 +424,11 @@ async fn update_config_handler(Json(patch): Json<Config>) -> StatusCode {
 }
 
 fn make_extra_tools() -> Vec<AnthropicTool> {
-    let mut tools = vec![run_command_in_background_tool(), send_notification_tool()];
+    let mut tools = vec![
+        run_command_in_background_tool(),
+        monitor_process_tool(),
+        send_notification_tool(),
+    ];
     if has_spawn_capability() {
         tools.push(spawn_agent_tool());
         tools.push(terminate_agent_tool());
@@ -496,6 +523,7 @@ fn make_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
         Box::pin(async move {
             match name.as_str() {
                 "run_command_in_background" => exec_run_command_in_background(state, input).await,
+                "monitor_process"           => exec_monitor_process(state, input).await,
                 "spawn_agent"               => exec_spawn_agent(input).await,
                 "terminate_agent"           => exec_terminate_agent(input).await,
                 "send_notification"         => exec_send_notification(input).await,
@@ -655,7 +683,7 @@ async fn exec_run_command_in_background(state: Arc<AppState>, input: serde_json:
     info!("[agent/run_command_in_background] spawning {task_id} ({} chars)", command.len());
 
     let cancel = CancellationToken::new();
-    register_task(&state.stream_state, &data_dir(), TaskRecord {
+    let output = register_task(&state.stream_state, &data_dir(), TaskRecord {
         task_id:      task_id.clone(),
         command:      command.clone(),
         status:       TaskStatus::Running,
@@ -663,51 +691,54 @@ async fn exec_run_command_in_background(state: Arc<AppState>, input: serde_json:
         completed_at: None,
         summary:      None,
         cost_usd:     None,
+        wake_interval_secs: None,
     }, cancel.clone());
     buffer_and_fanout(&state.stream_state, tasks_wire_json(&state.stream_state));
 
+    run_tracked_command(state, task_id.clone(), command, cancel, output);
+    format!("Background command {task_id} started. The user will be notified when it completes.")
+}
+
+/// Spawn a registered background task and wire up the standard completion
+/// handling: finalize the registry row, fan out the `bg_complete` event, queue
+/// the `bg_complete` injection, fire a push, and kick `try_continue_auto`.
+fn run_tracked_command(
+    state:   Arc<AppState>,
+    task_id: String,
+    command: String,
+    cancel:  CancellationToken,
+    output:  Arc<Mutex<TaskOutput>>,
+) {
     let params = BackgroundCommandParams {
-        task_id: task_id.clone(),
+        task_id,
         command,
-        cwd:     state.cwd.clone(),
+        cwd: state.cwd.clone(),
     };
-
-    let progress_state   = state.clone();
-    let progress_task_id = task_id.clone();
-    let progress = move |output_tail: &str| {
-        record_task_progress(&progress_state.stream_state, &progress_task_id, output_tail);
-        buffer_and_fanout(&progress_state.stream_state, tasks_wire_json(&progress_state.stream_state));
-    };
-
-    let stream_state_arc = state.clone();
-    spawn_background_command(params, cancel, progress, move |outcome| {
-        finalize_task(&stream_state_arc.stream_state, &data_dir(), &outcome);
-        buffer_and_fanout(&stream_state_arc.stream_state, tasks_wire_json(&stream_state_arc.stream_state));
+    let deliver_state = state.clone();
+    spawn_background_command(params, cancel, output, move |outcome| {
+        finalize_task(&deliver_state.stream_state, &data_dir(), &outcome);
+        buffer_and_fanout(&deliver_state.stream_state, tasks_wire_json(&deliver_state.stream_state));
 
         let injection = format!(
             "Background command {} completed (status={}). Command: {}\n\nOutput:\n{}",
             outcome.task_id, outcome.status, outcome.command, outcome.summary
         );
-        {
-            let mut msgs = stream_state_arc.messages.lock().unwrap();
-            msgs.push(ApiMessage {
-                role:    "bg_complete".to_string(),
-                content: vec![ContentBlock::Text { text: injection.clone() }],
-            });
-            save_messages(&msgs);
-        }
+        deliver_state.pending_injections.lock().unwrap().push(ApiMessage {
+            role:    "bg_complete".to_string(),
+            content: vec![ContentBlock::Text { text: injection.clone() }],
+        });
 
         let bg_event = ChatEvent::BgComplete {
             task_id: outcome.task_id.clone(),
             text:    injection,
         };
         if let Some(json) = chat_event_to_wire_json(&bg_event) {
-            buffer_and_fanout(&stream_state_arc.stream_state, json.to_string());
+            buffer_and_fanout(&deliver_state.stream_state, json.to_string());
         }
 
         let event = completion_chat_event(&outcome);
         if let Some(json) = chat_event_to_wire_json(&event) {
-            buffer_and_fanout(&stream_state_arc.stream_state, json.to_string());
+            buffer_and_fanout(&deliver_state.stream_state, json.to_string());
         }
 
         // Push notification. Children have no relay key, so lair signs and
@@ -718,10 +749,131 @@ async fn exec_run_command_in_background(state: Arc<AppState>, input: serde_json:
             forward_notify_to_lair("task_complete", &title, &body).await;
         });
 
-        try_continue_auto(stream_state_arc.clone());
+        try_continue_auto(deliver_state.clone());
     });
+}
 
-    format!("Background command {task_id} started. The user will be notified when it completes.")
+async fn exec_monitor_process(state: Arc<AppState>, input: serde_json::Value) -> String {
+    let command = input.get("command").and_then(|v| v.as_str())
+        .map(str::trim).filter(|s| !s.is_empty());
+    let task_id_in = input.get("task_id").and_then(|v| v.as_str())
+        .map(str::trim).filter(|s| !s.is_empty());
+    let purpose = input.get("purpose").and_then(|v| v.as_str())
+        .map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+    let interval = input.get("wake_interval_secs").and_then(|v| v.as_u64())
+        .unwrap_or(DEFAULT_WAKE_INTERVAL_SECS)
+        .max(MIN_WAKE_INTERVAL_SECS);
+
+    match (command, task_id_in) {
+        (Some(_), Some(_)) =>
+            "error: provide either 'command' or 'task_id', not both".to_string(),
+        (None, None) =>
+            "error: provide either 'command' (new process) or 'task_id' (existing task)".to_string(),
+        (Some(command), None) => {
+            let command = command.to_string();
+            let task_id = format!("bg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+            info!("[agent/monitor_process] spawning {task_id} ({} chars) interval={interval}s", command.len());
+            let cancel = CancellationToken::new();
+            let output = register_task(&state.stream_state, &data_dir(), TaskRecord {
+                task_id:      task_id.clone(),
+                command:      command.clone(),
+                status:       TaskStatus::Running,
+                started_at:   now_secs(),
+                completed_at: None,
+                summary:      None,
+                cost_usd:     None,
+                wake_interval_secs: Some(interval),
+            }, cancel.clone());
+            buffer_and_fanout(&state.stream_state, tasks_wire_json(&state.stream_state));
+            let label = purpose.unwrap_or_else(|| command.clone());
+            run_tracked_command(state.clone(), task_id.clone(), command, cancel.clone(), output);
+            spawn_monitor(state, task_id.clone(), label, interval, cancel);
+            format!("Monitoring background process {task_id}. You'll be woken with new output \
+                     roughly every {interval}s while it runs.")
+        }
+        (None, Some(task_id)) => {
+            let task_id = task_id.to_string();
+            let resolved = {
+                let mut ss = state.stream_state.lock().unwrap();
+                match ss.tasks.iter_mut().find(|t| t.task_id == task_id) {
+                    Some(t) if t.status == TaskStatus::Running => {
+                        t.wake_interval_secs = Some(interval);
+                        let command = t.command.clone();
+                        let cancel  = ss.task_cancellers.get(&task_id).cloned();
+                        Some((command, cancel))
+                    }
+                    _ => None,
+                }
+            };
+            let Some((command, cancel)) = resolved else {
+                return format!("error: task '{task_id}' not found or no longer running");
+            };
+            let Some(cancel) = cancel else {
+                return format!("error: task '{task_id}' has no live handle to monitor");
+            };
+            buffer_and_fanout(&state.stream_state, tasks_wire_json(&state.stream_state));
+            info!("[agent/monitor_process] attaching monitor to {task_id} interval={interval}s");
+            let label = purpose.unwrap_or(command);
+            spawn_monitor(state, task_id.clone(), label, interval, cancel);
+            format!("Monitoring background task {task_id}. You'll be woken with new output \
+                     roughly every {interval}s while it runs.")
+        }
+    }
+}
+
+/// Detached loop that wakes the model with a monitored task's new output. Runs
+/// until the task leaves `Running` or its cancel token fires.
+fn spawn_monitor(
+    state:    Arc<AppState>,
+    task_id:  String,
+    label:    String,
+    interval: u64,
+    cancel:   CancellationToken,
+) {
+    tokio::spawn(async move {
+        let period = Duration::from_secs(interval);
+        let mut cursor = 0usize;
+        info!("[agent/monitor] watching {task_id} every {interval}s");
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(period) => {}
+                _ = cancel.cancelled() => {
+                    info!("[agent/monitor] {task_id} cancelled, stopping");
+                    break;
+                }
+            }
+            let (output, running) = {
+                let ss = state.stream_state.lock().unwrap();
+                let output  = ss.task_outputs.get(&task_id).cloned();
+                let running = ss.tasks.iter().find(|t| t.task_id == task_id)
+                    .map(|t| t.status == TaskStatus::Running)
+                    .unwrap_or(false);
+                (output, running)
+            };
+            let Some(output) = output else {
+                info!("[agent/monitor] {task_id} buffer gone, stopping");
+                break;
+            };
+            let (new_text, new_cursor) = output.lock().unwrap().read_since(cursor);
+            if !new_text.trim().is_empty() {
+                cursor = new_cursor;
+                state.pending_injections.lock().unwrap()
+                    .push(monitor_progress_message(&task_id, &label, &new_text));
+                let ev = ChatEvent::BgProgress {
+                    task_id: task_id.clone(),
+                    text:    monitor_progress_text(&task_id, &label, &new_text),
+                };
+                if let Some(json) = chat_event_to_wire_json(&ev) {
+                    buffer_and_fanout(&state.stream_state, json.to_string());
+                }
+                try_continue_auto(state.clone());
+            }
+            if !running {
+                info!("[agent/monitor] {task_id} task ended, stopping");
+                break;
+            }
+        }
+    });
 }
 
 // ── Agent identity ────────────────────────────────────────────────────────────
@@ -850,6 +1002,7 @@ pub async fn run() -> anyhow::Result<()> {
         is_streaming:  AtomicBool::new(false),
         cancel:        Mutex::new(CancellationToken::new()),
         mcp_pool,
+        pending_injections: Mutex::new(Vec::new()),
     });
 
     let cors = CorsLayer::new()

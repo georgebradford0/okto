@@ -5,11 +5,11 @@
 //! and the small ping/pong frame parsers.
 
 use crate::{now_secs, ApiMessage, ChatEvent, ContentBlock};
-use crate::background::{TaskRecord, TaskStatus};
+use crate::background::{TaskOutput, TaskRecord, TaskStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -35,6 +35,10 @@ pub struct StreamState {
     /// outlive a process restart, which is why loaded `Running` records are
     /// rewritten to `Error` in `load_tasks`.
     pub task_cancellers:  HashMap<String, CancellationToken>,
+    /// Live, bounded output buffers keyed by task_id. Populated at spawn by
+    /// `register_task`, written by `spawn_background_command`, read by an
+    /// attached monitor loop. Runtime-only; evicted with the registry cap.
+    pub task_outputs:     HashMap<String, Arc<Mutex<TaskOutput>>>,
 }
 
 impl StreamState {
@@ -44,6 +48,7 @@ impl StreamState {
             subs:            Vec::new(),
             tasks:           Vec::new(),
             task_cancellers: HashMap::new(),
+            task_outputs:    HashMap::new(),
         }
     }
 }
@@ -198,6 +203,12 @@ pub fn messages_to_history(messages: &[ApiMessage], last_cost_usd: Option<f64>) 
                     .collect();
                 result.push(HistMsg { role: "bg_complete".to_string(), text, cost_usd: None, output: None });
             }
+            "bg_progress" => {
+                let text: String = m.content.iter()
+                    .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
+                    .collect();
+                result.push(HistMsg { role: "bg_progress".to_string(), text, cost_usd: None, output: None });
+            }
             "error" => {
                 let text: String = m.content.iter()
                     .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
@@ -267,6 +278,8 @@ pub fn chat_event_to_wire_json(event: &ChatEvent) -> Option<serde_json::Value> {
             Some(serde_json::json!({"type":"system","text":text})),
         ChatEvent::BgComplete { task_id, text } =>
             Some(serde_json::json!({"type":"bg_complete","task_id":task_id,"text":text})),
+        ChatEvent::BgProgress { task_id, text } =>
+            Some(serde_json::json!({"type":"bg_progress","task_id":task_id,"text":text})),
         _ => None,
     }
 }

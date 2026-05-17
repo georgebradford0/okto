@@ -23,6 +23,7 @@ export type ServerEvent =
   | { type: 'agents';        agents: AgentInfo[] }
   | { type: 'tasks';         tasks: TaskRecord[] }
   | { type: 'bg_complete';   task_id: string; text: string }
+  | { type: 'bg_progress';   task_id: string; text: string }
   | { type: 'ping';          id: number }
   | { type: 'pong';          id: number }
 
@@ -60,6 +61,9 @@ export interface TaskRecord {
   completed_at: number | null
   summary:      string | null
   cost_usd:     number | null
+  /** Present when a monitor is attached — the model is woken with this task's
+   *  output at most this often (seconds). Absent for plain background tasks. */
+  wake_interval_secs?: number | null
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

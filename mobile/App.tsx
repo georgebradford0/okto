@@ -57,7 +57,7 @@ interface ContainerInfo {
 
 interface Message {
   id:         string
-  role:       'user' | 'assistant' | 'tool' | 'session' | 'interrupted' | 'error' | 'bg_complete'
+  role:       'user' | 'assistant' | 'tool' | 'session' | 'interrupted' | 'error' | 'bg_complete' | 'bg_progress'
   text:       string
   cost?:      number
   toolUseId?: string
@@ -479,15 +479,16 @@ const MessageBubble = memo(function MessageBubble({
       </Animated.View>
     )
   }
-  if (message.role === 'bg_complete') {
-    // Take just the first line of the injected text — it's prefixed with
-    // "Background task <id> completed (status=…)" which is enough context;
-    // the long body would crowd the chip.
+  if (message.role === 'bg_complete' || message.role === 'bg_progress') {
+    // Take just the first line of the injected text — it's prefixed with a
+    // "Background command <id> completed…" / "[monitor] … produced new output:"
+    // header which is enough context; the long body would crowd the chip.
     const firstLine = message.text.split('\n', 1)[0] || message.text
+    const marker = message.role === 'bg_progress' ? '◈' : '◇'
     return (
       <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
         <View style={[s.messageWrap, { marginBottom: bubbleBottomMargin, paddingLeft: 28 }]}>
-          <Text style={s.bgCompleteLine} selectable>◇ {firstLine}</Text>
+          <Text style={s.bgCompleteLine} selectable>{marker} {firstLine}</Text>
         </View>
       </Animated.View>
     )
@@ -586,6 +587,9 @@ const TaskRow = memo(function TaskRow({ task, cancelling, onCancel }: { task: Ta
             {task.status.toUpperCase()}
           </Text>
         </View>
+        {task.wake_interval_secs != null && (
+          <Text style={[s.taskStatusLabel, { color: C.accent }]}>◈ MONITORED</Text>
+        )}
         <Text style={s.taskTimestamp}>{ts}</Text>
         {isRunning && (
           <TouchableOpacity
@@ -971,12 +975,12 @@ const ChatPane = memo(function ChatPane({
           // first event and is about to be replayed. If we've already rendered
           // any of it (mid-turn WS reconnect), naively processing the replay
           // would duplicate every text chunk and tool row. Truncate back to
-          // the last turn anchor — the user/bg_complete row that triggered
-          // this turn — so the replay rebuilds the in-flight portion cleanly.
+          // the last turn anchor — the user / bg_complete / bg_progress row
+          // that triggered this turn — so the replay rebuilds it cleanly.
           setMessages(prev => {
             for (let i = prev.length - 1; i >= 0; i--) {
               const role = prev[i].role
-              if (role === 'user' || role === 'bg_complete') {
+              if (role === 'user' || role === 'bg_complete' || role === 'bg_progress') {
                 return prev.slice(0, i + 1)
               }
             }
@@ -1121,6 +1125,12 @@ const ChatPane = memo(function ChatPane({
           : appendMsg(prev, { id, role: 'bg_complete' as const, text: event.text }))
         break
       }
+      case 'bg_progress':
+        // A monitored task produced new output mid-run. Each event is distinct
+        // output, so it gets its own chip. The event text matches the persisted
+        // bg_progress row, so a later /history reload reconciles cleanly.
+        setMessages(prev => appendMsg(prev, { id: uid(), role: 'bg_progress' as const, text: event.text }))
+        break
       case 'ping':
         sendFrame({ type: 'pong', id: event.id })
         break

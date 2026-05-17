@@ -27,8 +27,10 @@ pub use app::{
 
 pub mod background;
 pub use background::{
-    BackgroundCommandParams, BackgroundCommandResult, TaskRecord, TaskStatus,
-    cancel_task, completion_chat_event, finalize_task, record_task_progress,
+    BackgroundCommandParams, BackgroundCommandResult, TaskOutput, TaskRecord, TaskStatus,
+    DEFAULT_WAKE_INTERVAL_SECS, MIN_WAKE_INTERVAL_SECS,
+    cancel_task, completion_chat_event, finalize_task,
+    monitor_process_tool, monitor_progress_message, monitor_progress_text,
     register_task, run_command_in_background_tool, spawn_background_command,
     tasks_wire_json,
 };
@@ -366,6 +368,11 @@ pub enum ChatEvent {
     /// pre-spawn and post-completion assistant turns. `task_id` is the stable
     /// dedupe key in case the row also arrives via /history.
     BgComplete         { task_id: String, text: String },
+    /// Server → client live notification that a *monitored* background task
+    /// produced new output mid-run. Mobile renders it as a progress chip
+    /// between turns; the model is separately woken to react to the same
+    /// output via a `bg_progress` ApiMessage. `task_id` identifies the task.
+    BgProgress         { task_id: String, text: String },
     /// Server → client liveness probe. Client must reply with a Pong within the
     /// keepalive window or the server will drop the connection.
     Ping               { id: u64 },
@@ -876,12 +883,12 @@ pub struct StreamUsage {
 ///   `ToolUse` blocks retain `id` and `name` (required for API validity) but
 ///   the `input` is dropped (`{}`).
 pub fn compact_history(messages: &[ApiMessage], keep_full: usize) -> Vec<ApiMessage> {
-    // Pre-pass: translate roles that are persisted-only (e.g. `bg_complete`
-    // for background-task injections) into roles the API understands. Done
-    // here rather than at the serialiser layer so every backend gets the
-    // same behaviour automatically.
+    // Pre-pass: translate roles that are persisted-only (`bg_complete` /
+    // `bg_progress` for background-task injections) into roles the API
+    // understands. Done here rather than at the serialiser layer so every
+    // backend gets the same behaviour automatically.
     let messages: Vec<ApiMessage> = messages.iter().map(|m| match m.role.as_str() {
-        "bg_complete" => ApiMessage {
+        "bg_complete" | "bg_progress" => ApiMessage {
             role:    "user".to_string(),
             content: m.content.clone(),
         },
@@ -1846,7 +1853,13 @@ fn background_task_note() -> &'static str {
      command … completed' message and you'll be invoked autonomously to react. If no \
      follow-up action is genuinely useful, reply with one short acknowledgement line rather \
      than producing prose; only continue working if the result clearly demands it. Do not \
-     use this tool for fast commands — prefer the regular `bash` tool."
+     use this tool for fast commands — prefer the regular `bash` tool.\n\n\
+     You also have a monitor_process tool for when you need to react to a process \
+     *while it runs* rather than only at the end. Give it a `command` to start and watch a \
+     new process, or a `task_id` to attach to a background task you already started. It \
+     wakes you with new output at most every `wake_interval_secs` — pick that interval to \
+     suit the process. The same 'react only if warranted, otherwise acknowledge briefly' \
+     guidance applies to each wake-up."
 }
 
 pub fn build_system_prompt(repo_path: &str) -> String {
