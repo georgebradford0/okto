@@ -95,9 +95,28 @@ if [ -n "$COMPLETIONS_INSTALLED" ]; then
   echo "Start a new shell (or run 'exec $DETECTED_SHELL') to activate them."
   echo ""
 fi
+# Ensure Docker is installed — `octo init` pulls and runs the lair image.
 if ! command -v docker >/dev/null 2>&1; then
-  echo "WARNING: 'docker' is not on PATH. Install Docker Engine before running"
-  echo "         'octo init' — it pulls and runs ghcr.io/georgebradford0/octo-lair."
+  echo "Docker is not installed — installing it via https://get.docker.com ..."
+  if curl -fsSL https://get.docker.com | sh; then
+    echo "Docker installed."
+    if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
+    # Best-effort: make sure the daemon is running.
+    if command -v systemctl >/dev/null 2>&1; then
+      $SUDO systemctl enable --now docker >/dev/null 2>&1 || true
+    fi
+    # Let this (non-root) user run docker without sudo — needs a re-login.
+    if [ "$(id -u)" -ne 0 ] && command -v usermod >/dev/null 2>&1; then
+      if $SUDO usermod -aG docker "$(id -un)" 2>/dev/null; then
+        echo "Added $(id -un) to the 'docker' group — log out and back in"
+        echo "(or run 'newgrp docker') before running 'octo init'."
+      fi
+    fi
+  else
+    echo "WARNING: automatic Docker install failed. Install Docker Engine"
+    echo "         manually before running 'octo init' — it pulls and runs"
+    echo "         ghcr.io/georgebradford0/octo-lair."
+  fi
   echo ""
 fi
 
