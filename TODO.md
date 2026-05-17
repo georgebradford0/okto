@@ -1,6 +1,5 @@
 # TODO
 
-- [ ] Check if background tasks can inject messages into chat while they are running
 - [ ] Need to lock down a pattern for SSH through lair and it's agents for connecting to GPU instances that are spun up
 - [ ] Fix app icon in terminal output of init
 - [ ] Front the push-notification relay (`octorelay.directto.link`) with Cloudflare to absorb DDoS / bad-signature floods before they reach the t4g.nano's CPU credits. Today the box is bare on a public Elastic IP; if `/notify` ever attracts spammers, Ed25519 verifies are cheap but can still chew through burst credits at high enough volume. Cloudflare in front gives free L7 caching, rate-limits, bot challenges, and a single knob to drop traffic without SSH'ing the instance.
