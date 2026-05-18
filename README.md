@@ -38,7 +38,7 @@ To tear down everything except the config, run
 ```
 octo destroy
 ```
-## Github Setup
+## Github 
 The project was originally built to manage coding-based projects on Github.  For this reason the `gh` command line client is installed by default on `lair` and all agents.  To use it you'll have to pass in GH_TOKEN as an environment variables, which can be done at init with
 ```
 octo init -e GH_TOKEN="ghp_eds9.."
