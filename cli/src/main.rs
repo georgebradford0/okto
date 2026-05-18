@@ -1,6 +1,7 @@
 mod agents;
 mod init;
 mod mcp;
+mod qr;
 mod service;
 
 use anyhow::{Context, Result};
@@ -96,6 +97,14 @@ enum Command {
         /// Restart lair + every managed agent
         #[arg(long, conflicts_with = "agents")]
         all: bool,
+    },
+
+    /// Print the QR code mobile clients scan to connect to this lair
+    Qr {
+        /// Override the advertised host (defaults to PUBLIC_HOST from
+        /// `octo env`, then the auto-detected public IP)
+        #[arg(long)]
+        host: Option<String>,
     },
 
     /// Show logs for lair or a named agent (lair by default)
@@ -737,6 +746,10 @@ async fn main() -> Result<()> {
                 println!("restarted.");
             }
             info!("[cli] reload complete");
+        }
+
+        Command::Qr { host } => {
+            qr::print(host).await?;
         }
 
         Command::Logs { name, follow } => {
