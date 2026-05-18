@@ -48,7 +48,7 @@ or after initialization with
 octo env set GH_TOKEN=<token>
 octo reload
 ```
-The Github (or Gitlab) MCP can always be added to `lair` of course, it will be propagated to child agents by default.
+The Github (or Gitlab) MCP can always be added to `lair` instead. It will be propagated to child agents by default.
 
 ## MCP Support
 MCP servers can be seeded at init time by passing an MCP JSON file:
