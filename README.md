@@ -34,6 +34,22 @@ Once the QR code prints to the terminal, download the mobile app at (TODO build 
 
 If you are on iOS it will ask for push notification permissions.  These are generally for background tasks or monitors, but technically there is a dedicated tool for push notifications so you can always direct the model to call that tool for any scenario you want.  I have set up a small relay server to handle these push notifications.  It does not require sign up.  If you'd like to understand how it authenticates the device you can read [this](docs/relay-architecture.md).
 
+To tear down everything except the config, run
+```
+octo destroy
+```
+## Github Setup
+The project was originally built to manage coding-based projects on Github.  For this reason the `gh` command line client is installed by default on `lair` and all agents.  To use it you'll have to pass in GH_TOKEN as an environment variables, which can be done at init with
+```
+octo init -e GH_TOKEN="ghp_eds9.."
+```
+or after initialization with 
+```
+octo env set GH_TOKEN="ghp_eds9.."
+octo reload
+```
+The Github (or Gitlab) MCP can always be added to `lair` of course, it will be propagated to child agents by default.
+
 ## MCP Support
 MCP servers can be seeded at init time by passing an MCP JSON file:
 ```sh
@@ -55,6 +71,9 @@ octo mcp list
 octo mcp remove --name github
 ```
 One thing to note.  MCPs by default are inherited by parent to spawned child.  This will probably change but I haven't decided on a design handle MCP inheritance in detail.  Currently the CLI can only update MCPs for local agents, this will also change soon.
+
+## Docker-in-Docker
+Building docker images from a chat is currently not available.  This will change in the future.  I currently use Github workflows to run docker builds.
 
 ## Local vs Remote Agents
 Agents can be deployed and managed from the main chat or using the CLI. Local agents are deployed in the *same container* as `octo-lair` but with their own data dir.  This is so `octo-lair` does not have docker.sock access and is completely contained on the host.  Once an agent is deployed and ready to communicate it will be available in the mobile sidebar with a separate chat.
