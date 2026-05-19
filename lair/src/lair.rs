@@ -720,6 +720,36 @@ async fn probe_agent_ready(client: &reqwest::Client, port: u16) -> bool {
     matches!(client.get(&url).send().await, Ok(r) if r.status().is_success())
 }
 
+/// Block until a freshly-spawned local child answers `/health`, the pid dies,
+/// or `timeout` elapses. Called from `exec_create_agent_for_parent` so the
+/// create_agent tool doesn't claim success while the child is still doing
+/// `ensure_workspace` / `run_startup_script` / `init_mcp_pool` and hasn't yet
+/// bound its loopback HTTP port.
+async fn wait_for_agent_ready(port: u16, pid: u32, timeout: Duration) -> Result<Duration, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|e| format!("build readiness probe client: {e}"))?;
+    let start = std::time::Instant::now();
+    loop {
+        if probe_agent_ready(&client, port).await {
+            return Ok(start.elapsed());
+        }
+        if !AgentSupervisor::is_alive(pid) {
+            return Err(format!(
+                "agent process (pid {pid}) exited before /health responded — check logs"
+            ));
+        }
+        if start.elapsed() >= timeout {
+            return Err(format!(
+                "agent did not become reachable on 127.0.0.1:{port} within {}s",
+                timeout.as_secs()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 /// Probe a remote agent's `/health` over a one-shot outbound Noise tunnel.
 /// Remote agents have no local pid for `kill(pid,0)`, so this is their only
 /// liveness signal. Returns true only if the agent answers 200. `client`
@@ -1617,9 +1647,45 @@ async fn exec_create_agent_for_parent(
                 let _ = state.agent_tokens.lock().unwrap().remove(&child_name);
                 return Err(format!("registering '{child_name}': {e:#}"));
             }
-            info!("[lair/create_agent] created {child_name} pid={pid}");
+            info!("[lair/create_agent] created {child_name} pid={pid}, waiting for /health");
             state.poll_trigger.notify_one();
-            Ok(format!("Created child '{child_name}' (pid {pid}) on loopback port {port}."))
+
+            // Block until the child binds its loopback HTTP port and answers
+            // `/health`. Without this the tool returns "created" while the
+            // child is still doing git clone + startup script + MCP init, and
+            // callers that immediately try to talk to it hit connection
+            // refused. The default 180s covers a normal git clone and short
+            // startup scripts; override with OCTO_CREATE_AGENT_TIMEOUT_SECS
+            // for hosts with slower bootstrap (large repos, heavy scripts).
+            let ready_timeout = std::env::var("OCTO_CREATE_AGENT_TIMEOUT_SECS")
+                .ok().and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(180);
+            match wait_for_agent_ready(port, pid, Duration::from_secs(ready_timeout)).await {
+                Ok(elapsed) => {
+                    let _ = state.registry.lock().unwrap()
+                        .update_status(&child_name, AgentStatus::Running);
+                    state.poll_trigger.notify_one();
+                    info!(
+                        "[lair/create_agent] {child_name} reachable on port {port} after {:.1}s",
+                        elapsed.as_secs_f64(),
+                    );
+                    Ok(format!(
+                        "Created child '{child_name}' (pid {pid}) on loopback port {port}; reachable after {:.1}s.",
+                        elapsed.as_secs_f64(),
+                    ))
+                }
+                Err(e) => {
+                    warn!("[lair/create_agent] {child_name} not reachable: {e}");
+                    // Leave the agent in the registry so the operator can
+                    // inspect logs and decide whether to terminate or wait —
+                    // tearing it down here would race a slow-but-recovering
+                    // bootstrap. The poller will reconcile status from here.
+                    Err(format!(
+                        "child '{child_name}' (pid {pid}) was spawned but {e}. \
+                         Call terminate_agent('{child_name}') to clean up, or wait and retry.",
+                    ))
+                }
+            }
         }
         Err(e) => {
             error!("[lair/create_agent] failed: {e:#}");
