@@ -1603,11 +1603,11 @@ const ChatPane = memo(function ChatPane({
 
 // ── ChildChatScreen ───────────────────────────────────────────────────────────
 
-function ChildChatScreen({ child, tunnelPort, tunnelError, onClose, initialDraft, onDraftChange, reconnectingRef, reloadRef, closeWsRef }: {
+function ChildChatScreen({ child, tunnelPort, tunnelError, onOpenSidebar, initialDraft, onDraftChange, reconnectingRef, reloadRef, closeWsRef }: {
   child:             ContainerInfo
   tunnelPort:        number | null
   tunnelError:       string | null
-  onClose:           () => void
+  onOpenSidebar:     () => void
   initialDraft?:     string
   onDraftChange?:    (draft: string) => void
   reconnectingRef?:  React.MutableRefObject<boolean>
@@ -1633,11 +1633,15 @@ function ChildChatScreen({ child, tunnelPort, tunnelError, onClose, initialDraft
         <View style={s.header}>
           <View style={s.headerLeft}>
             <TouchableOpacity
-              style={s.backBtn}
-              onPress={onClose}
+              style={s.hamburgerBtn}
+              onPress={onOpenSidebar}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <Text style={s.backBtnText}>‹</Text>
+              <View style={s.hamburgerBars}>
+                <View style={s.hamburgerBar} />
+                <View style={s.hamburgerBar} />
+                <View style={s.hamburgerBar} />
+              </View>
             </TouchableOpacity>
             <View style={[s.connStatusPill, { backgroundColor: statusColor(chatStatus) + '22' }]}>
               <View style={[s.connDot, { backgroundColor: statusColor(chatStatus) }]} />
@@ -2006,11 +2010,17 @@ function AppInner() {
   }, [sidebarAnim])
 
   const openChild = useCallback((child: ContainerInfo) => {
-    setChildMounted(true)
-    childSlideAnim.setValue(0)
     setActiveChild(child)
-    Animated.timing(childSlideAnim, { toValue: 1, duration: 260, useNativeDriver: true }).start()
-  }, [childSlideAnim])
+    setChildMounted(true)
+    if (childMounted) {
+      // Already on a child pane (switching agents via the sidebar) — swap the
+      // content in place; sliding from master would flash the master chat.
+      childSlideAnim.setValue(1)
+    } else {
+      childSlideAnim.setValue(0)
+      Animated.timing(childSlideAnim, { toValue: 1, duration: 260, useNativeDriver: true }).start()
+    }
+  }, [childSlideAnim, childMounted])
 
   const closeChild = useCallback(() => {
     Animated.timing(childSlideAnim, { toValue: 0, duration: 220, useNativeDriver: true }).start(({ finished }) => {
@@ -2022,6 +2032,18 @@ function AppInner() {
       }
     })
   }, [childSlideAnim, sidebarAnim])
+
+  // Navigate to the main (LAIR) chat from the sidebar. Closes the sidebar
+  // immediately, then slides the child pane out if one is showing.
+  const goToMaster = useCallback(() => {
+    if (childMounted) {
+      setShowSidebar(false)
+      sidebarAnim.setValue(0)
+      closeChild()
+    } else {
+      closeSidebar()
+    }
+  }, [childMounted, closeChild, closeSidebar, sidebarAnim])
 
   // Keep the ref in sync so handleContainersUpdate can trigger animation.
   useEffect(() => { openChatRef.current = openChild }, [openChild])
@@ -2166,10 +2188,11 @@ function AppInner() {
         {childMounted && activeChild && (
           <Animated.View style={[StyleSheet.absoluteFillObject, { transform: [{ translateX: childTranslateX }] }]}>
             <ChildChatScreen
+              key={activeChild.id}
               child={activeChild}
               tunnelPort={tunnelPort}
               tunnelError={tunnelError}
-              onClose={closeChild}
+              onOpenSidebar={openSidebar}
               initialDraft={draftsRef.current[activeChild.id]}
               onDraftChange={d => { draftsRef.current[activeChild.id] = d }}
               reconnectingRef={reconnectingRef}
@@ -2233,24 +2256,39 @@ function AppInner() {
                   <Text style={s.sidebarCloseIcon}>✕</Text>
                 </TouchableOpacity>
               </View>
-              <View style={s.sidebarSection}>
-                <Text style={s.settingsMenuSectionTitle}>Repositories</Text>
-              </View>
               <ScrollView
                 style={{ flex: 1 }}
                 bounces={false}
                 keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={false}
               >
+                <TouchableOpacity
+                  style={[s.containerMenuItem, !childMounted && s.menuItemActive]}
+                  onPress={goToMaster}
+                  activeOpacity={0.7}
+                >
+                  <View style={[s.containerDot, { backgroundColor: C.green }]} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.containerMenuItemName}>LAIR</Text>
+                  </View>
+                  <Text style={s.containerMenuItemStatus}>main</Text>
+                </TouchableOpacity>
+
+                <View style={s.sidebarSection}>
+                  <Text style={s.settingsMenuSectionTitle}>Agents</Text>
+                </View>
+
                 {containers.length === 0 && (
                   <View style={s.containerMenuItem}>
                     <Text style={s.containerMenuItemStatus}>No containers</Text>
                   </View>
                 )}
-                {containers.map(c => (
+                {containers.map(c => {
+                  const active = childMounted && activeChild?.id === c.id
+                  return (
                   <TouchableOpacity
                     key={c.id}
-                    style={s.containerMenuItem}
+                    style={[s.containerMenuItem, active && s.menuItemActive]}
                     onPress={() => {
                       if (c.status === 'running') {
                         setShowSidebar(false)
@@ -2271,7 +2309,8 @@ function AppInner() {
                     </View>
                     <Text style={s.containerMenuItemStatus}>{c.status}</Text>
                   </TouchableOpacity>
-                ))}
+                  )
+                })}
               </ScrollView>
               <View style={s.settingsMenuDivider} />
               <TouchableOpacity style={s.sidebarExitBtn} onPress={handleLogout}>
@@ -2353,8 +2392,6 @@ const s = StyleSheet.create({
   // Header
   header:          { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border, backgroundColor: C.bg },
   headerLeft:      { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
-  backBtn:         { paddingRight: 6, paddingVertical: 2 },
-  backBtnText:     { fontSize: 30, lineHeight: 32, color: C.textPrimary, fontWeight: '300', fontFamily: ARIMO },
   clearBtn:        { paddingVertical: 5, paddingHorizontal: 10, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderRadius: 0 },
   clearBtnText:    { fontSize: 10, color: C.textSecondary, fontWeight: '800', fontFamily: ARIMO, letterSpacing: 2.2, textTransform: 'uppercase' },
   headerTitle:     { fontSize: 12, fontWeight: '800', color: C.textPrimary, fontFamily: ARIMO, letterSpacing: 2, textTransform: 'uppercase' },
@@ -2480,6 +2517,7 @@ const s = StyleSheet.create({
   settingsMenuDivider:      { height: StyleSheet.hairlineWidth, backgroundColor: C.border },
   settingsMenuLogoutText:   { fontSize: 11, color: C.red, fontFamily: ARIMO, fontWeight: '800', letterSpacing: 2.8, textTransform: 'uppercase' },
   containerMenuItem:        { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
+  menuItemActive:           { backgroundColor: C.surface, borderLeftWidth: 3, borderLeftColor: C.accent, paddingLeft: 15 },
   containerMenuItemName:    { fontSize: 14, fontWeight: '700', color: C.textPrimary, fontFamily: ARIMO, letterSpacing: 0.3 },
   containerMenuItemUrl:     { fontSize: 11, color: C.textMuted, fontFamily: MONO, marginTop: 3, letterSpacing: 0.3 },
   containerMenuItemStatus:  { fontSize: 9, color: C.textMuted, fontFamily: MONO, letterSpacing: 1.6, textTransform: 'uppercase', fontWeight: '800' },
