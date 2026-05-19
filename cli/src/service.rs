@@ -1,7 +1,7 @@
 //! Lair container management on the operator's host.
 //!
 //! The lair binary ships as a multi-arch docker image
-//! (`ghcr.io/georgebradford0/octo-lair`). The CLI never imports a Docker SDK
+//! (`ghcr.io/georgebradford0/lair`). The CLI never imports a Docker SDK
 //! — every interaction shells out to the `docker` CLI on the operator's
 //! PATH. This module wraps the few invocations the CLI needs: run / rm /
 //! inspect / pull / logs.
@@ -26,11 +26,11 @@ pub const LAIR_DEFAULT_NOISE_PORT: u16 = 8443;
 /// Container name the CLI uses for the lair instance on this host. Used as
 /// the `--name` flag on `docker run` and as the target for every subsequent
 /// `docker rm`, `docker inspect`, `docker logs`, etc.
-pub const LAIR_CONTAINER_NAME: &str = "octo-lair";
+pub const LAIR_CONTAINER_NAME: &str = "lair";
 
 /// Default image reference. Override via `$OCTO_LAIR_IMAGE` or stored in
 /// `lair-launch.json` (`image` field).
-pub const DEFAULT_LAIR_IMAGE: &str = "ghcr.io/georgebradford0/octo-lair:latest";
+pub const DEFAULT_LAIR_IMAGE: &str = "ghcr.io/georgebradford0/lair:latest";
 
 fn home_dir() -> PathBuf {
     std::env::var("HOME").map(PathBuf::from).unwrap_or_default()
@@ -231,8 +231,8 @@ pub fn read_lair_logs(tail: u32) -> Result<String> {
     Ok(s)
 }
 
-/// Run `octo-lair --version` inside the running lair container and return its
-/// trimmed stdout (e.g. `octo-lair 0.11.1`). Errors if the container isn't
+/// Run `lair --version` inside the running lair container and return its
+/// trimmed stdout (e.g. `lair 0.12.0`). Errors if the container isn't
 /// running. Reports the actual binary baked into the image rather than the
 /// image tag, which may just be `:latest`.
 pub fn lair_binary_version() -> Result<String> {
@@ -240,11 +240,11 @@ pub fn lair_binary_version() -> Result<String> {
     if !is_running() {
         anyhow::bail!("lair is not running. Run `octo init` or `octo reload` first.");
     }
-    let out = docker_output(&["exec", LAIR_CONTAINER_NAME, "octo-lair", "--version"])?;
+    let out = docker_output(&["exec", LAIR_CONTAINER_NAME, "lair", "--version"])?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        error!("[service] `octo-lair --version` exited with {}: {stderr}", out.status);
-        anyhow::bail!("`octo-lair --version` exited with {}: {stderr}", out.status);
+        error!("[service] `lair --version` exited with {}: {stderr}", out.status);
+        anyhow::bail!("`lair --version` exited with {}: {stderr}", out.status);
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
@@ -282,7 +282,7 @@ pub struct LairLaunch<'a> {
 /// Stop any existing lair container, then `docker run` a fresh one in
 /// detached mode. Returns the container's short ID.
 ///
-/// The container is named `octo-lair` and bind-mounts the operator's
+/// The container is named `lair` and bind-mounts the operator's
 /// `~/.octo` at `/data`. Env vars from the lair-env file are forwarded
 /// through `--env-file`; the file shape is plain `KEY=VALUE` per line which
 /// docker reads verbatim.

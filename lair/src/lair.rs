@@ -1125,8 +1125,8 @@ octo can host any kind of agent workload, not only coding agents — don't assum
 2. Direct work — answer questions, run shell commands, read external resources, and handle small fixes that don't require a child's repo.
 
 # Environment
-- Linux host. Lair runs inside a Docker container; local children are plain OS processes (`octo-lair --role agent`) spawned *inside the same container* as lair (non-root uid 10001). Each has a per-agent data dir + workspace under `/data/agents/<name>/` (bind-mounted from `~/.octo/agents/<name>/` on the host) and binds a loopback HTTP port (30100–30199). Mobile reaches a local child via lair's `/agents/<name>/stream` proxy URL.
-- Remote children run the same `octo-lair` image on a separate VM you provisioned via a cloud-MCP. The userdata installs Docker, `docker pull`s the lair image, and `docker run`s it with `--role agent` under a systemd unit. They listen on a public Noise port; lair opens an outbound Noise tunnel for the WS proxy so traffic stays encrypted end-to-end. Lair's SSH key bootstraps the VM (drops `config.json` into the host's `/var/lib/octo`, optional repo clone, `systemctl restart` to refresh the container).
+- Linux host. Lair runs inside a Docker container; local children are plain OS processes (`lair --role agent`) spawned *inside the same container* as lair (non-root uid 10001). Each has a per-agent data dir + workspace under `/data/agents/<name>/` (bind-mounted from `~/.octo/agents/<name>/` on the host) and binds a loopback HTTP port (30100–30199). Mobile reaches a local child via lair's `/agents/<name>/stream` proxy URL.
+- Remote children run the same `lair` image on a separate VM you provisioned via a cloud-MCP. The userdata installs Docker, `docker pull`s the lair image, and `docker run`s it with `--role agent` under a systemd unit. They listen on a public Noise port; lair opens an outbound Noise tunnel for the WS proxy so traffic stays encrypted end-to-end. Lair's SSH key bootstraps the VM (drops `config.json` into the host's `/var/lib/octo`, optional repo clone, `systemctl restart` to refresh the container).
 - `gh` and `git` are expected to be installed on the host; `GH_TOKEN` is in lair's env when the operator set it via `octo env`.
 - MCP servers may be configured at init time or hot-added at runtime; their tools appear alongside the built-ins. `web_fetch` (and `web_search` when Brave is configured) cover external lookups.
 - A path prefixed with `@` (e.g. `@core/src/lib.rs`) is a file reference inside a repo — treat it as a path.
@@ -1305,7 +1305,7 @@ fn mint_bootstrap_userdata_tool() -> AnthropicTool {
         description: "Mint a cloud-init bash script (\"userdata\") for bootstrapping a remote \
                        octo agent on a freshly-provisioned Linux VM. The userdata contains **no \
                        credentials** — only lair's SSH public key, a Docker install (if absent), \
-                       a `docker pull` of the multi-arch `octo-lair` image, and a systemd unit \
+                       a `docker pull` of the multi-arch `lair` image, and a systemd unit \
                        that `docker run`s the image with `--role agent`. The agent boots without \
                        API keys; lair finishes the bootstrap over SSH afterwards (drops \
                        config.json into the container's bind-mounted /data, optionally clones \
@@ -1339,7 +1339,7 @@ fn mint_bootstrap_userdata_tool() -> AnthropicTool {
                 },
                 "image": {
                     "type": "string",
-                    "description": "Explicit lair image reference (e.g. `ghcr.io/you/octo-lair:0.10.1`). Defaults to `ghcr.io/georgebradford0/octo-lair:<lair_version>`."
+                    "description": "Explicit lair image reference (e.g. `ghcr.io/you/lair:0.10.1`). Defaults to `ghcr.io/georgebradford0/lair:<lair_version>`."
                 }
             },
             "required": ["name"]
@@ -1647,7 +1647,7 @@ async fn exec_mint_bootstrap_userdata(state: Arc<AppState>, input: serde_json::V
     let image = input.get("image").and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| format!("ghcr.io/georgebradford0/octo-lair:{lair_version}"));
+        .unwrap_or_else(|| format!("ghcr.io/georgebradford0/lair:{lair_version}"));
 
     let lair_pubkey = match ssh_ops::read_lair_public_key() {
         Ok(k) => k,
@@ -1732,7 +1732,7 @@ ExecStart=/usr/bin/docker run --rm --name octo-agent \
     -p {public_port}:{public_port} \
     -v /var/lib/octo:/data \
     --env-file /etc/octo/agent.env \
-    --entrypoint /usr/local/bin/octo-lair \
+    --entrypoint /usr/local/bin/lair \
     {image} --role agent
 ExecStop=/usr/bin/docker stop -t 10 octo-agent
 Restart=always

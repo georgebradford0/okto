@@ -1,7 +1,7 @@
 //! Process supervisor for child agent processes.
 //!
 //! Replaces what `lair/src/docker.rs` did against the Docker daemon. Each
-//! agent is a separate `octo-lair --role agent` OS process spawned by lair
+//! agent is a separate `lair --role agent` OS process spawned by lair
 //! with a per-agent data dir, workspace dir, and HTTP port (loopback only).
 //! Lair proxies mobile WebSocket traffic to the child's local HTTP port.
 
@@ -106,7 +106,7 @@ struct AgentProc {
 pub struct AgentSupervisor {
     agents:       Mutex<HashMap<String, Arc<AgentProc>>>,
     agents_root:  PathBuf,
-    /// Path to the `octo-lair` binary. Resolved at supervisor creation:
+    /// Path to the `lair` binary. Resolved at supervisor creation:
     /// `$OCTO_LAIR_BINARY` env override, or the current binary's path.
     binary_path:  PathBuf,
 }
@@ -117,7 +117,7 @@ impl AgentSupervisor {
             .with_context(|| format!("create agents root {}", agents_root.display()))?;
         let binary_path = match std::env::var("OCTO_LAIR_BINARY") {
             Ok(p) if !p.is_empty() => PathBuf::from(p),
-            _ => std::env::current_exe().context("locate current octo-lair binary")?,
+            _ => std::env::current_exe().context("locate current lair binary")?,
         };
         info!(
             "[agent_proc] supervisor ready: agents_root={} binary={}",

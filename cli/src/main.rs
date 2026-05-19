@@ -68,7 +68,7 @@ enum Command {
         http_port: u16,
 
         /// Lair image reference. Defaults to `$OCTO_LAIR_IMAGE` or
-        /// `ghcr.io/georgebradford0/octo-lair:latest`.
+        /// `ghcr.io/georgebradford0/lair:latest`.
         #[arg(long)]
         image: Option<String>,
 
@@ -123,7 +123,7 @@ enum Command {
     /// Update the octo CLI to the latest release
     Update,
 
-    /// Manage the octo-lair docker image on this host
+    /// Manage the lair docker image on this host
     Lair {
         #[command(subcommand)]
         action: LairAction,
@@ -181,10 +181,10 @@ enum EnvAction {
 
 #[derive(Subcommand)]
 enum LairAction {
-    /// Pull the latest octo-lair image and restart the container
+    /// Pull the latest lair image and restart the container
     Update {
         /// Image reference to pull. Defaults to the image recorded by `octo init`,
-        /// then `$OCTO_LAIR_IMAGE`, then `ghcr.io/georgebradford0/octo-lair:latest`.
+        /// then `$OCTO_LAIR_IMAGE`, then `ghcr.io/georgebradford0/lair:latest`.
         #[arg(long)]
         image: Option<String>,
     },

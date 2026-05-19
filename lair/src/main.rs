@@ -1,5 +1,5 @@
 //! Merged binary that runs either the lair (parent / orchestrator) or agent
-//! (child) role. The same `octo-lair` binary is invoked by the operator (as
+//! (child) role. The same `lair` binary is invoked by the operator (as
 //! `--role lair`) and re-spawned by lair to start each child (`--role agent`).
 
 use clap::{Parser, ValueEnum};

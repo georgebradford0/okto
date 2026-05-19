@@ -4,11 +4,11 @@ This doc explains how *local* child agent processes are kept from terminating la
 
 > **See also: [agent-spawning.md](agent-spawning.md).** As of `0.11.0` agents *can* spawn child agents, but only their own subtree — that flow's authorization model is described in the companion doc. This doc covers the underlying process isolation that makes the spawn flow's security claims hold.
 
-> **Remote agents** are out of scope — they live on separate VMs, in their own `octo-lair` container booted by the cloud-init userdata that `mint_bootstrap_userdata` mints (Docker install + `docker run … --role agent` under a systemd unit; see `lair/src/lair.rs::exec_mint_bootstrap_userdata`). The mobile ↔ lair ↔ remote-agent flow encrypts the second hop with an outbound Noise tunnel from lair, so the same "children can't talk to each other" property holds *between* hosts naturally. The threats this doc addresses are inter-process within the lair container.
+> **Remote agents** are out of scope — they live on separate VMs, in their own `lair` container booted by the cloud-init userdata that `mint_bootstrap_userdata` mints (Docker install + `docker run … --role agent` under a systemd unit; see `lair/src/lair.rs::exec_mint_bootstrap_userdata`). The mobile ↔ lair ↔ remote-agent flow encrypts the second hop with an outbound Noise tunnel from lair, so the same "children can't talk to each other" property holds *between* hosts naturally. The threats this doc addresses are inter-process within the lair container.
 
 ## Threat model
 
-Lair is the parent. It spawns one `octo-lair --role agent` process per child agent (via `lair/src/agent_proc.rs::AgentSupervisor::spawn`). All of these live in the **same Docker container** — children don't get their own container. Every process has a `bash` tool exposed to its agentic loop, so we have to assume the LLM driving any process will eventually try to do something it isn't supposed to:
+Lair is the parent. It spawns one `lair --role agent` process per child agent (via `lair/src/agent_proc.rs::AgentSupervisor::spawn`). All of these live in the **same Docker container** — children don't get their own container. Every process has a `bash` tool exposed to its agentic loop, so we have to assume the LLM driving any process will eventually try to do something it isn't supposed to:
 
 - A child kills `pid 1` and brings down the whole container.
 - A child reads lair's secrets out of `/proc/1/environ` or `/data/config.json`.
@@ -105,7 +105,7 @@ operator host                      lair container
                                      mkdir + chown /data/agents/<name>/...
                                      env_remove("LAIR_MGMT_TOKEN")
                                      cmd.uid(10001).gid(10001)
-                                     exec /usr/local/bin/octo-lair --role agent
+                                     exec /usr/local/bin/lair --role agent
 
                                    child runs as uid 10001:
                                      - has its own /data/agents/<name>/data

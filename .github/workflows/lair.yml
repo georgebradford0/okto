@@ -1,7 +1,7 @@
 name: lair Image Release
 
 # Multi-arch (linux/amd64,linux/arm64) buildx build + push to
-# ghcr.io/${{ github.repository_owner }}/octo-lair. The image tag pair is
+# ghcr.io/${{ github.repository_owner }}/lair. The image tag pair is
 # `<version-from-Cargo.toml>` + `latest`. Manual dispatch only — image
 # releases are explicit, not tied to every commit.
 
@@ -64,8 +64,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/${{ steps.owner.outputs.value }}/octo-lair:${{ steps.version.outputs.value }}
-            ghcr.io/${{ steps.owner.outputs.value }}/octo-lair:latest
+            ghcr.io/${{ steps.owner.outputs.value }}/lair:${{ steps.version.outputs.value }}
+            ghcr.io/${{ steps.owner.outputs.value }}/lair:latest
           # Cache to GHA's blob store keyed on this workflow + ref; survives
           # across runs so cargo fetch / cargo build / apt layers stay warm.
           cache-from: type=gha
@@ -74,10 +74,10 @@ jobs:
 
       - name: Summary
         run: |
-          echo "## octo-lair image published" >> "$GITHUB_STEP_SUMMARY"
+          echo "## lair image published" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Tags:" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`ghcr.io/${{ steps.owner.outputs.value }}/octo-lair:${{ steps.version.outputs.value }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`ghcr.io/${{ steps.owner.outputs.value }}/octo-lair:latest\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`ghcr.io/${{ steps.owner.outputs.value }}/lair:${{ steps.version.outputs.value }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`ghcr.io/${{ steps.owner.outputs.value }}/lair:latest\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Platforms: linux/amd64, linux/arm64" >> "$GITHUB_STEP_SUMMARY"

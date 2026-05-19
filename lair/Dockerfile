@@ -1,5 +1,5 @@
-# Multi-stage image for octo-lair. Built with `docker buildx` for linux/amd64
-# and linux/arm64; pushed to ghcr.io/georgebradford0/octo-lair by the
+# Multi-stage image for the lair binary. Built with `docker buildx` for
+# linux/amd64 and linux/arm64; pushed to ghcr.io/georgebradford0/lair by the
 # `lair.yml` GHA workflow (`gh workflow run lair.yml --ref main`) after a
 # lair version bump. `scripts/build-lair-image.sh` is the local fallback.
 #
@@ -53,7 +53,7 @@ RUN i=0; until cargo fetch; do \
 COPY core/src    core/src
 COPY lair/src    lair/src
 
-RUN cargo build --release -p octo-lair
+RUN cargo build --release -p lair
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
@@ -77,7 +77,7 @@ RUN apt-get update && apt-get install -y ca-certificates curl git gpg && \
     && rm -rf /var/lib/apt/lists/* && \
     curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
 
-COPY --from=builder /build/target/release/octo-lair /usr/local/bin/octo-lair
+COPY --from=builder /build/target/release/lair /usr/local/bin/lair
 
 # Dedicated non-root users for child agent processes. Lair (the parent)
 # keeps running as root inside the container so it can chown the bind-mounted
@@ -98,7 +98,7 @@ RUN useradd -u 10001 -M -N -s /bin/bash octo-agent && \
     done
 
 LABEL org.opencontainers.image.source=https://github.com/georgebradford0/octo
-LABEL org.opencontainers.image.description="octo-lair — merged lair/agent binary, runs as --role lair by default"
+LABEL org.opencontainers.image.description="lair — merged lair/agent binary, runs as --role lair by default"
 
 # Operator's host dir is bind-mounted here. config.json, lair/, agents/, and
 # lair-env all live under /data so they survive container restarts and stay
@@ -108,7 +108,7 @@ ENV HOME=/data \
     OCTO_DATA_DIR=/data/lair \
     OCTO_AGENTS_DIR=/data/agents \
     OCTO_SKIP_SHELL_ENV=1 \
-    OCTO_LAIR_BINARY=/usr/local/bin/octo-lair \
+    OCTO_LAIR_BINARY=/usr/local/bin/lair \
     NOISE_PORT=8443
 
 EXPOSE 8000 8443
@@ -116,4 +116,4 @@ EXPOSE 8000 8443
 # Default entrypoint runs the parent (lair) role. Children are spawned by lair
 # itself as plain processes inside this same container — there is no bollard
 # in the binary, and no second container per agent.
-ENTRYPOINT ["/usr/local/bin/octo-lair", "--role", "lair"]
+ENTRYPOINT ["/usr/local/bin/lair", "--role", "lair"]

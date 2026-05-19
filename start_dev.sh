@@ -6,15 +6,15 @@ set -euo pipefail
 # Children spawn inside the same container; their data lives in
 # ./dev-data/agents on the host via bind mount.
 #
-# Stop with ./stop_dev.sh (docker rm -f octo-lair-dev + rms ./dev-data/).
+# Stop with ./stop_dev.sh (docker rm -f lair-dev + rms ./dev-data/).
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 DEV_ROOT="${REPO_ROOT}/dev-data"
 DEV_CONFIG_SRC="${HOME}/.octo/config.json"
 DEV_NOISE_PORT="${DEV_NOISE_PORT:-9000}"
 DEV_HTTP_PORT="${DEV_HTTP_PORT:-9001}"
-DEV_CONTAINER="${DEV_CONTAINER:-octo-lair-dev}"
-DEV_IMAGE="${DEV_IMAGE:-octo-lair:dev}"
+DEV_CONTAINER="${DEV_CONTAINER:-lair-dev}"
+DEV_IMAGE="${DEV_IMAGE:-lair:dev}"
 
 if [ ! -f "${DEV_CONFIG_SRC}" ]; then
     echo "ERROR: ${DEV_CONFIG_SRC} is missing." >&2

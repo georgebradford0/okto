@@ -33,7 +33,7 @@ Their lifetimes differ:
 There are three spawns, each setting env on the child:
 
 ```
-operator shell ──► octo (CLI) ──► octo-lair --role lair ──► octo-lair --role agent
+operator shell ──► octo (CLI) ──► lair --role lair ──► lair --role agent
                                                         ──► (or systemd on a VM)
 ```
 
@@ -47,7 +47,7 @@ OCTO_AGENTS_DIR=$HOME/.octo/agents
 NOISE_PORT=<--noise-port>
 PUBLIC_PORT=<same>
 OCTO_SKIP_SHELL_ENV=1
-OCTO_LAIR_BINARY=<resolved path to octo-lair>
+OCTO_LAIR_BINARY=<resolved path to lair>
 ```
 
 Then it appends every `KEY=VALUE` pair from `~/.octo/lair-env`. The list of
@@ -227,10 +227,10 @@ cat ~/.octo/config.json                     # raw
 cat ~/.octo/lair-env                        # raw
 
 # Force a non-default lair binary (dev / cross-compile testing)
-OCTO_LAIR_BINARY=/path/to/octo-lair octo init --anthropic-api-key sk-ant-…
+OCTO_LAIR_BINARY=/path/to/lair octo init --anthropic-api-key sk-ant-…
 
 # Force a non-default data dir (e.g. ./start_dev.sh sets this)
-OCTO_DATA_DIR=$PWD/dev-data ./target/release/octo-lair --role lair
+OCTO_DATA_DIR=$PWD/dev-data ./target/release/lair --role lair
 ```
 
 ---

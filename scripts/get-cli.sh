@@ -9,7 +9,7 @@ ARCH=$(uname -m)
 
 # octo is Linux-only — both x86_64 and aarch64 are supported. Only the CLI
 # binary is installed here; `octo init` `docker pull`s the matching
-# octo-lair image (ghcr.io/georgebradford0/octo-lair) on first run, so
+# lair image (ghcr.io/georgebradford0/lair) on first run, so
 # Docker must already be installed and runnable as this user.
 case "$OS" in
   Linux)
@@ -115,7 +115,7 @@ if ! command -v docker >/dev/null 2>&1; then
   else
     echo "WARNING: automatic Docker install failed. Install Docker Engine"
     echo "         manually before running 'octo init' — it pulls and runs"
-    echo "         ghcr.io/georgebradford0/octo-lair."
+    echo "         ghcr.io/georgebradford0/lair."
   fi
   echo ""
 fi

@@ -7,7 +7,7 @@
 //! Both lair and child agent processes watch their `mcp.json` and hot-reload
 //! on change. Adding a new entry is a plain file edit followed by tailing the
 //! agent's log for the `[mcp] '<name>' connected` marker (lair's logs come
-//! from `docker logs octo-lair` since 0.7.0 — there is no on-disk lair.log).
+//! from `docker logs lair` since 0.7.0 — there is no on-disk lair.log).
 
 use std::{
     collections::HashMap,
@@ -48,7 +48,7 @@ fn mcp_path(agent: &str) -> PathBuf {
 
 fn agent_log_path(agent: &str) -> PathBuf {
     // Caller must check `agent != LAIR_AGENT_NAME` first — lair has no
-    // on-disk log file, only `docker logs octo-lair`.
+    // on-disk log file, only `docker logs lair`.
     service::agents_dir().join(agent).join("agent.log")
 }
 
@@ -87,7 +87,7 @@ fn read_agent_log_tail(agent: &str, bytes: u64) -> String {
 }
 
 /// Read the entire current log buffer for `agent`. For lair this shells out
-/// to `docker logs octo-lair` (the container has no on-disk log file); for
+/// to `docker logs lair` (the container has no on-disk log file); for
 /// child agents this reads the supervisor-written `agent.log`. Returns an
 /// empty string on any error so callers can stay simple — they're scanning
 /// for markers, not asserting log presence.

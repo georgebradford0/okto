@@ -1,6 +1,6 @@
 //! Persisted registry of agent (child) processes managed by lair.
 //!
-//! Lair spawns each local child as an `octo-lair --role agent` OS process
+//! Lair spawns each local child as a `lair --role agent` OS process
 //! and registers it here. Remote agents (provisioned on a separate VM via a
 //! cloud-MCP and bootstrapped over SSH) are also tracked in the same file,
 //! distinguished by `host.is_some()`.
@@ -50,7 +50,7 @@ impl AgentStatus {
 pub struct AgentRecord {
     /// Stable, human-readable identifier. Doubles as the wire `id`.
     pub name:           String,
-    /// OS pid of the last spawned `octo-lair --role agent` process. Local
+    /// OS pid of the last spawned `lair --role agent` process. Local
     /// agents only — `None` for remote agents and for local agents whose
     /// process has exited.
     #[serde(default)]

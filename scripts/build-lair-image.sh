@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build & push the multi-arch octo-lair image to ghcr.io.
+# Build & push the multi-arch lair image to ghcr.io.
 #
 # Image releases live outside CI by design (memory: GHA workflow was removed).
 # Run this on a Linux + Docker host with buildx + a builder that supports
@@ -19,7 +19,7 @@ set -euo pipefail
 #   scripts/build-lair-image.sh v0.9.1      # override the version tag
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IMAGE="${OCTO_LAIR_IMAGE:-ghcr.io/georgebradford0/octo-lair}"
+IMAGE="${OCTO_LAIR_IMAGE:-ghcr.io/georgebradford0/lair}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 
 PUSH=1

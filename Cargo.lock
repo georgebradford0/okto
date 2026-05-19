@@ -1252,6 +1252,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "lair"
+version = "0.12.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "futures-util",
+ "git2",
+ "libc",
+ "octo-core",
+ "openssl",
+ "qrcode",
+ "rand 0.8.6",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.21.0",
+ "tokio-util",
+ "tower-http 0.5.2",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1538,32 +1564,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "uuid",
-]
-
-[[package]]
-name = "octo-lair"
-version = "0.12.0"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "futures-util",
- "git2",
- "libc",
- "octo-core",
- "openssl",
- "qrcode",
- "rand 0.8.6",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite 0.21.0",
- "tokio-util",
- "tower-http 0.5.2",
- "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 

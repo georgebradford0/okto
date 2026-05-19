@@ -10,17 +10,17 @@ Do **not** commit debug/diagnostic logging (`println!`, `console.log`, etc. adde
 
 ## Platform
 
-Linux only — x86_64 and aarch64. macOS and Windows are out of scope for the runtime host. The `octo` CLI is built per-Linux-arch and published via the `cli.yml` GitHub Actions workflow; the lair runtime ships exclusively as a multi-arch Docker image (`ghcr.io/georgebradford0/octo-lair`).
+Linux only — x86_64 and aarch64. macOS and Windows are out of scope for the runtime host. The `octo` CLI is built per-Linux-arch and published via the `cli.yml` GitHub Actions workflow; the lair runtime ships exclusively as a multi-arch Docker image (`ghcr.io/georgebradford0/lair`).
 
 Image releases run via the `lair.yml` workflow (manual dispatch): after a `lair/Cargo.toml` version bump, run `gh workflow run lair.yml --ref main`. The workflow does a `docker buildx` build for `linux/amd64,linux/arm64` on a GitHub-hosted runner and pushes to ghcr. `scripts/build-lair-image.sh` remains as a local fallback.
 
 ## Binaries & deployment
 
-One Rust binary, `octo-lair`, two roles via `--role lair|agent`. It is built into a Docker image and never installed directly on a host.
+One Rust binary, `lair`, two roles via `--role lair|agent`. It is built into a Docker image and never installed directly on a host.
 
-- Operator runs `octo init`; the CLI shells out to `docker pull` + `docker run -d --name octo-lair -v ~/.octo:/data -p 8443:8443 --env-file ~/.octo/lair-env <image>`.
+- Operator runs `octo init`; the CLI shells out to `docker pull` + `docker run -d --name lair -v ~/.octo:/data -p 8443:8443 --env-file ~/.octo/lair-env <image>`.
 - The Rust code (both CLI and lair) **never imports a Docker SDK**. Every Docker interaction is a shell-out — either from `cli/src/service.rs` for lifecycle, or from the agentic loop's `bash` tool for inside-the-container diagnostics.
-- When lair creates a child agent, it spawns `octo-lair --role agent` itself **inside the same container** (via `tokio::process::Command`), recording the child's pid in `/data/lair/agents.json`. There is no second container per agent.
+- When lair creates a child agent, it spawns `lair --role agent` itself **inside the same container** (via `tokio::process::Command`), recording the child's pid in `/data/lair/agents.json`. There is no second container per agent.
 - `lair/src/bootstrap.rs` does the public-IP detection, optional git clone, and `STARTUP_SCRIPT` execution in Rust.
 
 Build:
@@ -33,7 +33,7 @@ cargo build --release -p octo
 scripts/build-lair-image.sh
 ```
 
-The CLI binaries end up at `target/release/octo`; CI publishes them per-target as Release assets attached to `cli-v<version>`. The lair image is tagged `ghcr.io/georgebradford0/octo-lair:<version>` and `:latest`.
+The CLI binaries end up at `target/release/octo`; CI publishes them per-target as Release assets attached to `cli-v<version>`. The lair image is tagged `ghcr.io/georgebradford0/lair:<version>` and `:latest`.
 
 ---
 
@@ -46,7 +46,7 @@ octo is an agentic coding assistant. A single `lair` process runs on a host mach
 | Directory | Language | Role |
 |-----------|----------|------|
 | `core/` | Rust | Shared library: agentic loop, Claude API streaming, git ops, config, HTTP/WS plumbing, agent registry, SSH keygen, MCP plumbing, Noise proxy. |
-| `lair/` | Rust + Axum | Merged binary `octo-lair` with `--role lair|agent`. `lair/src/lair.rs` is the parent (orchestrates child processes via `lair/src/agent_proc.rs`); `lair/src/agent.rs` is the child. |
+| `lair/` | Rust + Axum | Merged binary `lair` with `--role lair|agent`. `lair/src/lair.rs` is the parent (orchestrates child processes via `lair/src/agent_proc.rs`); `lair/src/agent.rs` is the child. |
 | `cli/` | Rust | `octo` CLI for managing lair on the local host (init, reload, agents, logs, mcp, config, env). |
 | `mobile/` | React Native (TS) | iOS/Android client: QR scan → native Noise tunnel → single WebSocket to lair → optional proxy URL for chatting with children. |
 
@@ -68,7 +68,7 @@ Everything lives under `~/.octo/` on the host, bind-mounted at `/data` inside th
 { name, pid, port, git_url, status, binary_version, created_at, last_seen }
 ```
 
-`pid` is the recorded OS pid of the last spawned `octo-lair --role agent` process. The poller checks `kill(pid, 0)` every 10s and flips `status` accordingly. On lair startup, the supervisor adopts any rows whose pid is still alive.
+`pid` is the recorded OS pid of the last spawned `lair --role agent` process. The poller checks `kill(pid, 0)` every 10s and flips `status` accordingly. On lair startup, the supervisor adopts any rows whose pid is still alive.
 
 ### Transport
 
@@ -125,7 +125,7 @@ Baked into the image (see `lair/Dockerfile`):
 | `HOME` / `OCTO_HOME` | `/data` (so config + ssh keys resolve to bind-mounted host paths) |
 | `OCTO_DATA_DIR` | `/data/lair` |
 | `OCTO_AGENTS_DIR` | `/data/agents` |
-| `OCTO_LAIR_BINARY` | `/usr/local/bin/octo-lair` (used to spawn children) |
+| `OCTO_LAIR_BINARY` | `/usr/local/bin/lair` (used to spawn children) |
 | `OCTO_SKIP_SHELL_ENV` | Always 1; suppresses the login-shell env sourcing |
 
 Set at `docker run` time by `cli/src/service.rs`:
@@ -159,7 +159,7 @@ Inheritance is a snapshot at create time — subsequent edits to lair's `mcp.jso
 |----------|--------------|
 | `cli.yml` | Builds the `octo` CLI per-target and uploads as Release assets. |
 | `relay.yml` | Builds `octo-relay` per-Linux-arch and uploads as assets on `relay-v<version>` (read from `relay/Cargo.toml`). |
-| `lair.yml` | Multi-arch `docker buildx` of `lair/Dockerfile`, pushes to `ghcr.io/<owner>/octo-lair:<version>` + `:latest`. |
+| `lair.yml` | Multi-arch `docker buildx` of `lair/Dockerfile`, pushes to `ghcr.io/<owner>/lair:<version>` + `:latest`. |
 | `android.yml` | Builds AAB via fastlane, uploads to Google Play. |
 | `ios.yml` | Builds on macOS runner, optionally uploads to TestFlight. |
 

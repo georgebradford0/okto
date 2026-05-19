@@ -1,8 +1,8 @@
-# octo-lair: Architecture
+# lair: Architecture
 
 ## Overview
 
-`octo-lair` is a Docker container that acts as the single entry point for the mobile app. It runs a full AI agentic loop (same as `octo-server`) with Docker socket access, so it can manage child repo containers via bash. The mobile app scans one QR code (lair's), chats with lair for control tasks, and taps into individual child containers for code work.
+`lair` is a Docker container that acts as the single entry point for the mobile app. It runs a full AI agentic loop (same as `octo-server`) with Docker socket access, so it can manage child repo containers via bash. The mobile app scans one QR code (lair's), chats with lair for control tasks, and taps into individual child containers for code work.
 
 ## Components
 
@@ -59,7 +59,7 @@ All containers run on the `octo-net` Docker bridge network (created by lair's en
 ```sh
 docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v octo-lair-data:/data \
+  -v lair-data:/data \
   -p 9000:9000 \
   -e ANTHROPIC_API_KEY=... \
   -e PUBLIC_HOST=<your-server-ip> \

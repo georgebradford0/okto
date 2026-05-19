@@ -6,7 +6,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 DEV_ROOT="${REPO_ROOT}/dev-data"
-DEV_CONTAINER="${DEV_CONTAINER:-octo-lair-dev}"
+DEV_CONTAINER="${DEV_CONTAINER:-lair-dev}"
 
 if docker inspect "${DEV_CONTAINER}" >/dev/null 2>&1; then
     echo "▸ docker rm -f ${DEV_CONTAINER}"

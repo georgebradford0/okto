@@ -29,7 +29,7 @@ It will prompt for:
 2. Install docker if not already available
 3. Generate a Noise keypair and an Ed25519 SSH keypair (the SSH key is reserved for ops backchannels — e.g. SSHing into a remote host for tailing logs).
 4. Write an env file (`~/.octo/lair-env`) — this is what `docker --env-file` ingests.
-5. `docker pull` the lair image, then `docker run -d --name octo-lair -v ~/.octo:/data -p 8443:8443 …`.
+5. `docker pull` the lair image, then `docker run -d --name lair -v ~/.octo:/data -p 8443:8443 …`.
 6. Wait for the management API on `127.0.0.1:8000/health`, then print a QR code containing the host, port, and Noise pubkey.
 
 Once the QR code prints to the terminal, download the mobile app at (TODO build ios for production and list here) or build code in `mobile/` to local device (iOS or Android).  Open the app, press icon and scan the QR.
@@ -78,7 +78,7 @@ One thing to note.  MCPs by default are inherited by parent to spawned child.  T
 Building docker images from a chat is currently not available.  This will change in the future.  I currently use Github workflows to run docker builds.
 
 ## Local vs Remote Agents
-Agents can be deployed and managed from the main chat or using the CLI. Local agents are deployed in the *same container* as `octo-lair` but with their own data dir.  This is so `octo-lair` does not have docker.sock access and is completely contained on the host.  Once an agent is deployed and ready to communicate it will be available in the mobile sidebar with a separate chat.
+Agents can be deployed and managed from the main chat or using the CLI. Local agents are deployed in the *same container* as `lair` but with their own data dir.  This is so `lair` does not have docker.sock access and is completely contained on the host.  Once an agent is deployed and ready to communicate it will be available in the mobile sidebar with a separate chat.
 
 For remote agents an MCP for AWS/Azure/GCP is necessary (any provider is fine assuming they have an MCP, which they probably do).  Assuming the MCP exists, you can simply ask the main chat to create a remote agent on whatever instance type (eg for AWS a t3.micro) is preferred.  It will provision said instance with the appropiate `userdata` using builtin tools to continue setup once the instance comes online, connect through SSH and complete registration of the remote agent.  As per the local case, remote agents also run in a docker container without sock access and any agents added will be in the same container.  A list of builtin tools is [here](docs/builtin-tools.md).
 
