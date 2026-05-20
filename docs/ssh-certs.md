@@ -2,7 +2,7 @@
 
 This doc explains how child agents get SSH access to remote infrastructure
 (Prime Intellect GPU pods, operator-controlled VMs, etc.) without lair
-ever sharing its own SSH key with them. As of `lair 0.13.0` / `cli 0.4.13`.
+ever sharing its own SSH key with them. As of `lair 0.13.0` / `cli 0.5.0`.
 
 > **Companion docs:** [agent-isolation.md](agent-isolation.md) describes why
 > children can't read lair's private key in the first place; this doc covers
