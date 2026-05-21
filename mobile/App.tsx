@@ -26,6 +26,12 @@ import Reanimated, { useAnimatedStyle } from 'react-native-reanimated'
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Camera, useCameraDevice, useCodeScanner } from 'react-native-vision-camera'
 import NoiseConnection from './src/NativeNoiseConnection'
+import {
+  loadHistory as loadCachedHistory,
+  saveHistory as saveCachedHistory,
+  clearHistory as clearCachedHistory,
+  clearAllHistory as clearAllCachedHistory,
+} from './src/historyCache'
 import { registerWithRelay } from './src/registerWithRelay'
 import {
   type ClientFrame,
@@ -863,10 +869,15 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
 // ── ChatPane ──────────────────────────────────────────────────────────────────
 
 const ChatPane = memo(function ChatPane({
-  baseUrl, onStatusChange, clearRef, initialDraft, onDraftChange, reconnectingRef, reloadRef, closeWsRef,
+  baseUrl, cacheKey, onStatusChange, clearRef, initialDraft, onDraftChange, reconnectingRef, reloadRef, closeWsRef,
   sendFrameRef, onContainersUpdate, onTasksUpdate, onCancelAck,
 }: {
   baseUrl:             string
+  /// Stable identity for the persisted MMKV history cache. Must NOT include
+  /// the local tunnel port (which is ephemeral): pass something like
+  /// `master:<lair-pk>` or `agent:<lair-pk>:<agent-name>` so the cache key
+  /// survives Noise reconnects.
+  cacheKey:            string
   onStatusChange:      (s: ConnStatus) => void
   clearRef:            React.MutableRefObject<() => void>
   initialDraft?:       string
@@ -896,7 +907,16 @@ const ChatPane = memo(function ChatPane({
     height: Math.max(insets.bottom, -keyboardHeight.value),
   }))
 
-  const [messages,       setMessages]       = useState<Message[]>([])
+  // Synchronous hydrate from MMKV. A cache hit lets the chat render its
+  // last-known state immediately on mount — no blank list, no full-fade
+  // stagger — while loadHistory() reconciles against the server in the
+  // background using the existing LCP merge. Status stays 'connecting'
+  // until the /stream WS opens: the messages are visible but the user
+  // shouldn't be misled into thinking they can send yet.
+  const [messages,       setMessages]       = useState<Message[]>(() => {
+    const cached = loadCachedHistory(cacheKey)
+    return cached ? withPrevRoles(cached as Message[]) : []
+  })
   const [status,         setStatus]         = useState<ConnStatus>('connecting')
   const [input,          setInput]          = useState(initialDraft ?? '')
   const draftKey = `draft:${baseUrl}`
@@ -1413,6 +1433,27 @@ const ChatPane = memo(function ChatPane({
     }
   }, [baseUrl])
 
+  // Persist messages to MMKV whenever the chat is in a settled state. We
+  // deliberately skip writes while status === 'streaming' so a mid-flight
+  // assistant bubble (partial text) never lands in the cache — a partial
+  // would later collide with /history's complete version under the LCP
+  // reconcile and produce a duplicated assistant row on rehydrate. The
+  // 250 ms debounce coalesces bursts (e.g. a series of bg_progress chips
+  // or the rapid setState at turn end) into a single write.
+  useEffect(() => {
+    if (status === 'streaming') return
+    if (messages.length === 0) {
+      // Empty array (fresh chat or post-clear) — drop the key rather than
+      // persisting [], so the next mount short-circuits past the cache.
+      clearCachedHistory(cacheKey)
+      return
+    }
+    const timer = setTimeout(() => {
+      saveCachedHistory(cacheKey, messages)
+    }, 250)
+    return () => clearTimeout(timer)
+  }, [messages, status, cacheKey])
+
   // @ completions
   useEffect(() => {
     const parsed = parseAtQuery(input)
@@ -1633,10 +1674,12 @@ const ChatPane = memo(function ChatPane({
 
 // ── ChildChatScreen ───────────────────────────────────────────────────────────
 
-function ChildChatScreen({ child, tunnelPort, tunnelError, onOpenSidebar, initialDraft, onDraftChange, reconnectingRef, reloadRef, closeWsRef }: {
+function ChildChatScreen({ child, tunnelPort, tunnelError, cacheKey, onOpenSidebar, initialDraft, onDraftChange, reconnectingRef, reloadRef, closeWsRef }: {
   child:             ContainerInfo
   tunnelPort:        number | null
   tunnelError:       string | null
+  /// Stable identity for the MMKV history cache. See ChatPane.cacheKey.
+  cacheKey:          string
   onOpenSidebar:     () => void
   initialDraft?:     string
   onDraftChange?:    (draft: string) => void
@@ -1698,6 +1741,7 @@ function ChildChatScreen({ child, tunnelPort, tunnelError, onOpenSidebar, initia
         {tunnelPort ? (
           <ChatPane
             baseUrl={`http://127.0.0.1:${tunnelPort}/agents/${child.name}`}
+            cacheKey={cacheKey}
             onStatusChange={setChatStatus}
             clearRef={clearRef}
             initialDraft={initialDraft}
@@ -1838,6 +1882,11 @@ function AppInner() {
   // agent's chat by opening WS to `/agents/<name>/stream` over the same
   // tunnel — lair proxies the traffic.
   const masterBaseUrl = tunnelPort ? `http://127.0.0.1:${tunnelPort}` : null
+  // Stable identity for MMKV history caches. Survives Noise tunnel
+  // reconnects (which churn the ephemeral local proxy port) by keying off
+  // the lair's Noise public key rather than its loopback URL.
+  const lairPk          = conn?.pk ?? ''
+  const masterCacheKey  = `master:${lairPk}`
 
   // Load saved master connection on mount and auto-connect.
   useEffect(() => {
@@ -2003,6 +2052,7 @@ function AppInner() {
   const handleLogout = useCallback(async () => {
     setShowSidebar(false)
     await AsyncStorage.clear().catch(() => {})
+    clearAllCachedHistory()
     NoiseConnection?.disconnect()
     setConn(null)
   }, [])
@@ -2039,12 +2089,18 @@ function AppInner() {
             log(`[app] terminateAgent id=${c.id}`)
             if (!masterSendFrameRef.current({ type: 'terminate_agent', id: c.id })) {
               logE('[app] terminateAgent failed: master /stream not connected')
+            } else {
+              // Drop the agent's cached history immediately. The lair-side
+              // data dir is being removed too, so the next /history fetch
+              // would 404; leaving stale rows in MMKV would resurrect a
+              // ghost chat if the user later spawns a same-named agent.
+              clearCachedHistory(`agent:${lairPk}:${c.name}`)
             }
           },
         },
       ],
     )
-  }, [masterBaseUrl])
+  }, [masterBaseUrl, lairPk])
 
   const openSidebar = useCallback(() => {
     // Containers are pushed live over /stream — no manual refresh needed.
@@ -2222,6 +2278,7 @@ function AppInner() {
           {masterBaseUrl && (
             <ChatPane
               baseUrl={masterBaseUrl}
+              cacheKey={masterCacheKey}
               onStatusChange={setChatStatus}
               clearRef={clearChatRef}
               initialDraft={draftsRef.current['master']}
@@ -2258,6 +2315,7 @@ function AppInner() {
               child={outgoingChild}
               tunnelPort={tunnelPort}
               tunnelError={tunnelError}
+              cacheKey={`agent:${lairPk}:${outgoingChild.name}`}
               onOpenSidebar={openSidebar}
               initialDraft={draftsRef.current[outgoingChild.id]}
               onDraftChange={d => { draftsRef.current[outgoingChild.id] = d }}
@@ -2273,6 +2331,7 @@ function AppInner() {
               child={activeChild}
               tunnelPort={tunnelPort}
               tunnelError={tunnelError}
+              cacheKey={`agent:${lairPk}:${activeChild.name}`}
               onOpenSidebar={openSidebar}
               initialDraft={draftsRef.current[activeChild.id]}
               onDraftChange={d => { draftsRef.current[activeChild.id] = d }}
