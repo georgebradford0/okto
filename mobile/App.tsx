@@ -75,6 +75,12 @@ const logE = (...args: unknown[]) => console.error(`[${ts()}] ERROR`, ...args)
 let _id = 0
 const uid = () => `m${Date.now()}_${++_id}`
 
+/** Delay between consecutive history-replay appends on first load. Tuned so
+ *  each MessageBubble's 180ms fade-in overlaps with the next bubble starting
+ *  to fade — fast enough that long histories finish quickly, slow enough
+ *  that a viewer perceives motion rather than a flicker. */
+const HISTORY_STAGGER_MS = 35
+
 /** Stamp prevRole on every message so renderItem never needs to close over the full array. */
 const withPrevRoles = (msgs: Message[]): Message[] =>
   msgs.map((m, i) => ({ ...m, prevRole: i > 0 ? msgs[i - 1].role : undefined }))
@@ -905,6 +911,15 @@ const ChatPane = memo(function ChatPane({
   const contentHeightRef  = useRef(0)
   const listHeightRef     = useRef(0)
   const historyAbortRef   = useRef<AbortController | null>(null)
+  // Staggered history-replay queue. When /history returns more than one new
+  // message to append (relative to what's already on screen), we drop the
+  // first in immediately and schedule the rest one per `HISTORY_STAGGER_MS`
+  // tick so each MessageBubble's fade-in cascades instead of a wall of
+  // bubbles fading in together. Cleared on unmount and on each new load.
+  const historyStaggerRef = useRef<{
+    queue: Message[]
+    timer: ReturnType<typeof setTimeout> | null
+  }>({ queue: [], timer: null })
 
   // Expose imperative handles to the parent.
   useEffect(() => {
@@ -1112,6 +1127,24 @@ const ChatPane = memo(function ChatPane({
   // being listed as a dependency (avoids circular dep: loadHistory → reattachStream → loadHistory).
   const loadHistoryRef = useRef<() => void>(() => {})
 
+  // Drains the staggered history queue one message per tick. Each append
+  // remounts a single bubble whose own 180ms fade-in (MessageBubble) then
+  // cascades into the next tick, producing a smooth load-in instead of an
+  // all-at-once flicker. Idempotent against live-stream events that may
+  // race in: dedupe by id before appending.
+  const tickHistoryStagger = useCallback(() => {
+    const stagger = historyStaggerRef.current
+    const next = stagger.queue.shift()
+    if (next === undefined) {
+      stagger.timer = null
+      return
+    }
+    setMessages(prev => prev.some(m => m.id === next.id) ? prev : [...prev, next])
+    stagger.timer = stagger.queue.length > 0
+      ? setTimeout(tickHistoryStagger, HISTORY_STAGGER_MS)
+      : null
+  }, [])
+
   const loadHistory = useCallback((attempt = 0) => {
     historyAbortRef.current?.abort()
     const controller = new AbortController()
@@ -1139,6 +1172,16 @@ const ChatPane = memo(function ChatPane({
         // verbatim so they retain their ids and FlatList reuses the mounted
         // bubbles. A naive full replace re-keys every row, remounting the
         // whole list and re-running each bubble's fade-in — the flicker.
+        //
+        // For the divergent suffix (new rows from history), we drop the
+        // first in immediately and queue the rest for the staggered
+        // ticker so each fades in one-after-the-next rather than as one
+        // simultaneous wall.
+        if (historyStaggerRef.current.timer) {
+          clearTimeout(historyStaggerRef.current.timer)
+          historyStaggerRef.current.timer = null
+        }
+        historyStaggerRef.current.queue = []
         setMessages(cur => {
           // Tool rows are matched leniently: the client renders a tool as
           // `label (arg)` while /history projects it as `name(arg)`, so a
@@ -1155,9 +1198,16 @@ const ChatPane = memo(function ChatPane({
           // Server history is a prefix of what we already have — identical,
           // or we're live-ahead via the stream. Nothing to apply.
           if (common === msgs.length) return cur
-          // Divergence at `common`: keep the matched prefix verbatim, take
-          // the rest fresh from history. Only the suffix remounts.
-          return [...cur.slice(0, common), ...msgs.slice(common)]
+          const suffix = msgs.slice(common)
+          // Single new row — append directly; no need to engage the ticker.
+          if (suffix.length === 1) {
+            return [...cur.slice(0, common), suffix[0]]
+          }
+          // Multiple new rows — first goes in synchronously so the user
+          // sees motion immediately; the rest land one per stagger tick.
+          historyStaggerRef.current.queue = suffix.slice(1)
+          historyStaggerRef.current.timer = setTimeout(tickHistoryStagger, HISTORY_STAGGER_MS)
+          return [...cur.slice(0, common), suffix[0]]
         })
         // Status is driven entirely by /stream events now (`ready` on connect,
         // `done`/`interrupted`/`error` at turn end), so loadHistory no longer
@@ -1333,7 +1383,14 @@ const ChatPane = memo(function ChatPane({
     // loading for it.
     setHistoryReadyFor(null)
     loadHistory()
-    return () => { historyAbortRef.current?.abort() }
+    return () => {
+      historyAbortRef.current?.abort()
+      if (historyStaggerRef.current.timer) {
+        clearTimeout(historyStaggerRef.current.timer)
+        historyStaggerRef.current.timer = null
+      }
+      historyStaggerRef.current.queue = []
+    }
   }, [baseUrl])
 
   // @ completions
@@ -1719,7 +1776,12 @@ function AppInner() {
   const [childMounted, setChildMounted] = useState(false)
   const [startingContainerId, setStartingContainerId] = useState<string | null>(null)
   const [startingError,       setStartingError]       = useState<string | null>(null)
-  const [reconnecting,        setReconnecting]        = useState(false)
+  // (Was a `reconnecting` state driving a full-screen "Connecting..."
+  // overlay during foreground-return reconnects. Removed in favour of
+  // showing the chat continuously — the silent reconnect + smooth history
+  // reconcile is good enough that flashing an overlay just looks like a
+  // load flicker. `reconnectingRef` below still suppresses the per-WS
+  // "connecting" status flash so the chat header stays calm.)
   const startingContainerIdRef = useRef<string | null>(null)
   const openChatRef = useRef((child: ContainerInfo) => {})
   const clearChatRef       = useRef<() => void>(() => {})
@@ -1831,7 +1893,6 @@ function AppInner() {
 
     log(`[noise] foreground reconnect host=${target.host} port=${target.port} pk=${target.pk.slice(0, 8)}…`)
     reconnectingRef.current = true
-    setReconnecting(true)
 
     closeWsRef.current()
 
@@ -1848,7 +1909,6 @@ function AppInner() {
       setTunnelError((e as Error)?.message ?? String(e))
     } finally {
       reconnectingRef.current = false
-      setReconnecting(false)
     }
   }
 
@@ -2201,13 +2261,6 @@ function AppInner() {
               closeWsRef={closeWsRef}
             />
           </Animated.View>
-        )}
-
-        {reconnecting && (
-          <View style={s.startingOverlay} pointerEvents="none">
-            <ActivityIndicator color={C.accent} size="large" />
-            <Text style={s.startingText}>Connecting...</Text>
-          </View>
         )}
 
         {startingContainerId !== null && (
