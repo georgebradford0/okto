@@ -250,9 +250,11 @@ enum McpAction {
     },
 }
 
-/// Generate the bash completion script, write it to `~/.octo/octorc`, and
-/// wire `~/.bashrc` to source it. Idempotent — safe to re-run on every
-/// `octo init`.
+/// Generate shell completion scripts at the canonical locations for bash,
+/// zsh, and fish, and wire `~/.bashrc` to source the bash one. Idempotent —
+/// safe to re-run on every `octo init`. Always overwrites existing files so
+/// stale completions (e.g. for subcommands that have since been renamed or
+/// removed) get refreshed.
 fn install_completions() {
     let home = match std::env::var("HOME") {
         Ok(h) => std::path::PathBuf::from(h),
@@ -262,6 +264,7 @@ fn install_completions() {
         }
     };
 
+    // Bash — `~/.octo/octorc`, sourced from `~/.bashrc`.
     let octorc = home.join(".octo/octorc");
     if let Some(parent) = octorc.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -271,11 +274,44 @@ fn install_completions() {
     if let Err(e) = std::fs::write(&octorc, &script) {
         warn!("[cli] could not write {}: {e}", octorc.display());
         eprintln!("warning: could not write completions to {}: {e}", octorc.display());
-        return;
+    } else {
+        debug!("[cli] wrote bash completions to {}", octorc.display());
+        println!("Wrote bash completions to {}.", octorc.display());
     }
-    debug!("[cli] wrote bash completions to {}", octorc.display());
-    println!("Wrote bash completions to {}.", octorc.display());
 
+    // Zsh — `~/.zfunc/_octo`. Always (re)written so removed/renamed
+    // subcommands from earlier installs don't linger.
+    let zfunc = home.join(".zfunc/_octo");
+    if let Some(parent) = zfunc.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut script = Vec::new();
+    generate(Shell::Zsh, &mut Cli::command(), "octo", &mut script);
+    if let Err(e) = std::fs::write(&zfunc, &script) {
+        warn!("[cli] could not write {}: {e}", zfunc.display());
+        eprintln!("warning: could not write completions to {}: {e}", zfunc.display());
+    } else {
+        debug!("[cli] wrote zsh completions to {}", zfunc.display());
+        println!("Wrote zsh completions to {}.", zfunc.display());
+    }
+
+    // Fish — `~/.config/fish/completions/octo.fish`. Auto-loaded by fish
+    // when present in this directory; no rc-file edit needed.
+    let fish = home.join(".config/fish/completions/octo.fish");
+    if let Some(parent) = fish.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut script = Vec::new();
+    generate(Shell::Fish, &mut Cli::command(), "octo", &mut script);
+    if let Err(e) = std::fs::write(&fish, &script) {
+        warn!("[cli] could not write {}: {e}", fish.display());
+        eprintln!("warning: could not write completions to {}: {e}", fish.display());
+    } else {
+        debug!("[cli] wrote fish completions to {}", fish.display());
+        println!("Wrote fish completions to {}.", fish.display());
+    }
+
+    // Wire `~/.bashrc` to source the bash file (idempotent).
     let bashrc = home.join(".bashrc");
     let source_line = "source \"$HOME/.octo/octorc\"";
     let existing = std::fs::read_to_string(&bashrc).unwrap_or_default();

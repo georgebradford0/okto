@@ -346,11 +346,37 @@ fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
                 buffer_and_fanout(&state.stream_state, json.to_string());
             }
         }
-        state.is_streaming.store(false, Ordering::Relaxed);
         state.stream_state.lock().unwrap().buffer.clear();
-        info!("[lair/stream] turn complete, is_streaming=false");
-        try_continue_auto(state.clone());
+        // Atomic transition: while is_streaming is *still* true, decide whether
+        // to chain into an auto-turn or release the flag. See `finalize_turn`
+        // for the race we'd otherwise hit with a concurrent user_message.
+        finalize_turn(state.clone());
     });
+}
+
+/// End-of-turn handoff: drains any queued background-task injections and
+/// chains into an auto-turn if there are any, otherwise clears `is_streaming`.
+/// **Caller must already own `is_streaming = true`.** Releasing the flag
+/// before checking the pending queue would let an incoming `user_message`
+/// frame steal it and defer the bg-driven auto-turn until after the next
+/// user-driven turn finishes.
+fn finalize_turn(state: Arc<AppState>) {
+    let drained: Vec<ApiMessage> = {
+        let mut pending = state.pending_injections.lock().unwrap();
+        std::mem::take(&mut *pending)
+    };
+    if drained.is_empty() {
+        state.is_streaming.store(false, Ordering::Relaxed);
+        info!("[lair/stream] turn complete, is_streaming=false");
+        return;
+    }
+    {
+        let mut msgs = state.messages.lock().unwrap();
+        msgs.extend(drained);
+        save_messages(&msgs);
+    }
+    info!("[lair/stream] auto-turn triggered by queued background injection");
+    spawn_turn(state, TurnTrigger::Auto);
 }
 
 fn commit_turn(msgs_arc: &Arc<Mutex<Vec<ApiMessage>>>, snapshot_len: usize, updated: Vec<ApiMessage>) {
@@ -1179,7 +1205,7 @@ octo can host any kind of agent workload, not only coding agents — don't assum
 - Caps on agent-spawned-agent flows are operator-controlled via `config.json` (`agent_spawn_max_depth`, `agent_spawn_max_descendants`). Operator-spawned agents are unrestricted.
 - **`forget_agent(name)`** — *registry-only.* Removes a remote agent's row without touching the VM. Use after the provisioning MCP has terminated the instance. Don't use on a live local agent — use `terminate_agent` instead.
 - **`restart_all_agents`** — restart every managed *local* agent. Use after upgrading the lair binary; no effect on remote agents.
-- **`run_command_in_background(command)`** — run a shell command in the background. The user is notified when it finishes. For long builds, big test suites, large downloads. Prefer the regular `bash` tool for anything fast. When it completes, the output is injected into this conversation autonomously — if no follow-up action is genuinely useful, reply with one short acknowledgement line rather than producing prose.
+- **`run_command_in_background(command)`** — run a shell command in the background. The user is notified when it finishes and the output is injected into this conversation autonomously, so you'll be woken to react. **Strongly prefer this over the foreground `bash` tool for any command likely to take more than ~10 seconds** — builds, test suites, package installs, large downloads, image pulls, deploys, long scripts. Holding the chat turn open while a slow command runs blocks the user from sending follow-ups; backgrounding frees the turn immediately. Only use the regular `bash` tool for fast (sub-10s) commands like `ls`, `grep`, `cat`, quick `git status`, single-file inspections. When in doubt — background it. If no follow-up action is genuinely useful when the command completes, reply with one short acknowledgement line rather than producing prose.
 - **`monitor_process(command? | task_id?, wake_interval_secs?)`** — watch a process and get woken with its output *while it runs* so you can react mid-run. Pass a `command` to start and watch a new process, or a `task_id` to attach to a background task you already started. Pick `wake_interval_secs` to suit the process. Use `run_command_in_background` instead when you only need the final result.
 
 # General tools (shared with children)

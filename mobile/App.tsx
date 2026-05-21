@@ -440,7 +440,10 @@ const MessageBubble = memo(function MessageBubble({
   message:   Message
   prevRole?: Message['role']
 }) {
-  const [toolExpanded, setToolExpanded] = useState(false)
+  // Default expanded so streaming `tool_output` events (and the final
+  // `tool_result`) show up live without the user having to tap each chip.
+  // Tap still toggles for users who want to declutter a long transcript.
+  const [toolExpanded, setToolExpanded] = useState(true)
   const fadeAnim = useRef(new Animated.Value(0)).current
   const baseTextStyle = message.role === 'user' ? s.textBlock : s.assistantTextBlock
   const renderedText = useMemo(() => renderText(message.text, baseTextStyle), [message.text, message.role])

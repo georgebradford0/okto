@@ -1859,8 +1859,14 @@ fn background_task_note() -> &'static str {
      When it completes, the output is injected into this conversation as a 'Background \
      command … completed' message and you'll be invoked autonomously to react. If no \
      follow-up action is genuinely useful, reply with one short acknowledgement line rather \
-     than producing prose; only continue working if the result clearly demands it. Do not \
-     use this tool for fast commands — prefer the regular `bash` tool.\n\n\
+     than producing prose; only continue working if the result clearly demands it.\n\n\
+     IMPORTANT: strongly prefer backgrounding any command that is likely to take more than \
+     ~10 seconds — builds, test suites, package installs, large downloads, container/image \
+     pulls, long-running scripts. Holding the chat turn open while a slow command runs \
+     blocks the user from sending follow-ups and wastes their time; backgrounding it frees \
+     the turn immediately and you'll be woken automatically when it finishes. Only use the \
+     regular `bash` tool for fast (sub-10s) commands like `ls`, `grep`, `cat`, a quick \
+     `git status`, or single-file edits. When in doubt — background it.\n\n\
      You also have a monitor_process tool for when you need to react to a process \
      *while it runs* rather than only at the end. Give it a `command` to start and watch a \
      new process, or a `task_id` to attach to a background task you already started. It \

@@ -192,17 +192,46 @@ fn spawn_turn(state: Arc<AppState>, user_text: Option<String>) {
                 buffer_and_fanout(&state.stream_state, json.to_string());
             }
         }
-        state.is_streaming.store(false, Ordering::Relaxed);
         state.stream_state.lock().unwrap().buffer.clear();
-        info!("[agent/stream] turn complete, is_streaming=false");
-
-        try_continue_auto(state.clone());
+        // Atomic transition: while is_streaming is *still* true, decide whether
+        // to chain into an auto-turn or release the flag. If we cleared
+        // is_streaming first and then checked pending_injections, an incoming
+        // user_message could win the CAS in the gap and the queued bg_complete
+        // injection would be deferred until the end of *that* user-driven turn
+        // — surfacing the model's reaction to the bg task only after the next
+        // user reply rather than immediately.
+        finalize_turn(state.clone());
     });
+}
+
+/// End-of-turn handoff: drains any queued background-task injections and
+/// chains into an auto-turn if there are any, otherwise clears `is_streaming`.
+/// **Caller must already own `is_streaming = true`.** This is the path taken
+/// at the bottom of a streaming turn; releasing the flag before checking the
+/// pending queue would open a race where a `user_message` frame steals the
+/// flag and stalls the bg-driven auto-turn until after the next user turn.
+fn finalize_turn(state: Arc<AppState>) {
+    let drained: Vec<ApiMessage> = {
+        let mut pending = state.pending_injections.lock().unwrap();
+        std::mem::take(&mut *pending)
+    };
+    if drained.is_empty() {
+        state.is_streaming.store(false, Ordering::Relaxed);
+        info!("[agent/stream] turn complete, is_streaming=false");
+        return;
+    }
+    {
+        let mut msgs = state.messages.lock().unwrap();
+        msgs.extend(drained);
+        save_messages(&msgs);
+    }
+    info!("[agent/stream] auto-turn triggered by queued background injection");
+    spawn_turn(state, None);
 }
 
 /// Drain any queued background-task injections into the conversation and spawn
 /// an auto-turn so the model reacts. No-op when nothing is queued. If a turn is
-/// already running the queue is left in place — that turn's own end-of-turn
+/// already running the queue is left in place — that turn's own `finalize_turn`
 /// call drains it once it finishes, which is also why injections never touch
 /// `messages` mid-turn (avoiding the turn-end overwrite clobbering them).
 fn try_continue_auto(state: Arc<AppState>) {
