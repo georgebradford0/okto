@@ -6,7 +6,6 @@ use std::{
     fs,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -59,6 +58,44 @@ fn load_messages() -> Vec<ApiMessage> {
     octo_core::load_messages(&data_dir(), "agent")
 }
 
+/// Unified turn-gate: all decisions about who gets the next conversation turn
+/// are made under this single lock, eliminating CAS races between
+/// `is_streaming`, `pending_injections`, and user messages.
+struct TurnGate {
+    /// `true` while a streaming turn (user-driven or auto) is in progress.
+    streaming:           bool,
+    /// Background-task injections (`bg_complete` / `bg_progress`) waiting to
+    /// be folded into `messages` at the next turn boundary.
+    pending_injections:  Vec<ApiMessage>,
+    /// User text queued when a turn was already running. Takes priority over
+    /// auto-turn chaining — when present, the next turn is always user-driven.
+    pending_user_msg:    Option<String>,
+    /// Counts consecutive auto-turns. Reset to 0 on every user-driven turn.
+    /// When it exceeds `MAX_AUTO_DEPTH`, further auto-turns are suppressed;
+    /// injections are persisted to `messages` but the gate is released so
+    /// the user can send a message.
+    auto_depth:          u32,
+    /// Set by `interrupt` frame. Prevents `finalize_turn` from chaining
+    /// another auto-turn — injections are drained into `messages` and the
+    /// gate is released, giving the user back control immediately.
+    interrupt_requested: bool,
+}
+
+impl TurnGate {
+    fn new() -> Self {
+        Self {
+            streaming:           false,
+            pending_injections:  Vec::new(),
+            pending_user_msg:    None,
+            auto_depth:          0,
+            interrupt_requested: false,
+        }
+    }
+}
+
+/// Maximum consecutive auto-turns before we stop chaining and release the gate.
+const MAX_AUTO_DEPTH: u32 = 3;
+
 // ── App state ─────────────────────────────────────────────────────────────────
 
 struct AppState {
@@ -67,14 +104,9 @@ struct AppState {
     system:        String,
     cwd:           String,
     stream_state:  Mutex<StreamState>,
-    is_streaming:  AtomicBool,
+    turn_gate:     Mutex<TurnGate>,
     cancel:        Mutex<CancellationToken>,
     mcp_pool:      McpPool,
-    /// Background-task injections (`bg_complete` / `bg_progress`) waiting to be
-    /// folded into the conversation. A turn never appends to `messages`
-    /// concurrently with itself, so injections are staged here and drained
-    /// into `messages` by `try_continue_auto` only when no turn is running.
-    pending_injections: Mutex<Vec<ApiMessage>>,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -83,6 +115,7 @@ async fn health_handler() -> impl IntoResponse { (StatusCode::OK, "ok") }
 
 async fn interrupt_handler(State(state): State<Arc<AppState>>) -> StatusCode {
     state.cancel.lock().unwrap().cancel();
+    state.turn_gate.lock().unwrap().interrupt_requested = true;
     StatusCode::OK
 }
 
@@ -99,7 +132,9 @@ async fn stream_handler(
     ws.on_upgrade(move |socket| handle_stream(socket, state))
 }
 
-fn spawn_turn(state: Arc<AppState>, user_text: Option<String>) {
+enum TurnTrigger { User(String), Auto }
+
+fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
     tokio::spawn(async move {
         let api_key = match resolve_api_key() {
             Some(k) => k,
@@ -116,17 +151,23 @@ fn spawn_turn(state: Arc<AppState>, user_text: Option<String>) {
                 }
                 let json = serde_json::json!({"type":"error","message": errmsg}).to_string();
                 buffer_and_fanout(&state.stream_state, json);
-                state.is_streaming.store(false, Ordering::Relaxed);
+                {
+                    let mut gate = state.turn_gate.lock().unwrap();
+                    gate.streaming = false;
+                    gate.auto_depth = 0;
+                }
                 return;
             }
         };
         let model = resolve_model();
 
-        if let Some(text) = user_text {
+        // Reset auto_depth on user-driven turns.
+        if let TurnTrigger::User(text) = &trigger {
+            state.turn_gate.lock().unwrap().auto_depth = 0;
             let mut msgs = state.messages.lock().unwrap();
             msgs.push(ApiMessage {
                 role:    "user".to_string(),
-                content: vec![ContentBlock::Text { text }],
+                content: vec![ContentBlock::Text { text: text.clone() }],
             });
             save_messages(&msgs);
         }
@@ -193,62 +234,120 @@ fn spawn_turn(state: Arc<AppState>, user_text: Option<String>) {
             }
         }
         state.stream_state.lock().unwrap().buffer.clear();
-        // Atomic transition: while is_streaming is *still* true, decide whether
-        // to chain into an auto-turn or release the flag. If we cleared
-        // is_streaming first and then checked pending_injections, an incoming
-        // user_message could win the CAS in the gap and the queued bg_complete
-        // injection would be deferred until the end of *that* user-driven turn
-        // — surfacing the model's reaction to the bg task only after the next
-        // user reply rather than immediately.
+        // Decide next turn under a single lock: drain injections / queued user
+        // message, then either chain an auto-turn, start a user-driven turn, or
+        // release the gate.
         finalize_turn(state.clone());
     });
 }
 
-/// End-of-turn handoff: drains any queued background-task injections and
-/// chains into an auto-turn if there are any, otherwise clears `is_streaming`.
-/// **Caller must already own `is_streaming = true`.** This is the path taken
-/// at the bottom of a streaming turn; releasing the flag before checking the
-/// pending queue would open a race where a `user_message` frame steals the
-/// flag and stalls the bg-driven auto-turn until after the next user turn.
+/// End-of-turn handoff: drains any queued background-task injections, checks
+/// for a pending user message, and decides what to do next.
+///
+/// All decisions are made under the single `turn_gate` lock so there are no
+/// CAS races. The lock is held for microseconds (just the decision), not
+/// during the turn itself. Priority order:
+///
+///   1. Queued user message → user-driven turn (always wins)
+///   2. Queued injections → auto-turn (only if no user message,
+///      interrupt was not requested, and auto_depth < MAX_AUTO_DEPTH)
+///   3. Nothing → release the gate (streaming = false)
 fn finalize_turn(state: Arc<AppState>) {
-    let drained: Vec<ApiMessage> = {
-        let mut pending = state.pending_injections.lock().unwrap();
-        std::mem::take(&mut *pending)
+    let (injections, user_msg, should_auto) = {
+        let mut gate = state.turn_gate.lock().unwrap();
+        let injections = std::mem::take(&mut gate.pending_injections);
+        let user_msg   = gate.pending_user_msg.take();
+        let should_auto = !gate.interrupt_requested
+            && gate.auto_depth < MAX_AUTO_DEPTH
+            && user_msg.is_none()
+            && !injections.is_empty();
+        gate.interrupt_requested = false;
+        if should_auto {
+            gate.auto_depth += 1;
+            // streaming stays true — we chain into an auto-turn.
+        } else if let Some(_) = &user_msg {
+            // streaming stays true — we chain into a user-driven turn.
+            gate.auto_depth = 0;
+        } else {
+            gate.streaming = false;
+            gate.auto_depth = 0;
+        }
+        drop(gate);
+        (injections, user_msg, should_auto)
     };
-    if drained.is_empty() {
-        state.is_streaming.store(false, Ordering::Relaxed);
-        info!("[agent/stream] turn complete, is_streaming=false");
-        return;
-    }
+
+    // Fold injections + queued user message into the persisted history.
     {
         let mut msgs = state.messages.lock().unwrap();
-        msgs.extend(drained);
+        if let Some(text) = &user_msg {
+            msgs.push(ApiMessage {
+                role:    "user".to_string(),
+                content: vec![ContentBlock::Text { text: text.clone() }],
+            });
+        }
+        msgs.extend(injections);
         save_messages(&msgs);
     }
-    info!("[agent/stream] auto-turn triggered by queued background injection");
-    spawn_turn(state, None);
+
+    if let Some(text) = user_msg {
+        info!("[agent/stream] queued user message takes priority — spawning user-driven turn");
+        spawn_turn(state, TurnTrigger::User(text));
+        return;
+    }
+
+    if should_auto {
+        info!("[agent/stream] auto-turn triggered by queued background injection");
+        spawn_turn(state, TurnTrigger::Auto);
+        return;
+    }
+
+    if !injections.is_empty() {
+        info!("[agent/stream] injections persisted but auto-turn suppressed (interrupt or depth cap)");
+    } else {
+        info!("[agent/stream] turn complete, gate released");
+    }
 }
 
 /// Drain any queued background-task injections into the conversation and spawn
-/// an auto-turn so the model reacts. No-op when nothing is queued. If a turn is
-/// already running the queue is left in place — that turn's own `finalize_turn`
-/// call drains it once it finishes, which is also why injections never touch
-/// `messages` mid-turn (avoiding the turn-end overwrite clobbering them).
+/// an auto-turn so the model reacts. Called from the monitor loop and from
+/// `run_tracked_command`'s deliver closure when they produce new output.
+///
+/// All decisions are made under the single `turn_gate` lock. If a turn is
+/// already running, the injection is left in `pending_injections` and the
+/// currently-running turn's `finalize_turn` will drain it once it finishes.
+/// If a user message is queued, the injection is added to `pending_injections`
+/// but no auto-turn is spawned — the queued user message takes priority.
 fn try_continue_auto(state: Arc<AppState>) {
-    if state.pending_injections.lock().unwrap().is_empty() { return; }
-    if state.is_streaming
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
-        return;
-    }
+    let should_spawn = {
+        let mut gate = state.turn_gate.lock().unwrap();
+        if gate.pending_injections.is_empty() { return; }
+        if gate.streaming {
+            // Turn already running — leave the injection queued.
+            return;
+        }
+        // A queued user message takes priority — don't spawn an auto-turn.
+        // The injection stays in `pending_injections`; `finalize_turn` (or
+        // the next user-message handler) will fold it in.
+        if gate.pending_user_msg.is_some() { return; }
+        if gate.interrupt_requested { return; }
+        if gate.auto_depth >= MAX_AUTO_DEPTH { return; }
+        gate.streaming = true;
+        gate.auto_depth += 1;
+        true
+    };
+    if !should_spawn { return; }
+
+    // Drain injections into persisted messages.
     let drained: Vec<ApiMessage> = {
-        let mut pending = state.pending_injections.lock().unwrap();
-        std::mem::take(&mut *pending)
+        let mut gate = state.turn_gate.lock().unwrap();
+        std::mem::take(&mut gate.pending_injections)
     };
     if drained.is_empty() {
-        // Lost the race — another drain emptied the queue first.
-        state.is_streaming.store(false, Ordering::Relaxed);
+        // Lost the race — another drain emptied the queue between our check
+        // and the drain. Release the gate.
+        let mut gate = state.turn_gate.lock().unwrap();
+        gate.streaming = false;
+        gate.auto_depth = 0;
         return;
     }
     {
@@ -257,7 +356,7 @@ fn try_continue_auto(state: Arc<AppState>) {
         save_messages(&msgs);
     }
     info!("[agent/stream] auto-turn triggered by queued background injection");
-    spawn_turn(state, None);
+    spawn_turn(state, TurnTrigger::Auto);
 }
 
 async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
@@ -268,7 +367,7 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
     let (replay, resumed) = {
         let mut ss = state.stream_state.lock().unwrap();
         ss.subs.push(sub_tx);
-        let resumed = state.is_streaming.load(Ordering::Relaxed);
+        let resumed = state.turn_gate.lock().unwrap().streaming;
         let replay = if resumed { ss.buffer.clone() } else { Vec::new() };
         (replay, resumed)
     };
@@ -354,21 +453,38 @@ async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
                 warn!("[agent/stream] user_message frame missing/empty text");
                 return;
             }
-            if state.is_streaming
-                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                .is_err()
-            {
-                let json = serde_json::json!({"type":"error","message":"a turn is already running"}).to_string();
-                buffer_and_fanout(&state.stream_state, json);
-                return;
-            }
+            let action = {
+                let mut gate = state.turn_gate.lock().unwrap();
+                if gate.streaming {
+                    // A turn is already running. Queue the user message so it
+                    // takes priority in the next `finalize_turn` call.
+                    if gate.pending_user_msg.is_some() {
+                        // Already have a queued message — can only hold one.
+                        let json = serde_json::json!({"type":"error","message":"a message is already queued, please wait"}).to_string();
+                        buffer_and_fanout(&state.stream_state, json);
+                    } else {
+                        gate.pending_user_msg = Some(text.clone());
+                        let preview: String = text.chars().take(120).collect();
+                        info!("[agent/stream] user_message queued (turn running): {preview}");
+                        let json = serde_json::json!({"type":"queued","text_preview": preview}).to_string();
+                        buffer_and_fanout(&state.stream_state, json);
+                    }
+                    // Don't spawn a turn — the running turn's finalize_turn
+                    // will pick up the queued message.
+                    return;
+                }
+                // Gate is free — claim it for a user-driven turn.
+                gate.streaming = true;
+                gate.auto_depth = 0;
+            };
             let preview: String = text.chars().take(120).collect();
             info!("[agent/stream] user_message ({} chars): {preview}", text.len());
-            spawn_turn(state.clone(), Some(text));
+            spawn_turn(state.clone(), TurnTrigger::User(text));
         }
         "interrupt" => {
             info!("[agent/stream] interrupt frame received");
             state.cancel.lock().unwrap().cancel();
+            state.turn_gate.lock().unwrap().interrupt_requested = true;
             buffer_and_fanout(&state.stream_state, serde_json::json!({"type":"interrupt_ack"}).to_string());
         }
         "cancel_task" => {
@@ -753,7 +869,7 @@ fn run_tracked_command(
             "Background command {} completed (status={}). Command: {}\n\nOutput:\n{}",
             outcome.task_id, outcome.status, outcome.command, outcome.summary
         );
-        deliver_state.pending_injections.lock().unwrap().push(ApiMessage {
+        deliver_state.turn_gate.lock().unwrap().pending_injections.push(ApiMessage {
             role:    "bg_complete".to_string(),
             content: vec![ContentBlock::Text { text: injection.clone() }],
         });
@@ -892,7 +1008,7 @@ fn spawn_monitor(
                     Some(TaskStatus::Cancelled) => "cancelled",
                     _                           => "ended",
                 };
-                state.pending_injections.lock().unwrap()
+                state.turn_gate.lock().unwrap().pending_injections
                     .push(monitor_complete_message(&task_id, &label, status_str, &new_text));
                 let ev = ChatEvent::BgComplete {
                     task_id: task_id.clone(),
@@ -906,7 +1022,7 @@ fn spawn_monitor(
                 return;
             }
             if !new_text.trim().is_empty() {
-                state.pending_injections.lock().unwrap()
+                state.turn_gate.lock().unwrap().pending_injections
                     .push(monitor_progress_message(&task_id, &label, &new_text));
                 let ev = ChatEvent::BgProgress {
                     task_id: task_id.clone(),
@@ -1050,10 +1166,9 @@ pub async fn run() -> anyhow::Result<()> {
             ss.tasks = octo_core::load_tasks(&data_dir(), "agent");
             ss
         }),
-        is_streaming:  AtomicBool::new(false),
+        turn_gate:    Mutex::new(TurnGate::new()),
         cancel:        Mutex::new(CancellationToken::new()),
         mcp_pool,
-        pending_injections: Mutex::new(Vec::new()),
     });
 
     let cors = CorsLayer::new()
@@ -1089,7 +1204,11 @@ pub async fn run() -> anyhow::Result<()> {
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 info!("[agent] running STARTUP_PROMPT ({} chars)", prompt.len());
-                state_sp.is_streaming.store(true, Ordering::Relaxed);
+                {
+                    let mut gate = state_sp.turn_gate.lock().unwrap();
+                    gate.streaming = true;
+                    gate.auto_depth = 0;
+                }
                 {
                     let mut msgs = state_sp.messages.lock().unwrap();
                     msgs.push(ApiMessage {
@@ -1131,7 +1250,10 @@ pub async fn run() -> anyhow::Result<()> {
                         error!("[agent] STARTUP_PROMPT error: {e}");
                     }
                 }
-                state_sp.is_streaming.store(false, Ordering::Relaxed);
+                // Release the gate after the startup prompt turn.
+                let mut gate = state_sp.turn_gate.lock().unwrap();
+                gate.streaming = false;
+                gate.auto_depth = 0;
             });
         }
     }
