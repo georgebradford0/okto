@@ -124,6 +124,11 @@ impl TurnGate {
 /// Maximum consecutive auto-turns before we stop chaining and release the gate.
 const MAX_AUTO_DEPTH: u32 = 3;
 
+/// Why a turn is being spawned. `User` carries the user's text; `Auto` is a
+/// chained turn driven solely by queued background-task injections already
+/// folded into the conversation history.
+enum TurnTrigger { User(String), Auto }
+
 // ── App state ─────────────────────────────────────────────────────────────────
 
 struct AppState {
@@ -388,92 +393,69 @@ fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
 /// background-task injections and queued user message, then decides what
 /// happens next:
 ///
-/// Priority: queued user message > auto-turn chaining > release gate.
-/// An interrupt requested prevents auto-turn chaining — the gate is released.
+///   1. Queued user message → user-driven turn (always wins, even after
+///      an interrupt — interrupt suppresses auto-chaining, not the user's
+///      next explicit instruction).
+///   2. Queued injections → auto-turn (only if no user message,
+///      interrupt was not requested, and auto_depth < MAX_AUTO_DEPTH).
+///   3. Nothing actionable → release the gate.
 fn finalize_turn(state: Arc<AppState>) {
-    let mut gate = state.turn_gate.lock().unwrap();
-
-    if gate.interrupt_requested {
-        // User interrupted — don't chain auto-turns. Drain injections into
-        // messages so they're not lost, then release the gate.
-        let injections = std::mem::take(&mut gate.pending_injections);
+    // Drain queued state under the gate, decide what happens next.
+    let (injections, queued_user, should_auto) = {
+        let mut gate = state.turn_gate.lock().unwrap();
+        let injections  = std::mem::take(&mut gate.pending_injections);
         let queued_user = gate.queued_user_message.take();
+        let should_auto = !gate.interrupt_requested
+            && gate.auto_depth < MAX_AUTO_DEPTH
+            && queued_user.is_none()
+            && !injections.is_empty();
         gate.interrupt_requested = false;
-        gate.auto_depth = 0;
-        gate.streaming = false;
-
-        // Persist injections outside the gate lock.
-        let has_content = !injections.is_empty() || queued_user.is_some();
-        if has_content {
-            let mut msgs = state.messages.lock().unwrap();
-            if let Some(text) = queued_user {
-                msgs.push(ApiMessage {
-                    role:    "user".to_string(),
-                    content: vec![ContentBlock::Text { text }],
-                });
-            }
-            msgs.extend(injections);
-            save_messages(&msgs);
-            // If a user message was queued, it's now in messages; next
-            // user_message frame from the client WS loop will pick it up
-            // via try_claim_gate_and_spawn (no auto-turn needed).
+        if should_auto {
+            gate.auto_depth += 1;
+            // streaming stays true — we chain into an auto-turn.
+        } else if queued_user.is_some() {
+            // streaming stays true — we chain into a user-driven turn.
+            gate.auto_depth = 0;
+        } else {
+            gate.streaming = false;
+            gate.auto_depth = 0;
         }
-        info!("[lair/stream] interrupted — gate released, no auto-turn");
-        return;
-    }
+        (injections, queued_user, should_auto)
+    };
 
-    // Priority 1: queued user message — always wins over auto-turn.
-    if let Some(text) = gate.queued_user_message.take() {
-        let injections = std::mem::take(&mut gate.pending_injections);
-        gate.auto_depth = 0;
-        // streaming stays true — we chain directly into a user-driven turn.
-        // Drop the gate lock before touching messages / spawning.
-        drop(gate);
-
+    // Fold the queued user message + any injections into the persisted
+    // history. Scoped block so the MutexGuard drops before we move `state`
+    // into spawn_turn below.
+    let had_injections = !injections.is_empty();
+    {
         let mut msgs = state.messages.lock().unwrap();
-        msgs.push(ApiMessage {
-            role:    "user".to_string(),
-            content: vec![ContentBlock::Text { text }],
-        });
+        if let Some(ref text) = queued_user {
+            msgs.push(ApiMessage {
+                role:    "user".to_string(),
+                content: vec![ContentBlock::Text { text: text.clone() }],
+            });
+        }
         msgs.extend(injections);
         save_messages(&msgs);
+    }
 
+    if let Some(text) = queued_user {
         info!("[lair/stream] queued user message takes priority — spawning user turn");
         spawn_turn(state, TurnTrigger::User(text));
         return;
     }
 
-    // Priority 2: auto-turn for injections, capped at MAX_AUTO_DEPTH.
-    let injections = std::mem::take(&mut gate.pending_injections);
-    if injections.is_empty() {
-        gate.streaming = false;
-        gate.auto_depth = 0;
+    if should_auto {
+        info!("[lair/stream] auto-turn triggered by queued background injection");
+        spawn_turn(state, TurnTrigger::Auto);
+        return;
+    }
+
+    if had_injections {
+        info!("[lair/stream] injections persisted but auto-turn suppressed (interrupt or depth cap)");
+    } else {
         info!("[lair/stream] turn complete, gate released");
-        return;
     }
-
-    if gate.auto_depth >= MAX_AUTO_DEPTH {
-        // Cap reached — persist injections but don't chain another auto-turn.
-        gate.streaming = false;
-        gate.auto_depth = 0;
-        drop(gate);
-
-        let mut msgs = state.messages.lock().unwrap();
-        msgs.extend(injections);
-        save_messages(&msgs);
-        info!("[lair/stream] auto-turn cap reached ({MAX_AUTO_DEPTH}), gate released");
-        return;
-    }
-
-    gate.auto_depth += 1;
-    // streaming stays true — chain into auto-turn.
-    drop(gate);
-
-    let mut msgs = state.messages.lock().unwrap();
-    msgs.extend(injections);
-    save_messages(&msgs);
-    info!("[lair/stream] auto-turn triggered by queued background injection");
-    spawn_turn(state, TurnTrigger::Auto);
 }
 
 fn commit_turn(msgs_arc: &Arc<Mutex<Vec<ApiMessage>>>, snapshot_len: usize, updated: Vec<ApiMessage>) {
@@ -503,11 +485,7 @@ fn try_continue_auto(state: Arc<AppState>) {
     let drained: Vec<ApiMessage> = std::mem::take(&mut gate.pending_injections);
     drop(gate);
 
-    if drained.is_empty() {
-        let mut gate = state.turn_gate.lock().unwrap();
-        gate.streaming = false;
-        return;
-    }
+    // `drained` is guaranteed non-empty by the early-return guard above.
     {
         let mut msgs = state.messages.lock().unwrap();
         msgs.extend(drained);

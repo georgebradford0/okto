@@ -277,6 +277,8 @@ fn finalize_turn(state: Arc<AppState>) {
     };
 
     // Fold injections + queued user message into the persisted history.
+    // Capture `had_injections` first because `msgs.extend` consumes the Vec.
+    let had_injections = !injections.is_empty();
     {
         let mut msgs = state.messages.lock().unwrap();
         if let Some(text) = &user_msg {
@@ -301,7 +303,7 @@ fn finalize_turn(state: Arc<AppState>) {
         return;
     }
 
-    if !injections.is_empty() {
+    if had_injections {
         info!("[agent/stream] injections persisted but auto-turn suppressed (interrupt or depth cap)");
     } else {
         info!("[agent/stream] turn complete, gate released");
@@ -453,7 +455,7 @@ async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
                 warn!("[agent/stream] user_message frame missing/empty text");
                 return;
             }
-            let action = {
+            {
                 let mut gate = state.turn_gate.lock().unwrap();
                 if gate.streaming {
                     // A turn is already running. Queue the user message so it
@@ -476,7 +478,7 @@ async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
                 // Gate is free — claim it for a user-driven turn.
                 gate.streaming = true;
                 gate.auto_depth = 0;
-            };
+            }
             let preview: String = text.chars().take(120).collect();
             info!("[agent/stream] user_message ({} chars): {preview}", text.len());
             spawn_turn(state.clone(), TurnTrigger::User(text));
