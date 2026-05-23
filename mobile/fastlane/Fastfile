@@ -27,7 +27,7 @@ platform :ios do
     upload_to_testflight(
       ipa:                            ENV["IPA_PATH"],
       api_key:                        api_key,
-      groups:                         ["internal"],
+      groups:                         ["external"],
       reject_build_waiting_for_review: true,
     )
   end
