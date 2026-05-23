@@ -6,7 +6,7 @@ This code is experimental and will change frequently between version updates.
 ## Setup
 To get up and running you'll need
 - A Linux host with static IP with ports 22 and 8443 open
-- LLM provider api key (you can also setup open source models but we'll defer explaining)
+- LLM provider API key (you can also setup open source models but we'll defer explaining)  // TODO create section explaining self hosted requirements and link
 - iPhone (or you can build Android if you like)
 
 Grab the CLI on your linux host with the helper script
@@ -50,7 +50,7 @@ or after initialization with
 octo env set GH_TOKEN=<token>
 octo reload
 ```
-The Github (or Gitlab) MCP can always be added to `lair` instead. It will be propagated to child agents by default.
+The Github (or Gitlab) MCP can always be added to `lair` instead. It will be propagated to child agents by default.  The caveat for this is that there is no dedicated tools list in the LLM prompt for Github, so usually the model has to be directed by the user to use `gh` but significantly shortens the prompt prefix length.  The system prompt references `gh` and explains that the model has access to it.  If you decide to go with the MCP, the inline `GH_TOKEN` to `init` is not needed and the env var should added in the MCP setup.
 
 ## MCP Support
 MCP servers can be seeded at init time by passing an MCP JSON file:
@@ -72,13 +72,13 @@ octo mcp add --agent lair-myrepo --name linear --command npx \
 octo mcp list
 octo mcp remove --name github
 ```
-One thing to note.  MCPs by default are inherited by parent to spawned child.  This will probably change but I haven't decided on a design handle MCP inheritance in detail.  Currently the CLI can only update MCPs for local agents, this will also change soon.
+One thing to note.  MCPs by default are inherited by parent to spawned child.  This will probably change but I haven't decided on a design to handle MCP inheritance in detail.  Currently the CLI can only update MCPs for local agents, this will probably change soon.
 
 ## Docker-in-Docker
-Building docker images from a chat is currently not available.  This will change in the future.  I currently use Github workflows to run docker builds.
+Building docker images from a chat is currently not available.  This might change in the future.  I currently use Github workflows to run docker builds.
 
 ## Noise/SSH Keys
-// TODO describe the creation of noise and ssh keys on init, their idempotence and lack of rotation as well as the use of SSH for remote agent deployment and/or connecting to provisioned compute without an agent
+To avoid the necessity of using DNS for securing a connection, the Noise Protocol is used 
 
 ## Local vs Remote Agents
 Agents can be deployed and managed from the main chat or using the CLI. Local agents are deployed in the *same container* as `lair` but with their own data dir.  This is so `lair` does not have docker.sock access and is completely contained on the host.  Once an agent is deployed and ready to communicate it will be available in the mobile sidebar with a separate chat.
