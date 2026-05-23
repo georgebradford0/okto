@@ -999,23 +999,28 @@ const ChatPane = memo(function ChatPane({
         // Server greets us; status becomes 'streaming' if we joined an in-flight
         // turn (events for it will arrive next), else 'ready' for input.
         updateStatus(event.resumed ? 'streaming' : 'ready')
-        if (event.resumed) {
-          // The server's buffer holds the *entire* in-flight turn from its
-          // first event and is about to be replayed. If we've already rendered
-          // any of it (mid-turn WS reconnect), naively processing the replay
-          // would duplicate every text chunk and tool row. Truncate back to
-          // the last turn anchor — the user / bg_complete / bg_progress row
-          // that triggered this turn — so the replay rebuilds it cleanly.
-          setMessages(prev => {
-            for (let i = prev.length - 1; i >= 0; i--) {
-              const role = prev[i].role
+        setMessages(prev => {
+          // Clear any stale `running` flags. If a WS dropped mid-turn and the
+          // server finished the turn before we reconnected, we missed those
+          // tool_results — without this the dots would keep blinking forever.
+          const hadRunning = prev.some(m => m.running)
+          let cleaned = hadRunning ? prev.map(m => m.running ? { ...m, running: false } : m) : prev
+          if (event.resumed) {
+            // The server's buffer holds the *entire* in-flight turn from its
+            // first event and is about to be replayed. If we've already rendered
+            // any of it (mid-turn WS reconnect), naively processing the replay
+            // would duplicate every text chunk and tool row. Truncate back to
+            // the last turn anchor — the user / bg_complete / bg_progress row
+            // that triggered this turn — so the replay rebuilds it cleanly.
+            for (let i = cleaned.length - 1; i >= 0; i--) {
+              const role = cleaned[i].role
               if (role === 'user' || role === 'bg_complete' || role === 'bg_progress') {
-                return prev.slice(0, i + 1)
+                return cleaned.slice(0, i + 1)
               }
             }
-            return prev
-          })
-        }
+          }
+          return cleaned
+        })
         // Reset per-turn streaming refs unconditionally: for resumed=false this
         // is the first turn after connect; for resumed=true the replay restarts
         // the turn from its first event.
@@ -1049,7 +1054,16 @@ const ChatPane = memo(function ChatPane({
         // Use the wire tool_use_id directly as the Message id so subsequent
         // tool_output / tool_result events route to the right bubble even when
         // the model emits multiple tool_use blocks in one turn.
-        setMessages(prev => appendMsg(prev, { id: event.tool_use_id, role: 'tool' as const, text: toolText, running: true }))
+        //
+        // The model can emit several tool_use blocks at once and they all
+        // stream to mobile before the server executes any of them. Mark this
+        // tool `running` only if no earlier tool is still executing; otherwise
+        // it's queued and gets promoted when the active one's tool_result
+        // arrives. Mirrors the server-side sequential execution.
+        setMessages(prev => {
+          const anyRunning = prev.some(m => m.running)
+          return appendMsg(prev, { id: event.tool_use_id, role: 'tool' as const, text: toolText, running: !anyRunning })
+        })
         break
       }
       case 'tool_output': {
@@ -1062,7 +1076,26 @@ const ChatPane = memo(function ChatPane({
       case 'tool_result': {
         const toolId = event.tool_use_id
         const out = typeof event.output === 'string' ? event.output : JSON.stringify(event.output)
-        setMessages(prev => prev.map(m => m.id === toolId ? { ...m, output: out, running: false } : m))
+        setMessages(prev => {
+          const completedIdx = prev.findIndex(m => m.id === toolId)
+          // Promote the next queued tool (earliest after the completed one,
+          // not running, no output yet) to active execution. Tools run in
+          // emission order so the next queued slot is always after the
+          // current one in the array.
+          let nextQueuedIdx = -1
+          for (let i = completedIdx + 1; i < prev.length; i++) {
+            const m = prev[i]
+            if (m.role === 'tool' && !m.running && m.output === undefined) {
+              nextQueuedIdx = i
+              break
+            }
+          }
+          return prev.map((m, i) => {
+            if (i === completedIdx)  return { ...m, output: out, running: false }
+            if (i === nextQueuedIdx) return { ...m, running: true }
+            return m
+          })
+        })
         break
       }
       case 'done': {
@@ -1070,14 +1103,20 @@ const ChatPane = memo(function ChatPane({
         updateStatus('ready')
         const cost = event.cost_usd
         setMessages(prev => {
-          for (let i = prev.length - 1; i >= 0; i--) {
-            if (prev[i].role === 'assistant') {
-              const next = prev.slice()
+          // Defensive: every tool_use should have been matched by a
+          // tool_result before the turn ends, but a dropped frame would
+          // otherwise leave the dot blinking forever.
+          const base = prev.some(m => m.running)
+            ? prev.map(m => m.running ? { ...m, running: false } : m)
+            : prev
+          for (let i = base.length - 1; i >= 0; i--) {
+            if (base[i].role === 'assistant') {
+              const next = base.slice()
               next[i] = { ...next[i], cost }
               return next
             }
           }
-          return prev
+          return base
         })
         // Turn boundary — anything streamed after this (auto-turn from a
         // bg_complete, or the next user turn) must start a fresh assistant
