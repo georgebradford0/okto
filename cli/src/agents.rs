@@ -1,4 +1,4 @@
-//! `octo agents …` subcommands.
+//! `okto agents …` subcommands.
 //!
 //! The CLI talks to lair's loopback management API (`http://127.0.0.1:8000`)
 //! for start/stop/delete. List reads the registry file directly so the CLI
@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use octo_core::Registry;
+use okto_core::Registry;
 use tracing::{debug, error, info};
 
 use crate::service;
@@ -24,7 +24,7 @@ pub async fn list() -> Result<()> {
         if service::is_running() {
             println!("No agents.");
         } else {
-            println!("No agents (lair is not running — run `octo init` to start it).");
+            println!("No agents (lair is not running — run `okto init` to start it).");
         }
         return Ok(());
     }
@@ -58,9 +58,10 @@ fn http_client() -> reqwest::Client {
 }
 
 /// Header name lair expects on every state-mutating management endpoint.
-/// Token lives in `~/.octo/lair/.mgmt-token` (chmod 0600); regenerated on
-/// the next `octo init` if missing.
-const TOKEN_HEADER: &str = "X-Octo-Token";
+/// Token lives in `~/.okto/lair/.mgmt-token` (chmod 0600); regenerated on
+/// the next `okto init` if missing. Header name stays `X-Okto-Token` because
+/// lair (out of scope for this rename) still gates on that exact name.
+const TOKEN_HEADER: &str = "X-Okto-Token";
 
 fn mgmt_request(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
     match service::read_mgmt_token() {

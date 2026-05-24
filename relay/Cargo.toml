@@ -1,11 +1,11 @@
 [package]
-name        = "octo-relay"
+name        = "okto-relay"
 version     = "0.2.0"
 edition     = "2021"
 description = "Push-notification relay for self-hosted lair instances. Holds APNs/FCM credentials and forwards Ed25519-signed POSTs from registered lair pubkeys to authorized device tokens."
 
 [[bin]]
-name = "octo-relay"
+name = "okto-relay"
 path = "src/main.rs"
 
 [dependencies]

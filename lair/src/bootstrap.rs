@@ -14,7 +14,7 @@ use tracing::{debug, error, info, warn};
 ///
 /// Precedence:
 /// 1. `PUBLIC_HOST` env var (operator override; trusted as-is).
-/// 2. Dev mode (`OCTO_DEV=1`) → `127.0.0.1`.
+/// 2. Dev mode (`OKTO_DEV=1`) → `127.0.0.1`.
 /// 3. Auto-detect via `https://api.ipify.org` with a 5s timeout.
 ///
 /// In production the cluster always has internet egress, so step 3 is the
@@ -26,7 +26,7 @@ pub async fn resolve_public_host(role_log_prefix: &str) -> Result<String> {
             return Ok(host);
         }
     }
-    if std::env::var("OCTO_DEV").as_deref() == Ok("1") {
+    if std::env::var("OKTO_DEV").as_deref() == Ok("1") {
         info!("[{role_log_prefix}] DEV mode: using PUBLIC_HOST=127.0.0.1");
         return Ok("127.0.0.1".to_string());
     }
@@ -101,8 +101,8 @@ pub async fn ensure_workspace(
                 workspace.display(),
             );
             let workspace_str = workspace.to_string_lossy().to_string();
-            let user_name  = std::env::var("GIT_USER_NAME").unwrap_or_else(|_| "octo".to_string());
-            let user_email = std::env::var("GIT_USER_EMAIL").unwrap_or_else(|_| "octo@localhost".to_string());
+            let user_name  = std::env::var("GIT_USER_NAME").unwrap_or_else(|_| "okto".to_string());
+            let user_email = std::env::var("GIT_USER_EMAIL").unwrap_or_else(|_| "okto@localhost".to_string());
             run_git(&["-C", &workspace_str, "config", "user.name",  &user_name]).await?;
             run_git(&["-C", &workspace_str, "config", "user.email", &user_email]).await?;
             return Ok(true);
@@ -139,8 +139,8 @@ pub async fn ensure_workspace(
         run_git(&["clone", &clone_url, &workspace_str]).await?;
     }
 
-    let user_name  = std::env::var("GIT_USER_NAME").unwrap_or_else(|_| "octo".to_string());
-    let user_email = std::env::var("GIT_USER_EMAIL").unwrap_or_else(|_| "octo@localhost".to_string());
+    let user_name  = std::env::var("GIT_USER_NAME").unwrap_or_else(|_| "okto".to_string());
+    let user_email = std::env::var("GIT_USER_EMAIL").unwrap_or_else(|_| "okto@localhost".to_string());
     run_git(&["-C", &workspace_str, "config", "user.name",  &user_name]).await?;
     run_git(&["-C", &workspace_str, "config", "user.email", &user_email]).await?;
 

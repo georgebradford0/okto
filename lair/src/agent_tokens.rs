@@ -2,11 +2,11 @@
 //!
 //! When an agent spawns a child, lair mints a random opaque token and stashes
 //! it here under the child's name. The token is passed to the child as
-//! `OCTO_AGENT_TOKEN` and is the only thing that lets the child call lair's
+//! `OKTO_AGENT_TOKEN` and is the only thing that lets the child call lair's
 //! agent-scoped endpoints (`POST /agents/child`, `DELETE /agents/child/:name`)
 //! to spawn grandchildren or terminate one of its own descendants.
 //!
-//! The store lives at `<OCTO_DATA_DIR>/agent-tokens.json` with 0600 perms
+//! The store lives at `<OKTO_DATA_DIR>/agent-tokens.json` with 0600 perms
 //! (owned by lair, which runs as root inside the container). Children run
 //! as a different per-agent uid, so they can't read this file directly.
 //! Persistence lets the supervisor's lair-restart adoption path reissue

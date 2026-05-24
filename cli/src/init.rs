@@ -1,4 +1,4 @@
-//! `octo init` — bootstrap a lair container on the local Linux host.
+//! `okto init` — bootstrap a lair container on the local Linux host.
 
 use std::{
     fs,
@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use data_encoding::BASE32_NOPAD;
-use octo_core::ensure_container_ssh_keypair;
+use okto_core::ensure_container_ssh_keypair;
 use tracing::{debug, error, info, warn};
 
 use crate::service;
@@ -26,14 +26,14 @@ pub fn prompt(label: &str) -> Result<String> {
 pub struct InitOptions<'a> {
     pub noise_port: u16,
     pub http_port:  u16,
-    /// Pre-parsed + env-expanded contents to seed into `~/.octo/lair/mcp.json`,
+    /// Pre-parsed + env-expanded contents to seed into `~/.okto/lair/mcp.json`,
     /// paired with the source path for log messages. `None` means no seeding.
     /// Validated up-front by `load_seed_mcp_config` so failures can't leave
     /// init in a half-finished state.
     pub mcp_seed:   Option<McpSeed>,
     pub extra_env:  &'a [(String, String)],
     /// Image reference to `docker run`. `None` falls back to
-    /// `$OCTO_LAIR_IMAGE` or `service::DEFAULT_LAIR_IMAGE`.
+    /// `$OKTO_LAIR_IMAGE` or `service::DEFAULT_LAIR_IMAGE`.
     pub image:      Option<&'a str>,
 }
 
@@ -53,8 +53,8 @@ pub fn expand_host_env(v: &str) -> std::result::Result<String, String> {
 
 /// Parse a user-supplied mcp.json file, expand `"${VAR}"` against the
 /// operator's process env, and return pretty-printed JSON ready to be
-/// written to `~/.octo/lair/mcp.json`. Validation only — does not write
-/// anything. Called before `octo init` writes `config.json` so a broken
+/// written to `~/.okto/lair/mcp.json`. Validation only — does not write
+/// anything. Called before `okto init` writes `config.json` so a broken
 /// mcp file can't leave the user in a half-init'd state.
 pub fn load_seed_mcp_config(path: &Path) -> Result<String> {
     let text = fs::read_to_string(path)
@@ -117,7 +117,7 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
             println!("Container SSH keypair ready:");
             println!("  private: {}", priv_path.display());
             println!("  public:  {}", pub_path.display());
-            println!("  (run `octo ssh pubkey` later to print this for registering on Prime / GitHub / etc.)");
+            println!("  (run `okto ssh pubkey` later to print this for registering on Prime / GitHub / etc.)");
         }
         Err(e) => {
             warn!("[init] could not ensure container SSH keypair: {e:#}");
@@ -125,7 +125,7 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
         }
     }
 
-    println!("Operator config: {}.", octo_core::config_path().display());
+    println!("Operator config: {}.", okto_core::config_path().display());
 
     // Snapshot the prior mcp.json (if any) so we can restore it if MCP
     // startup ends up failing after we seed the new one. `seed_server_names`
@@ -152,8 +152,8 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
 
     // Compose the env file passed to the lair container via --env-file.
     // Additive: pre-existing entries are kept and `--env KEY=VAL` upserts on
-    // top, so re-running `octo init -e GH_TOKEN=…` doesn't wipe other vars.
-    // Use `octo env unset` or `octo destroy` to remove entries.
+    // top, so re-running `okto init -e GH_TOKEN=…` doesn't wipe other vars.
+    // Use `okto env unset` or `okto destroy` to remove entries.
     let env_path = service::env_file_path();
     fs::create_dir_all(env_path.parent().unwrap()).ok();
     let existing_text = fs::read_to_string(&env_path).unwrap_or_default();
@@ -251,7 +251,7 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
             anyhow::bail!(
                 "init aborted — {} MCP server(s) from {} failed to start: {}. \
                  Fix the entries (ensure their commands exist inside the lair image, \
-                 or switch to HTTP transport) and re-run `octo init`.",
+                 or switch to HTTP transport) and re-run `okto init`.",
                 failures.len(),
                 source,
                 failures.join(", "),
@@ -330,13 +330,13 @@ fn ensure_noise_keypair(path: &Path) -> Result<String> {
     Ok(BASE32_NOPAD.encode(&kp.public))
 }
 
-/// Env keys octo manages itself (baked into the image or set by
-/// `service::start_lair`). The `octo env` subcommand refuses to add or
+/// Env keys okto manages itself (baked into the image or set by
+/// `service::start_lair`). The `okto env` subcommand refuses to add or
 /// remove these.
 pub const MANAGED_ENV_KEYS: &[&str] = &[
     "NOISE_PORT", "PUBLIC_PORT",
-    "OCTO_HOME", "OCTO_DATA_DIR", "OCTO_AGENTS_DIR",
-    "OCTO_SKIP_SHELL_ENV", "OCTO_LAIR_BINARY",
+    "OKTO_HOME", "OKTO_DATA_DIR", "OKTO_AGENTS_DIR",
+    "OKTO_SKIP_SHELL_ENV", "OKTO_LAIR_BINARY",
     "HOME",
 ];
 
@@ -358,7 +358,7 @@ pub fn parse_extra_env(raw: &[String]) -> Result<Vec<(String, String)>> {
             anyhow::bail!("'{pair}': KEY may only contain letters, digits, and underscores");
         }
         if MANAGED_ENV_KEYS.contains(&k) {
-            anyhow::bail!("'{k}': reserved name managed by octo");
+            anyhow::bail!("'{k}': reserved name managed by okto");
         }
         out.push((k.to_string(), v.to_string()));
     }
@@ -382,13 +382,13 @@ pub fn serialize_env_file(entries: &[(String, String)]) -> String {
 }
 
 /// Stop + respawn the lair container with the persisted launch record. Used
-/// by `octo reload` and `octo env set/unset`.
+/// by `okto reload` and `okto env set/unset`.
 pub async fn restart_lair(reason: &str) -> Result<()> {
     info!("[init] restarting lair (reason: {reason})");
     let rec = service::read_launch().ok_or_else(|| {
-        error!("[init] cannot restart lair: ~/.octo/lair-launch.json is missing");
+        error!("[init] cannot restart lair: ~/.okto/lair-launch.json is missing");
         anyhow::anyhow!(
-            "~/.octo/lair-launch.json is missing. Re-run `octo init` once to record \
+            "~/.okto/lair-launch.json is missing. Re-run `okto init` once to record \
              launch parameters; subsequent `{reason}` calls won't need flags."
         )
     })?;

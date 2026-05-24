@@ -1,25 +1,25 @@
 #!/usr/bin/env sh
 set -e
 
-REPO="georgebradford0/octo"
+REPO="georgebradford0/okto"
 INSTALL_DIR="$HOME/.local/bin"
 
 OS=$(uname -s)
 ARCH=$(uname -m)
 
-# octo is Linux-only — both x86_64 and aarch64 are supported. Only the CLI
-# binary is installed here; `octo init` `docker pull`s the matching
+# okto is Linux-only — both x86_64 and aarch64 are supported. Only the CLI
+# binary is installed here; `okto init` `docker pull`s the matching
 # lair image (ghcr.io/georgebradford0/lair) on first run, so
 # Docker must already be installed and runnable as this user.
 case "$OS" in
   Linux)
     case "$ARCH" in
-      x86_64)  CLI_ARTIFACT="octo-linux-x86_64"  ;;
-      aarch64) CLI_ARTIFACT="octo-linux-aarch64" ;;
+      x86_64)  CLI_ARTIFACT="okto-linux-x86_64"  ;;
+      aarch64) CLI_ARTIFACT="okto-linux-aarch64" ;;
       *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
     esac
     ;;
-  *) echo "Unsupported OS: $OS (octo is Linux-only)"; exit 1 ;;
+  *) echo "Unsupported OS: $OS (okto is Linux-only)"; exit 1 ;;
 esac
 
 mkdir -p "$INSTALL_DIR"
@@ -37,9 +37,9 @@ if [ -z "$CLI_TAG" ]; then
 fi
 
 echo "Downloading $CLI_ARTIFACT (${CLI_TAG})..."
-curl -fsSL "https://github.com/${REPO}/releases/download/${CLI_TAG}/${CLI_ARTIFACT}" -o "$INSTALL_DIR/octo"
-chmod +x "$INSTALL_DIR/octo"
-echo "Installed to $INSTALL_DIR/octo"
+curl -fsSL "https://github.com/${REPO}/releases/download/${CLI_TAG}/${CLI_ARTIFACT}" -o "$INSTALL_DIR/okto"
+chmod +x "$INSTALL_DIR/okto"
+echo "Installed to $INSTALL_DIR/okto"
 
 # Warn if ~/.local/bin is not in PATH.
 case ":$PATH:" in
@@ -47,15 +47,15 @@ case ":$PATH:" in
   *) echo "Add to your shell: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
 esac
 
-# Install shell completions for octo.
+# Install shell completions for okto.
 DETECTED_SHELL=$(basename "${SHELL:-sh}")
 COMPLETIONS_INSTALLED=""
 case "$DETECTED_SHELL" in
   zsh)
     COMP_DIR="$HOME/.zfunc"
-    COMP_FILE="$COMP_DIR/_octo"
+    COMP_FILE="$COMP_DIR/_okto"
     mkdir -p "$COMP_DIR"
-    "$INSTALL_DIR/octo" completions zsh > "$COMP_FILE"
+    "$INSTALL_DIR/okto" completions zsh > "$COMP_FILE"
     echo "Zsh completions installed to $COMP_FILE"
     ZSHRC="$HOME/.zshrc"
     if ! grep -q 'fpath.*\.zfunc' "$ZSHRC" 2>/dev/null; then
@@ -65,9 +65,9 @@ case "$DETECTED_SHELL" in
     COMPLETIONS_INSTALLED=1
     ;;
   bash)
-    COMP_FILE="$HOME/.local/share/bash-completion/completions/octo"
+    COMP_FILE="$HOME/.local/share/bash-completion/completions/okto"
     mkdir -p "$(dirname "$COMP_FILE")"
-    "$INSTALL_DIR/octo" completions bash > "$COMP_FILE"
+    "$INSTALL_DIR/okto" completions bash > "$COMP_FILE"
     echo "Bash completions installed to $COMP_FILE"
     BASHRC="$HOME/.bashrc"
     SOURCE_LINE=". $COMP_FILE"
@@ -80,12 +80,12 @@ case "$DETECTED_SHELL" in
   fish)
     COMP_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions"
     mkdir -p "$COMP_DIR"
-    "$INSTALL_DIR/octo" completions fish > "$COMP_DIR/octo.fish"
-    echo "Fish completions installed to $COMP_DIR/octo.fish"
+    "$INSTALL_DIR/okto" completions fish > "$COMP_DIR/okto.fish"
+    echo "Fish completions installed to $COMP_DIR/okto.fish"
     COMPLETIONS_INSTALLED=1
     ;;
   *)
-    echo "Completions: run 'octo completions <bash|zsh|fish>' to generate for your shell."
+    echo "Completions: run 'okto completions <bash|zsh|fish>' to generate for your shell."
     ;;
 esac
 
@@ -95,7 +95,7 @@ if [ -n "$COMPLETIONS_INSTALLED" ]; then
   echo "Start a new shell (or run 'exec $DETECTED_SHELL') to activate them."
   echo ""
 fi
-# Ensure Docker is installed — `octo init` pulls and runs the lair image.
+# Ensure Docker is installed — `okto init` pulls and runs the lair image.
 if ! command -v docker >/dev/null 2>&1; then
   echo "Docker is not installed — installing it via https://get.docker.com ..."
   if curl -fsSL https://get.docker.com | sh; then
@@ -109,21 +109,21 @@ if ! command -v docker >/dev/null 2>&1; then
     if [ "$(id -u)" -ne 0 ] && command -v usermod >/dev/null 2>&1; then
       if $SUDO usermod -aG docker "$(id -un)" 2>/dev/null; then
         echo "Added $(id -un) to the 'docker' group — log out and back in"
-        echo "(or run 'newgrp docker') before running 'octo init'."
+        echo "(or run 'newgrp docker') before running 'okto init'."
       fi
     fi
   else
     echo "WARNING: automatic Docker install failed. Install Docker Engine"
-    echo "         manually before running 'octo init' — it pulls and runs"
+    echo "         manually before running 'okto init' — it pulls and runs"
     echo "         ghcr.io/georgebradford0/lair."
   fi
   echo ""
 fi
 
-echo "Next: run 'octo init' to bootstrap lair on this host. It will prompt"
+echo "Next: run 'okto init' to bootstrap lair on this host. It will prompt"
 echo "      for API keys interactively, then 'docker pull' the lair image and"
 echo "      'docker run' it. Optional init flags: --env KEY=VALUE, --image,"
 echo "      --noise-port, --mcp-config."
 echo ""
 
-"$INSTALL_DIR/octo" --help
+"$INSTALL_DIR/okto" --help

@@ -19,7 +19,7 @@ set -euo pipefail
 #   scripts/build-lair-image.sh v0.9.1      # override the version tag
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IMAGE="${OCTO_LAIR_IMAGE:-ghcr.io/georgebradford0/lair}"
+IMAGE="${OKTO_LAIR_IMAGE:-ghcr.io/georgebradford0/lair}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 
 PUSH=1

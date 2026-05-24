@@ -13,11 +13,11 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use octo_core::mcp::McpServerConfig;
+use okto_core::mcp::McpServerConfig;
 use tokio::process::{Child, Command};
 use tracing::{debug, error, info, warn};
 
-/// Legacy non-root uid/gid baked into the lair image as the `octo-agent`
+/// Legacy non-root uid/gid baked into the lair image as the `okto-agent`
 /// user (see `lair/Dockerfile`). Used as a fallback when the supervisor
 /// can't allocate a per-agent uid slot from the 10100..10199 range — e.g.
 /// when the child's port falls outside the standard 30100..30199 range.
@@ -26,7 +26,7 @@ const FALLBACK_AGENT_GID: u32 = 10001;
 
 /// Per-agent uid range. Maps 1:1 to the agent port range (30100..30199):
 /// port 30100 → uid 10100, ..., port 30199 → uid 10199. Each child runs as
-/// its own uid so siblings can't read each other's `OCTO_AGENT_TOKEN` via
+/// its own uid so siblings can't read each other's `OKTO_AGENT_TOKEN` via
 /// `/proc/<pid>/environ`.
 const PORT_RANGE_BASE: u16 = 30100;
 const PORT_RANGE_LEN:  u16 = 100;
@@ -57,16 +57,16 @@ fn chown_best_effort(path: &Path, uid: u32, gid: u32) {
 
 /// Resolve the system username for a uid baked into the lair image. Mirrors
 /// the `useradd` block in `lair/Dockerfile`:
-///   * uid 10001            → `octo-agent`             (legacy fallback)
-///   * uid 10100..=10199    → `octo-agent-<uid-10100>` (per-port slot)
+///   * uid 10001            → `okto-agent`             (legacy fallback)
+///   * uid 10100..=10199    → `okto-agent-<uid-10100>` (per-port slot)
 /// Returns `None` for uids outside those ranges (dev-mode runs where the
 /// image's users don't exist).
 fn username_for_uid(uid: u32) -> Option<String> {
     if uid == FALLBACK_AGENT_UID {
-        return Some("octo-agent".to_string());
+        return Some("okto-agent".to_string());
     }
     if (UID_RANGE_BASE..UID_RANGE_BASE + PORT_RANGE_LEN as u32).contains(&uid) {
-        return Some(format!("octo-agent-{}", uid - UID_RANGE_BASE));
+        return Some(format!("okto-agent-{}", uid - UID_RANGE_BASE));
     }
     None
 }
@@ -127,7 +127,7 @@ pub(crate) fn set_passwd_home_best_effort(user: &str, home: &Path, log_tag: &str
         debug!("[{log_tag}] /etc/passwd already has home={home_str} for {user}");
         return;
     }
-    let tmp_path = passwd_path.with_extension("octo-tmp");
+    let tmp_path = passwd_path.with_extension("okto-tmp");
     if let Err(e) = std::fs::write(&tmp_path, &rebuilt) {
         warn!("[{log_tag}] write {} failed: {e} (continuing)", tmp_path.display());
         return;
@@ -155,8 +155,8 @@ fn seed_agent_ssh(agent_dir: &Path, uid: u32, gid: u32) -> Result<()> {
         .ok().filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .ok_or_else(|| anyhow::anyhow!("HOME is not set — cannot resolve container ssh key"))?;
-    let src_priv = octo_core::container_ssh_private_key(&lair_home);
-    let src_pub  = octo_core::container_ssh_public_key(&lair_home);
+    let src_priv = okto_core::container_ssh_private_key(&lair_home);
+    let src_pub  = okto_core::container_ssh_public_key(&lair_home);
     if !src_priv.exists() || !src_pub.exists() {
         warn!(
             "[supervisor] container ssh key missing ({} / {}); skipping seed for {}",
@@ -166,8 +166,8 @@ fn seed_agent_ssh(agent_dir: &Path, uid: u32, gid: u32) -> Result<()> {
     }
 
     let dst_dir  = agent_dir.join(".ssh");
-    let dst_priv = dst_dir.join(octo_core::SSH_PRIVATE_KEY_FILE);
-    let dst_pub  = dst_dir.join(octo_core::SSH_PUBLIC_KEY_FILE);
+    let dst_priv = dst_dir.join(okto_core::SSH_PRIVATE_KEY_FILE);
+    let dst_pub  = dst_dir.join(okto_core::SSH_PUBLIC_KEY_FILE);
     std::fs::create_dir_all(&dst_dir)
         .with_context(|| format!("create {}", dst_dir.display()))?;
     #[cfg(unix)]
@@ -217,7 +217,7 @@ pub struct SpawnParams<'a> {
     /// Capability token (random base64) the child uses to authenticate calls
     /// back to lair's agent-scoped management endpoints (e.g. spawn a
     /// grandchild, terminate one of its own descendants). Passed via
-    /// `OCTO_AGENT_TOKEN` env. `None` for operator-spawned agents that
+    /// `OKTO_AGENT_TOKEN` env. `None` for operator-spawned agents that
     /// don't get spawn/terminate capability (children of children get one
     /// from the spawning flow).
     pub agent_token:       Option<&'a str>,
@@ -226,7 +226,7 @@ pub struct SpawnParams<'a> {
     pub lair_internal_url: Option<&'a str>,
     /// MCP servers to seed into the child's `mcp.json` before the child
     /// process starts. `None` means "leave the existing file alone" — used
-    /// on restart so per-agent edits via `octo mcp add --agent <name>`
+    /// on restart so per-agent edits via `okto mcp add --agent <name>`
     /// survive. `Some(list)` writes that list to
     /// `<data_dir>/mcp.json`, overwriting any existing content. Pass an
     /// empty slice to explicitly clear the child's MCP servers.
@@ -248,7 +248,7 @@ pub struct AgentSupervisor {
     agents:       Mutex<HashMap<String, Arc<AgentProc>>>,
     agents_root:  PathBuf,
     /// Path to the `lair` binary. Resolved at supervisor creation:
-    /// `$OCTO_LAIR_BINARY` env override, or the current binary's path.
+    /// `$OKTO_LAIR_BINARY` env override, or the current binary's path.
     binary_path:  PathBuf,
 }
 
@@ -256,7 +256,7 @@ impl AgentSupervisor {
     pub fn new(agents_root: PathBuf) -> Result<Arc<Self>> {
         std::fs::create_dir_all(&agents_root)
             .with_context(|| format!("create agents root {}", agents_root.display()))?;
-        let binary_path = match std::env::var("OCTO_LAIR_BINARY") {
+        let binary_path = match std::env::var("OKTO_LAIR_BINARY") {
             Ok(p) if !p.is_empty() => PathBuf::from(p),
             _ => std::env::current_exe().context("locate current lair binary")?,
         };
@@ -299,7 +299,7 @@ impl AgentSupervisor {
 
         // Per-agent uid baked into the image (see `lair/Dockerfile`). Each
         // child runs as its own uid so siblings can't read each other's
-        // `OCTO_AGENT_TOKEN` from `/proc/<pid>/environ`.
+        // `OKTO_AGENT_TOKEN` from `/proc/<pid>/environ`.
         let (uid, gid) = uid_for_port(p.port);
         debug!("[agent_proc] agent='{}' will run as uid={uid} gid={gid}", p.name);
 
@@ -324,7 +324,7 @@ impl AgentSupervisor {
         // Point the agent uid's `pw_dir` at its per-agent dir. OpenSSH
         // resolves `~` via `getpwuid()`, not `$HOME`, so without this
         // `ssh user@host` from the child's bash would look in the image-
-        // default `/home/octo-agent[-N]/.ssh/` and miss the key we just
+        // default `/home/okto-agent[-N]/.ssh/` and miss the key we just
         // seeded. Same uid is reused across agent names over time, so
         // this runs on every spawn rather than being baked in at image
         // build time.
@@ -336,7 +336,7 @@ impl AgentSupervisor {
         // `init_mcp_pool()` sees it on first read. `None` means the caller
         // (typically a restart path) wants to preserve whatever's already
         // on disk — possibly per-agent edits made via
-        // `octo mcp add --agent <name>` after the child was created.
+        // `okto mcp add --agent <name>` after the child was created.
         if let Some(servers) = p.mcp {
             let mcp_path = data_dir.join("mcp.json");
             let json = serde_json::to_string_pretty(servers)
@@ -356,19 +356,19 @@ impl AgentSupervisor {
 
         let mut cmd = Command::new(&self.binary_path);
         cmd.arg("--role").arg("agent");
-        cmd.env("OCTO_DATA_DIR",   &data_dir);
+        cmd.env("OKTO_DATA_DIR",   &data_dir);
         cmd.env("WORKSPACE_DIR",   &workspace_dir);
         cmd.env("AGENT_PORT",      p.port.to_string());
         cmd.env("AGENT_NAME",      p.name);
         // Children share the operator's config.json via core::config_dir();
         // no need to bake credentials into env. Skip the login-shell env
         // bootstrap (we already have what we need from the parent's env).
-        cmd.env("OCTO_SKIP_SHELL_ENV", "1");
+        cmd.env("OKTO_SKIP_SHELL_ENV", "1");
         // The child runs as a non-root uid; give it a writable HOME so
         // npm/uvx/gh/git caches land somewhere it can actually write.
         cmd.env("HOME", &agent_dir);
-        if std::env::var("OCTO_DEV").as_deref() == Ok("1") {
-            cmd.env("OCTO_DEV", "1");
+        if std::env::var("OKTO_DEV").as_deref() == Ok("1") {
+            cmd.env("OKTO_DEV", "1");
         }
         if let Some(v) = p.git_url        { cmd.env("GIT_URL",         v); }
         if let Some(v) = p.startup_script { cmd.env("STARTUP_SCRIPT",  v); }
@@ -377,13 +377,13 @@ impl AgentSupervisor {
         // Forward provider creds via env so the child doesn't need to read
         // the global config.json. ANTHROPIC_API_KEY / OPENAI_API_KEY /
         // OPENAI_API_URL / MODEL match the precedence rules in
-        // `octo_core::resolve_api_key` (env > config).
+        // `okto_core::resolve_api_key` (env > config).
         if let Some(v) = p.anthropic_api_key { cmd.env("ANTHROPIC_API_KEY", v); }
         if let Some(v) = p.openai_api_key    { cmd.env("OPENAI_API_KEY",    v); }
         if let Some(v) = p.openai_api_url    { cmd.env("OPENAI_API_URL",    v); }
         if let Some(v) = p.model             { cmd.env("MODEL",             v); }
         if let Some(v) = p.gh_token          { cmd.env("GH_TOKEN",          v); }
-        if let Some(v) = p.agent_token       { cmd.env("OCTO_AGENT_TOKEN",  v); }
+        if let Some(v) = p.agent_token       { cmd.env("OKTO_AGENT_TOKEN",  v); }
         if let Some(v) = p.lair_internal_url { cmd.env("LAIR_INTERNAL_URL", v); }
 
         // Never let the child inherit lair's management-API token or any
@@ -400,7 +400,7 @@ impl AgentSupervisor {
         // This prevents a child from `kill 1`-ing lair (lair runs as root
         // inside the container), reading root-only files like
         // `/proc/1/environ` and `/data/config.json`, and reading any
-        // sibling agent's `OCTO_AGENT_TOKEN` from its `/proc/<pid>/environ`.
+        // sibling agent's `OKTO_AGENT_TOKEN` from its `/proc/<pid>/environ`.
         cmd.uid(uid).gid(gid);
 
         let child = cmd.spawn()
@@ -496,7 +496,7 @@ impl AgentSupervisor {
     }
 
     /// Tail the last `bytes` of an agent's log file. Used by the CLI's
-    /// `octo logs <agent>` command. Returns the whole file if smaller.
+    /// `okto logs <agent>` command. Returns the whole file if smaller.
     pub fn log_tail(&self, name: &str, bytes: u64) -> Result<String> {
         let path = self.log_path(name);
         let metadata = std::fs::metadata(&path)

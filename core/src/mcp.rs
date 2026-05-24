@@ -6,7 +6,7 @@
 ///
 /// # Configuration
 ///
-/// Read from `$OCTO_DATA_DIR/mcp.json` (i.e. `/data/mcp.json` in Docker).
+/// Read from `$OKTO_DATA_DIR/mcp.json` (i.e. `/data/mcp.json` in Docker).
 /// Format: a JSON array of server descriptors.
 ///
 /// ## Stdio transport (local process)
@@ -76,7 +76,7 @@ pub struct McpServerConfig {
     pub headers: HashMap<String, String>,
 }
 
-/// Load MCP server configs from `$OCTO_DATA_DIR/mcp.json`.
+/// Load MCP server configs from `$OKTO_DATA_DIR/mcp.json`.
 /// Returns an empty vec if the file is absent or unparseable.
 pub fn load_mcp_configs() -> Vec<McpServerConfig> {
     let path = crate::data_dir().join("mcp.json");
@@ -210,7 +210,7 @@ impl McpClient {
         let init_result = client.request("initialize", serde_json::json!({
             "protocolVersion": "2024-11-05",
             "capabilities": { "tools": {} },
-            "clientInfo": { "name": "octo", "version": env!("CARGO_PKG_VERSION") }
+            "clientInfo": { "name": "okto", "version": env!("CARGO_PKG_VERSION") }
         })).await;
 
         if let Err(e) = init_result {
@@ -462,7 +462,7 @@ fn expand_var(v: &str) -> String {
         "MODEL"             => cfg.model,
         // `${GH_TOKEN}` falls through to the std::env::var() lookup below —
         // lair's `GH_TOKEN` lives in its process env (operator-supplied via
-        // `octo init --env GH_TOKEN=…`), not in config.json.
+        // `okto init --env GH_TOKEN=…`), not in config.json.
         _                   => None,
     };
     from_cfg

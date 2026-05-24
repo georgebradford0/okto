@@ -7,7 +7,7 @@
 //! inspect / pull / logs.
 //!
 //! Inside the container, lair and every child agent it spawns are plain
-//! processes; the operator's host `~/.octo` is bind-mounted at `/data` so
+//! processes; the operator's host `~/.okto` is bind-mounted at `/data` so
 //! `config.json`, `lair/`, and `agents/` stay visible to the CLI.
 
 use std::{
@@ -28,7 +28,7 @@ pub const LAIR_DEFAULT_NOISE_PORT: u16 = 8443;
 /// `docker rm`, `docker inspect`, `docker logs`, etc.
 pub const LAIR_CONTAINER_NAME: &str = "lair";
 
-/// Default image reference. Override via `$OCTO_LAIR_IMAGE` or stored in
+/// Default image reference. Override via `$OKTO_LAIR_IMAGE` or stored in
 /// `lair-launch.json` (`image` field).
 pub const DEFAULT_LAIR_IMAGE: &str = "ghcr.io/georgebradford0/lair:latest";
 
@@ -36,9 +36,9 @@ fn home_dir() -> PathBuf {
     std::env::var("HOME").map(PathBuf::from).unwrap_or_default()
 }
 
-/// Operator's config dir. Always `$HOME/.octo`. Mounted into the container
+/// Operator's config dir. Always `$HOME/.okto`. Mounted into the container
 /// at `/data`.
-pub fn config_dir() -> PathBuf { home_dir().join(".octo") }
+pub fn config_dir() -> PathBuf { home_dir().join(".okto") }
 
 /// Lair's per-host data dir. Lives at `<config_dir>/lair` on the host and
 /// `/data/lair` inside the container.
@@ -52,17 +52,17 @@ pub fn agents_dir() -> PathBuf { config_dir().join("agents") }
 /// per line). Mounted as `docker --env-file`.
 pub fn env_file_path() -> PathBuf { config_dir().join("lair-env") }
 
-/// Bookkeeping for `octo reload` — records the ports and image tag passed to
-/// the most recent `octo init`.
+/// Bookkeeping for `okto reload` — records the ports and image tag passed to
+/// the most recent `okto init`.
 pub fn launch_config_path() -> PathBuf { config_dir().join("lair-launch.json") }
 
-/// Persistent management API token (`X-Octo-Token` header value). Generated
+/// Persistent management API token (`X-Okto-Token` header value). Generated
 /// on first run, chmod 0600, passed to the lair container via
 /// `docker -e LAIR_MGMT_TOKEN=<value>`. Children never see it — lair's
 /// `agent_proc::spawn` strips the env var before exec.
 pub fn mgmt_token_path() -> PathBuf { lair_data_dir().join(".mgmt-token") }
 
-/// Read `~/.octo/lair/.mgmt-token`, generating it (random 64 hex chars,
+/// Read `~/.okto/lair/.mgmt-token`, generating it (random 64 hex chars,
 /// chmod 0600) on first call.
 pub fn ensure_mgmt_token() -> Result<String> {
     let path = mgmt_token_path();
@@ -114,7 +114,7 @@ pub struct LaunchRecord {
     pub noise_port: u16,
     pub http_port:  u16,
     /// Image reference used the last time lair was started. Carried forward
-    /// across `octo reload` so the operator doesn't have to repass it.
+    /// across `okto reload` so the operator doesn't have to repass it.
     #[serde(default)]
     pub image:      Option<String>,
 }
@@ -134,10 +134,10 @@ pub fn read_launch() -> Option<LaunchRecord> {
         .and_then(|s| serde_json::from_str(&s).ok())
 }
 
-/// Resolve the lair image reference. Precedence: `$OCTO_LAIR_IMAGE` →
+/// Resolve the lair image reference. Precedence: `$OKTO_LAIR_IMAGE` →
 /// `lair-launch.json` → `DEFAULT_LAIR_IMAGE`.
 pub fn resolve_image(launch_image: Option<&str>) -> String {
-    if let Ok(v) = std::env::var("OCTO_LAIR_IMAGE") {
+    if let Ok(v) = std::env::var("OKTO_LAIR_IMAGE") {
         if !v.is_empty() { return v; }
     }
     if let Some(img) = launch_image.filter(|s| !s.is_empty()) {
@@ -238,7 +238,7 @@ pub fn read_lair_logs(tail: u32) -> Result<String> {
 pub fn lair_binary_version() -> Result<String> {
     ensure_docker_present()?;
     if !is_running() {
-        anyhow::bail!("lair is not running. Run `octo init` or `octo reload` first.");
+        anyhow::bail!("lair is not running. Run `okto init` or `okto reload` first.");
     }
     let out = docker_output(&["exec", LAIR_CONTAINER_NAME, "lair", "--version"])?;
     if !out.status.success() {
@@ -283,7 +283,7 @@ pub struct LairLaunch<'a> {
 /// detached mode. Returns the container's short ID.
 ///
 /// The container is named `lair` and bind-mounts the operator's
-/// `~/.octo` at `/data`. Env vars from the lair-env file are forwarded
+/// `~/.okto` at `/data`. Env vars from the lair-env file are forwarded
 /// through `--env-file`; the file shape is plain `KEY=VALUE` per line which
 /// docker reads verbatim.
 pub fn start_lair(launch: &LairLaunch<'_>) -> Result<String> {
@@ -295,14 +295,14 @@ pub fn start_lair(launch: &LairLaunch<'_>) -> Result<String> {
     fs::create_dir_all(launch.config_dir.join("agents")).ok();
 
     // docker errors out on a missing --env-file, so make sure it exists even
-    // if the operator hasn't run `octo env set` yet.
+    // if the operator hasn't run `okto env set` yet.
     if !launch.env_file.exists() {
         debug!("[service] creating empty env file {}", launch.env_file.display());
         fs::write(launch.env_file, "").ok();
     }
 
     // Management API bearer token. Minted on first call, persisted to
-    // `~/.octo/lair/.mgmt-token` (chmod 0600), and supplied to lair via
+    // `~/.okto/lair/.mgmt-token` (chmod 0600), and supplied to lair via
     // `-e LAIR_MGMT_TOKEN=...`. Children never see it — lair strips the env
     // var before spawning them, and they run as a different uid so
     // `/proc/1/environ` is also inaccessible.
@@ -364,7 +364,7 @@ pub fn stop_lair_if_running() {
     }
 }
 
-/// `docker pull <image>`. Used by `octo lair update`.
+/// `docker pull <image>`. Used by `okto lair update`.
 pub fn docker_pull(image: &str) -> Result<()> {
     ensure_docker_present()?;
     debug!("[service] shelling out: docker pull {image}");

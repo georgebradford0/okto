@@ -1,4 +1,4 @@
-//! `octo qr` — reconstruct and print the connection QR code mobile clients
+//! `okto qr` — reconstruct and print the connection QR code mobile clients
 //! scan to reach this host's lair.
 //!
 //! Lair prints the same QR at container boot (see `lair/src/bootstrap.rs`),
@@ -13,13 +13,13 @@ use crate::{init, service};
 
 /// Build `2:<host>:<port>:<pubkey>` and render it to stdout as a QR code.
 pub async fn print(host_override: Option<String>) -> Result<()> {
-    // Noise pubkey: last 32 bytes of ~/.octo/lair/noise_key.bin. Read the file
+    // Noise pubkey: last 32 bytes of ~/.okto/lair/noise_key.bin. Read the file
     // directly rather than via `load_or_generate_keypair` so we never mint a
     // key the running lair doesn't have.
     let key_file = service::lair_data_dir().join("noise_key.bin");
     let bytes = std::fs::read(&key_file).with_context(|| {
         format!(
-            "read {} — has lair been initialized? Run `octo init` first.",
+            "read {} — has lair been initialized? Run `okto init` first.",
             key_file.display(),
         )
     })?;
@@ -29,14 +29,14 @@ pub async fn print(host_override: Option<String>) -> Result<()> {
         key_file.display(),
         bytes.len(),
     );
-    let pubkey_b32 = octo_core::to_base32(&bytes[32..]);
+    let pubkey_b32 = okto_core::to_base32(&bytes[32..]);
 
-    // Port: the host-side Noise port from the last `octo init` / `octo reload`.
+    // Port: the host-side Noise port from the last `okto init` / `okto reload`.
     let noise_port = service::read_launch()
         .map(|r| r.noise_port)
         .unwrap_or(service::LAIR_DEFAULT_NOISE_PORT);
 
-    // Host: explicit override → PUBLIC_HOST in lair-env → OCTO_DEV loopback →
+    // Host: explicit override → PUBLIC_HOST in lair-env → OKTO_DEV loopback →
     // auto-detected public IP. Mirrors `bootstrap::resolve_public_host`.
     let host = match host_override.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
         Some(h) => h,
@@ -60,16 +60,16 @@ async fn resolve_host() -> Result<String> {
                 return Ok(v.trim().to_string());
             }
         }
-        if entries.iter().any(|(k, v)| k == "OCTO_DEV" && v.trim() == "1") {
+        if entries.iter().any(|(k, v)| k == "OKTO_DEV" && v.trim() == "1") {
             return Ok("127.0.0.1".to_string());
         }
     }
     let ip = service::detect_public_ip().await.context(
-        "auto-detect public IP (set PUBLIC_HOST via `octo env set` to override)",
+        "auto-detect public IP (set PUBLIC_HOST via `okto env set` to override)",
     )?;
     anyhow::ensure!(
         !ip.is_empty(),
-        "public IP auto-detection returned an empty result; set PUBLIC_HOST via `octo env set`",
+        "public IP auto-detection returned an empty result; set PUBLIC_HOST via `okto env set`",
     );
     Ok(ip)
 }
@@ -82,7 +82,7 @@ fn render(data: &str) -> Result<()> {
         .light_color(qrcode::render::unicode::Dense1x2::Light)
         .build();
     println!();
-    println!("Scan this QR code with the octo app to connect:");
+    println!("Scan this QR code with the okto app to connect:");
     println!();
     println!("{image}");
     println!();

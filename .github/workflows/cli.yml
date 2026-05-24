@@ -3,7 +3,7 @@ name: CLI Release
 on:
   workflow_dispatch:
 
-# Builds `octo` (the CLI) for both Linux arches and uploads it as the release
+# Builds `okto` (the CLI) for both Linux arches and uploads it as the release
 # asset pair attached to `cli-v<version>` (read from `cli/Cargo.toml`). The
 # lair runtime binary ships separately via `.github/workflows/lair.yml`.
 
@@ -19,10 +19,10 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            artifact: octo-linux-x86_64
+            artifact: okto-linux-x86_64
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            artifact: octo-linux-aarch64
+            artifact: okto-linux-aarch64
 
     steps:
       - name: Checkout
@@ -44,11 +44,11 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
-      - name: Build octo
-        run: cargo build --release -p octo --target ${{ matrix.target }}
+      - name: Build okto
+        run: cargo build --release -p okto --target ${{ matrix.target }}
 
       - name: Rename binary
-        run: cp target/${{ matrix.target }}/release/octo ${{ matrix.artifact }}
+        run: cp target/${{ matrix.target }}/release/okto ${{ matrix.artifact }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -81,15 +81,15 @@ jobs:
       - name: Create GitHub release
         run: |
           gh release create "cli-v${{ steps.version.outputs.value }}" \
-            --title "octo CLI v${{ steps.version.outputs.value }}" \
-            --notes "octo management CLI. Linux x86_64 and aarch64.
+            --title "okto CLI v${{ steps.version.outputs.value }}" \
+            --notes "okto management CLI. Linux x86_64 and aarch64.
 
           Install both CLI + lair binaries with:
 
           \`\`\`sh
-          curl -fsSL https://raw.githubusercontent.com/georgebradford0/octo/main/scripts/get-cli.sh | sh
+          curl -fsSL https://raw.githubusercontent.com/georgebradford0/okto/main/scripts/get-cli.sh | sh
           \`\`\`" \
-            artifacts/octo-linux-x86_64/octo-linux-x86_64 \
-            artifacts/octo-linux-aarch64/octo-linux-aarch64
+            artifacts/okto-linux-x86_64/okto-linux-x86_64 \
+            artifacts/okto-linux-aarch64/okto-linux-aarch64
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

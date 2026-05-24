@@ -73,30 +73,30 @@ use tokio::sync::mpsc;
 
 // ── Data directory ────────────────────────────────────────────────────────────
 
-/// Per-role data directory: $OCTO_DATA_DIR if set, otherwise $HOME/.octo.
+/// Per-role data directory: $OKTO_DATA_DIR if set, otherwise $HOME/.okto.
 ///
-/// Lair runs with `OCTO_DATA_DIR=$HOME/.octo/lair`; each child agent runs with
-/// `OCTO_DATA_DIR=$HOME/.octo/agents/<name>/data`. The CLI (running on the
-/// operator's host) leaves it unset and gets `$HOME/.octo`.
+/// Lair runs with `OKTO_DATA_DIR=$HOME/.okto/lair`; each child agent runs with
+/// `OKTO_DATA_DIR=$HOME/.okto/agents/<name>/data`. The CLI (running on the
+/// operator's host) leaves it unset and gets `$HOME/.okto`.
 pub fn data_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("OCTO_DATA_DIR") {
+    if let Ok(d) = std::env::var("OKTO_DATA_DIR") {
         PathBuf::from(d)
     } else {
-        PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".octo")
+        PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".okto")
     }
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-/// Operator-shared config dir. Always `$HOME/.octo` (or `$OCTO_HOME` if set —
+/// Operator-shared config dir. Always `$HOME/.okto` (or `$OKTO_HOME` if set —
 /// only honoured for tests). Independent of `data_dir()` so lair, every child
 /// agent, and the CLI all read/write the same `config.json` without bind-mount
 /// shenanigans.
 pub fn config_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("OCTO_HOME") {
+    if let Ok(d) = std::env::var("OKTO_HOME") {
         return PathBuf::from(d);
     }
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".octo")
+    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".okto")
 }
 
 pub fn config_path() -> PathBuf {
@@ -114,13 +114,13 @@ pub struct Config {
     /// Sent verbatim — no path is appended.
     pub api_url:           Option<String>,
     // `gh_token` was removed in favour of plain env-var propagation:
-    //   - lair gets `GH_TOKEN` via its container env (in prod, `octo init --env
+    //   - lair gets `GH_TOKEN` via its container env (in prod, `okto init --env
     //     GH_TOKEN=…`; in dev, start_dev.sh forwards the host shell's value);
     //   - lair's `exec_create_agent` / `register_remote_agent` read it from
     //     `std::env::var("GH_TOKEN")` and forward it to children.
     // Existing config.json files that still carry `gh_token` will deserialize
     // fine (the field is silently dropped by serde because Config does not
-    // `deny_unknown_fields`) and the next `octo config set …` rewrites them
+    // `deny_unknown_fields`) and the next `okto config set …` rewrites them
     // without it.
     /// Max parent-chain length permitted when an agent spawns a child. A
     /// top-level agent is depth 0; its direct children are depth 1; etc.
@@ -793,7 +793,7 @@ async fn execute_tool_inner(
             if url.is_empty() { return "error: url is required".to_string(); }
             debug!("[core/tool] web_fetch GET {url}");
             match http_client().get(url)
-                .header("User-Agent", "Mozilla/5.0 (compatible; octo/1.0)")
+                .header("User-Agent", "Mozilla/5.0 (compatible; okto/1.0)")
                 .send().await {
                 Err(e)   => {
                     warn!("[core/tool] web_fetch request failed url={url}: {e}");
@@ -1928,7 +1928,7 @@ pub fn build_agent_system_prompt(workspace: &str) -> String {
 /// spawned top-level agents don't see this section — they don't have the
 /// tools either.
 fn spawn_capability_note() -> String {
-    if std::env::var("OCTO_AGENT_TOKEN").ok().filter(|s| !s.is_empty()).is_none() {
+    if std::env::var("OKTO_AGENT_TOKEN").ok().filter(|s| !s.is_empty()).is_none() {
         return String::new();
     }
     "\n\n# Sub-agent orchestration\n\
@@ -1971,8 +1971,8 @@ pub fn get_branches_for_repo(repo: &str) -> Result<Vec<Branch>, String> {
 // ── Shell Environment Bootstrap ───────────────────────────────────────────────
 
 pub fn init_shell_env() {
-    if std::env::var("OCTO_SKIP_SHELL_ENV").is_ok() {
-        debug!("[core] OCTO_SKIP_SHELL_ENV set, skipping shell env init");
+    if std::env::var("OKTO_SKIP_SHELL_ENV").is_ok() {
+        debug!("[core] OKTO_SKIP_SHELL_ENV set, skipping shell env init");
         return;
     }
     info!("[core] initializing shell environment from login shell");

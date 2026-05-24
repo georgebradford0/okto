@@ -1,10 +1,10 @@
 [package]
-name    = "octo-tests"
+name    = "okto-tests"
 version = "0.0.1"
 edition = "2021"
 
 [dev-dependencies]
-octo-core = { path = "../core" }
+okto-core = { path = "../core" }
 snow           = "0.9"
 tokio          = { version = "1", features = ["full"] }
 anyhow         = "1.0"

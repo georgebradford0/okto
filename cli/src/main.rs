@@ -8,7 +8,7 @@ mod ssh;
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
-use octo_core::Config;
+use okto_core::Config;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -27,7 +27,7 @@ fn validate_resolved_config(cfg: &Config) -> Result<(), String> {
         return Err("at least one of anthropic_api_key or openai_api_key is required".into());
     }
     if model.is_none() {
-        return Err("model is required (pass --model or set it in ~/.octo/config.json)".into());
+        return Err("model is required (pass --model or set it in ~/.okto/config.json)".into());
     }
     if let Some(url) = api_url {
         if !(url.starts_with("http://") || url.starts_with("https://")) {
@@ -41,7 +41,7 @@ fn validate_resolved_config(cfg: &Config) -> Result<(), String> {
 }
 
 #[derive(Parser)]
-#[command(name = "octo", about = "octo lair management CLI")]
+#[command(name = "okto", about = "okto lair management CLI")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -51,7 +51,7 @@ struct Cli {
 enum Command {
     /// Bootstrap lair as a docker container on this host.
     ///
-    /// Refuses to run if `~/.octo/config.json` already exists. On first run,
+    /// Refuses to run if `~/.okto/config.json` already exists. On first run,
     /// prompts for the API keys / model interactively, writes config.json,
     /// pulls the lair image, then `docker run`s it.
     Init {
@@ -68,7 +68,7 @@ enum Command {
         #[arg(long, default_value_t = service::LAIR_DEFAULT_HTTP_PORT)]
         http_port: u16,
 
-        /// Lair image reference. Defaults to `$OCTO_LAIR_IMAGE` or
+        /// Lair image reference. Defaults to `$OKTO_LAIR_IMAGE` or
         /// `ghcr.io/georgebradford0/lair:latest`.
         #[arg(long)]
         image: Option<String>,
@@ -103,7 +103,7 @@ enum Command {
     /// Print the QR code mobile clients scan to connect to this lair
     Qr {
         /// Override the advertised host (defaults to PUBLIC_HOST from
-        /// `octo env`, then the auto-detected public IP)
+        /// `okto env`, then the auto-detected public IP)
         #[arg(long)]
         host: Option<String>,
     },
@@ -121,7 +121,7 @@ enum Command {
     /// Print the CLI version
     Version,
 
-    /// Update the octo CLI to the latest release
+    /// Update the okto CLI to the latest release
     Update,
 
     /// Manage the lair docker image on this host
@@ -130,7 +130,7 @@ enum Command {
         action: LairAction,
     },
 
-    /// Remove the octo binary and shell completions from this machine
+    /// Remove the okto binary and shell completions from this machine
     Uninstall {
         #[arg(short, long)]
         yes: bool,
@@ -151,7 +151,7 @@ enum Command {
     },
 
     /// Manage extra env vars passed to lair (KEY=VALUE pairs persisted to
-    /// ~/.octo/lair-env). Changes auto-restart lair.
+    /// ~/.okto/lair-env). Changes auto-restart lair.
     Env {
         #[command(subcommand)]
         action: EnvAction,
@@ -198,8 +198,8 @@ enum EnvAction {
 enum LairAction {
     /// Pull the latest lair image and restart the container
     Update {
-        /// Image reference to pull. Defaults to the image recorded by `octo init`,
-        /// then `$OCTO_LAIR_IMAGE`, then `ghcr.io/georgebradford0/lair:latest`.
+        /// Image reference to pull. Defaults to the image recorded by `okto init`,
+        /// then `$OKTO_LAIR_IMAGE`, then `ghcr.io/georgebradford0/lair:latest`.
         #[arg(long)]
         image: Option<String>,
     },
@@ -252,7 +252,7 @@ enum McpAction {
 
 /// Generate shell completion scripts at the canonical locations for bash,
 /// zsh, and fish, and wire `~/.bashrc` to source the bash one. Idempotent —
-/// safe to re-run on every `octo init`. Always overwrites existing files so
+/// safe to re-run on every `okto init`. Always overwrites existing files so
 /// stale completions (e.g. for subcommands that have since been renamed or
 /// removed) get refreshed.
 fn install_completions() {
@@ -264,29 +264,29 @@ fn install_completions() {
         }
     };
 
-    // Bash — `~/.octo/octorc`, sourced from `~/.bashrc`.
-    let octorc = home.join(".octo/octorc");
-    if let Some(parent) = octorc.parent() {
+    // Bash — `~/.okto/oktorc`, sourced from `~/.bashrc`.
+    let oktorc = home.join(".okto/oktorc");
+    if let Some(parent) = oktorc.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     let mut script = Vec::new();
-    generate(Shell::Bash, &mut Cli::command(), "octo", &mut script);
-    if let Err(e) = std::fs::write(&octorc, &script) {
-        warn!("[cli] could not write {}: {e}", octorc.display());
-        eprintln!("warning: could not write completions to {}: {e}", octorc.display());
+    generate(Shell::Bash, &mut Cli::command(), "okto", &mut script);
+    if let Err(e) = std::fs::write(&oktorc, &script) {
+        warn!("[cli] could not write {}: {e}", oktorc.display());
+        eprintln!("warning: could not write completions to {}: {e}", oktorc.display());
     } else {
-        debug!("[cli] wrote bash completions to {}", octorc.display());
-        println!("Wrote bash completions to {}.", octorc.display());
+        debug!("[cli] wrote bash completions to {}", oktorc.display());
+        println!("Wrote bash completions to {}.", oktorc.display());
     }
 
-    // Zsh — `~/.zfunc/_octo`. Always (re)written so removed/renamed
+    // Zsh — `~/.zfunc/_okto`. Always (re)written so removed/renamed
     // subcommands from earlier installs don't linger.
-    let zfunc = home.join(".zfunc/_octo");
+    let zfunc = home.join(".zfunc/_okto");
     if let Some(parent) = zfunc.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     let mut script = Vec::new();
-    generate(Shell::Zsh, &mut Cli::command(), "octo", &mut script);
+    generate(Shell::Zsh, &mut Cli::command(), "okto", &mut script);
     if let Err(e) = std::fs::write(&zfunc, &script) {
         warn!("[cli] could not write {}: {e}", zfunc.display());
         eprintln!("warning: could not write completions to {}: {e}", zfunc.display());
@@ -295,14 +295,14 @@ fn install_completions() {
         println!("Wrote zsh completions to {}.", zfunc.display());
     }
 
-    // Fish — `~/.config/fish/completions/octo.fish`. Auto-loaded by fish
+    // Fish — `~/.config/fish/completions/okto.fish`. Auto-loaded by fish
     // when present in this directory; no rc-file edit needed.
-    let fish = home.join(".config/fish/completions/octo.fish");
+    let fish = home.join(".config/fish/completions/okto.fish");
     if let Some(parent) = fish.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     let mut script = Vec::new();
-    generate(Shell::Fish, &mut Cli::command(), "octo", &mut script);
+    generate(Shell::Fish, &mut Cli::command(), "okto", &mut script);
     if let Err(e) = std::fs::write(&fish, &script) {
         warn!("[cli] could not write {}: {e}", fish.display());
         eprintln!("warning: could not write completions to {}: {e}", fish.display());
@@ -313,7 +313,7 @@ fn install_completions() {
 
     // Wire `~/.bashrc` to source the bash file (idempotent).
     let bashrc = home.join(".bashrc");
-    let source_line = "source \"$HOME/.octo/octorc\"";
+    let source_line = "source \"$HOME/.okto/oktorc\"";
     let existing = std::fs::read_to_string(&bashrc).unwrap_or_default();
     if existing.lines().any(|l| l.trim() == source_line) {
         return;
@@ -322,7 +322,7 @@ fn install_completions() {
     if !updated.is_empty() && !updated.ends_with('\n') {
         updated.push('\n');
     }
-    updated.push_str("\n# Octo completions\n");
+    updated.push_str("\n# Okto completions\n");
     updated.push_str(source_line);
     updated.push('\n');
     if let Err(e) = std::fs::write(&bashrc, updated) {
@@ -339,24 +339,24 @@ fn remove_completions() {
         Err(_) => return,
     };
     let files = [
-        home.join(".octo/octorc"),
-        home.join(".local/share/bash-completion/completions/octo"),
-        home.join(".zfunc/_octo"),
-        home.join(".config/fish/completions/octo.fish"),
+        home.join(".okto/oktorc"),
+        home.join(".local/share/bash-completion/completions/okto"),
+        home.join(".zfunc/_okto"),
+        home.join(".config/fish/completions/okto.fish"),
     ];
     for path in &files {
         if path.exists() {
             let _ = std::fs::remove_file(path);
         }
     }
-    // Drop any octo-related lines (the `# Octo completions` comment and its
+    // Drop any okto-related lines (the `# Okto completions` comment and its
     // `source` line, plus any legacy completion sources). Case-insensitive so
     // the capitalized comment is caught alongside the lowercased paths.
     let bashrc = home.join(".bashrc");
     if let Ok(content) = std::fs::read_to_string(&bashrc) {
         let cleaned = content
             .lines()
-            .filter(|l| !l.to_lowercase().contains("octo"))
+            .filter(|l| !l.to_lowercase().contains("okto"))
             .collect::<Vec<_>>()
             .join("\n");
         let cleaned = if content.ends_with('\n') { cleaned + "\n" } else { cleaned };
@@ -365,7 +365,7 @@ fn remove_completions() {
 }
 
 /// Regenerate shell completions in any of the canonical locations that
-/// already contain an `octo` completion file. Silent on locations that don't
+/// already contain an `okto` completion file. Silent on locations that don't
 /// exist — we don't create new files (the user may have opted out of
 /// completions at install time). Shells out to the freshly-installed binary
 /// at `bin` rather than calling `clap_complete` in-process, so we pick up
@@ -376,31 +376,31 @@ async fn refresh_completions(bin: &std::path::Path) {
         Err(_) => return,
     };
     let targets: &[(&str, std::path::PathBuf)] = &[
-        ("bash", home.join(".octo/octorc")),
-        ("bash", home.join(".local/share/bash-completion/completions/octo")),
-        ("zsh",  home.join(".zfunc/_octo")),
-        ("fish", home.join(".config/fish/completions/octo.fish")),
+        ("bash", home.join(".okto/oktorc")),
+        ("bash", home.join(".local/share/bash-completion/completions/okto")),
+        ("zsh",  home.join(".zfunc/_okto")),
+        ("fish", home.join(".config/fish/completions/okto.fish")),
     ];
     for (shell, path) in targets {
         if !path.exists() { continue; }
-        debug!("[cli] running `octo completions {shell}` to refresh {}", path.display());
+        debug!("[cli] running `okto completions {shell}` to refresh {}", path.display());
         let out = match tokio::process::Command::new(bin)
             .args(["completions", shell])
             .output().await
         {
             Ok(o) if o.status.success() => o.stdout,
             Ok(o) => {
-                warn!("[cli] `octo completions {shell}` exited with {}; leaving {} untouched", o.status, path.display());
+                warn!("[cli] `okto completions {shell}` exited with {}; leaving {} untouched", o.status, path.display());
                 eprintln!(
-                    "warning: `octo completions {shell}` exited with {}; leaving {} untouched",
+                    "warning: `okto completions {shell}` exited with {}; leaving {} untouched",
                     o.status, path.display(),
                 );
                 continue;
             }
             Err(e) => {
-                warn!("[cli] could not run `octo completions {shell}`: {e}; leaving {} untouched", path.display());
+                warn!("[cli] could not run `okto completions {shell}`: {e}; leaving {} untouched", path.display());
                 eprintln!(
-                    "warning: could not run `octo completions {shell}`: {e}; leaving {} untouched",
+                    "warning: could not run `okto completions {shell}`: {e}; leaving {} untouched",
                     path.display(),
                 );
                 continue;
@@ -425,8 +425,8 @@ async fn update() -> Result<()> {
 
     info!("[cli] update starting ({OS}/{ARCH})");
     let artifact = match (OS, ARCH) {
-        ("linux",  "x86_64")  => "octo-linux-x86_64",
-        ("linux",  "aarch64") => "octo-linux-aarch64",
+        ("linux",  "x86_64")  => "okto-linux-x86_64",
+        ("linux",  "aarch64") => "okto-linux-aarch64",
         _ => {
             error!("[cli] update: unsupported platform {OS}/{ARCH}");
             anyhow::bail!("unsupported platform: {OS}/{ARCH}");
@@ -435,7 +435,7 @@ async fn update() -> Result<()> {
 
     debug!("[cli] fetching latest release metadata from github API");
     let api_output = Command::new("curl")
-        .args(["-fsSL", "https://api.github.com/repos/georgebradford0/octo/releases/latest"])
+        .args(["-fsSL", "https://api.github.com/repos/georgebradford0/okto/releases/latest"])
         .output()
         .await?;
     debug!("[cli] release metadata curl exited with {}", api_output.status);
@@ -451,22 +451,22 @@ async fn update() -> Result<()> {
 
     let current_version = env!("CARGO_PKG_VERSION");
     let current_exe = std::env::current_exe()?;
-    let current_exe_str = current_exe.to_str().unwrap_or("/usr/local/bin/octo");
+    let current_exe_str = current_exe.to_str().unwrap_or("/usr/local/bin/okto");
     if latest_version == current_version {
         info!("[cli] update: already on latest (v{current_version})");
         println!("Already up to date (v{current_version}).");
         // Still reconcile completions in case they were left stale by an
-        // older `octo update` that predated the refresh logic.
+        // older `okto update` that predated the refresh logic.
         refresh_completions(std::path::Path::new(current_exe_str)).await;
         return Ok(());
     }
 
-    let url = format!("https://github.com/georgebradford0/octo/releases/latest/download/{artifact}");
+    let url = format!("https://github.com/georgebradford0/okto/releases/latest/download/{artifact}");
 
     println!("Downloading {artifact}...");
     debug!("[cli] downloading {url}");
     let status = Command::new("curl")
-        .args(["-fsSL", &url, "-o", "/tmp/octo-update"])
+        .args(["-fsSL", &url, "-o", "/tmp/okto-update"])
         .status()
         .await?;
     debug!("[cli] download curl exited with {status}");
@@ -477,18 +477,18 @@ async fn update() -> Result<()> {
 
     let dest = current_exe_str;
 
-    debug!("[cli] chmod +x /tmp/octo-update");
-    Command::new("chmod").args(["+x", "/tmp/octo-update"]).status().await?;
+    debug!("[cli] chmod +x /tmp/okto-update");
+    Command::new("chmod").args(["+x", "/tmp/okto-update"]).status().await?;
 
     debug!("[cli] installing updated binary to {dest}");
     let mv = Command::new("mv")
-        .args(["/tmp/octo-update", dest])
+        .args(["/tmp/okto-update", dest])
         .status()
         .await?;
     if !mv.success() {
         warn!("[cli] update: `mv` to {dest} failed; retrying with sudo");
         let status = Command::new("sudo")
-            .args(["mv", "/tmp/octo-update", dest])
+            .args(["mv", "/tmp/okto-update", dest])
             .status()
             .await?;
         if !status.success() {
@@ -531,10 +531,10 @@ async fn update_lair(image_override: Option<String>) -> Result<()> {
         info!("[cli] lair update complete (container restarted on {image})");
     } else if service::read_launch().is_some() {
         info!("[cli] lair update: image pulled; lair not running, will apply on next reload");
-        println!("lair is not running; new image will be used on next `octo reload`.");
+        println!("lair is not running; new image will be used on next `okto reload`.");
     } else {
         info!("[cli] lair update: image pulled; lair not initialized");
-        println!("lair has not been initialized; run `octo init` to start it.");
+        println!("lair has not been initialized; run `okto init` to start it.");
     }
     Ok(())
 }
@@ -620,14 +620,14 @@ async fn stream_logs(name: &str, follow: bool) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize the tracing subscriber before anything else so library
-    // (`octo-core`) and CLI `tracing::*` calls have somewhere to land. Quiet
-    // by default (`warn`) so normal `octo` runs are unchanged; opt into
-    // diagnostics via `OCTO_LOG=debug` (or `RUST_LOG=debug`). Always stderr,
+    // (`okto-core`) and CLI `tracing::*` calls have somewhere to land. Quiet
+    // by default (`warn`) so normal `okto` runs are unchanged; opt into
+    // diagnostics via `OKTO_LOG=debug` (or `RUST_LOG=debug`). Always stderr,
     // never stdout, so user-facing `println!` output stays clean.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
-            EnvFilter::try_from_env("OCTO_LOG")
+            EnvFilter::try_from_env("OKTO_LOG")
                 .or_else(|_| EnvFilter::try_from_default_env())
                 .unwrap_or_else(|_| EnvFilter::new("warn")),
         )
@@ -639,12 +639,12 @@ async fn main() -> Result<()> {
             info!("[cli] init starting (noise_port={noise_port}, http_port={http_port})");
             let extra_env = init::parse_extra_env(&env)?;
 
-            let config_path = octo_core::config_path();
+            let config_path = okto_core::config_path();
             let config_exists = config_path.exists();
 
             // Pre-flight: validate any --mcp-config file BEFORE we prompt or
             // write anything. A broken mcp file used to fail after config.json
-            // was written, leaving `octo init` refusing to re-run and lair
+            // was written, leaving `okto init` refusing to re-run and lair
             // never started.
             let mcp_seed = match mcp_config.as_deref() {
                 Some(p) => Some(init::McpSeed {
@@ -657,18 +657,18 @@ async fn main() -> Result<()> {
             if config_exists {
                 debug!("[init] reusing existing config at {}", config_path.display());
                 println!(
-                    "{} exists — reusing it. (Edit via `octo config set …` or `octo destroy` to start over.)",
+                    "{} exists — reusing it. (Edit via `okto config set …` or `okto destroy` to start over.)",
                     config_path.display(),
                 );
-                let cfg = octo_core::read_config();
+                let cfg = okto_core::read_config();
                 if let Err(e) = validate_resolved_config(&cfg) {
                     error!("[init] existing config {} is invalid: {e}", config_path.display());
                     eprintln!("error: existing {} is invalid: {e}", config_path.display());
-                    eprintln!("Edit it directly or run `octo config set ...` and re-run `octo init`.");
+                    eprintln!("Edit it directly or run `okto config set ...` and re-run `okto init`.");
                     std::process::exit(1);
                 }
             } else {
-                println!("{} not found — let's configure octo.\n", config_path.display());
+                println!("{} not found — let's configure okto.\n", config_path.display());
 
                 let anthropic = init::prompt("Anthropic API key (Enter to skip):       ")?;
                 let openai    = init::prompt("OpenAI API key (Enter to skip):          ")?;
@@ -693,7 +693,7 @@ async fn main() -> Result<()> {
                     std::process::exit(1);
                 }
 
-                octo_core::write_config(&cfg);
+                okto_core::write_config(&cfg);
                 debug!("[init] wrote config file {}", config_path.display());
                 println!("\nWrote {}.", config_path.display());
             }
@@ -714,7 +714,7 @@ async fn main() -> Result<()> {
             info!("[cli] destroy starting");
             if !yes {
                 use std::io::Write;
-                print!("This will stop lair, terminate every agent, and wipe ~/.octo/lair and ~/.octo/agents. Type 'yes' to confirm: ");
+                print!("This will stop lair, terminate every agent, and wipe ~/.okto/lair and ~/.okto/agents. Type 'yes' to confirm: ");
                 std::io::stdout().flush()?;
                 let mut input = String::new();
                 std::io::stdin().read_line(&mut input)?;
@@ -727,7 +727,7 @@ async fn main() -> Result<()> {
             // up child processes too. Ignore errors — we'll wipe dirs anyway.
             if service::is_running() {
                 let path = service::lair_data_dir().join("agents.json");
-                if let Ok(reg) = octo_core::Registry::load(path) {
+                if let Ok(reg) = okto_core::Registry::load(path) {
                     for a in reg.list() {
                         println!("Terminating '{}'...", a.name);
                         let _ = agents::delete(&a.name, true).await;
@@ -772,7 +772,7 @@ async fn main() -> Result<()> {
 
             let names: Vec<String> = if all {
                 let path = service::lair_data_dir().join("agents.json");
-                match octo_core::Registry::load(path) {
+                match okto_core::Registry::load(path) {
                     Ok(r)  => r.list().iter().map(|a| a.name.clone()).collect(),
                     Err(_) => Vec::new(),
                 }
@@ -816,7 +816,7 @@ async fn main() -> Result<()> {
         },
         Command::Uninstall { yes } => uninstall(yes).await?,
         Command::Completions { shell } => {
-            generate(shell, &mut Cli::command(), "octo", &mut std::io::stdout());
+            generate(shell, &mut Cli::command(), "okto", &mut std::io::stdout());
         }
         Command::Mcp { action } => match action {
             McpAction::List   { agent }                       => mcp::list(&agent).await?,
@@ -829,14 +829,14 @@ async fn main() -> Result<()> {
         Command::Config { action } => {
             match action {
                 ConfigAction::Show => {
-                    let cfg = octo_core::read_config();
+                    let cfg = okto_core::read_config();
                     println!("anthropic_api_key: {}", cfg.anthropic_api_key.as_deref().map(mask).unwrap_or_else(|| "(not set)".into()));
                     println!("openai_api_key:    {}", cfg.openai_api_key.as_deref().map(mask).unwrap_or_else(|| "(not set)".into()));
                     println!("model:             {}", cfg.model.as_deref().unwrap_or("(default)"));
                     println!("api_url:           {}", cfg.api_url.as_deref().unwrap_or("(Anthropic)"));
                 }
                 ConfigAction::Set { model, api_url, anthropic_api_key, openai_api_key } => {
-                    let mut cfg = octo_core::read_config();
+                    let mut cfg = okto_core::read_config();
                     if anthropic_api_key.is_some() {
                         debug!("[cli] config set: updating anthropic_api_key");
                         cfg.anthropic_api_key = anthropic_api_key;
@@ -853,8 +853,8 @@ async fn main() -> Result<()> {
                         debug!("[cli] config set: updating api_url");
                         cfg.api_url = api_url;
                     }
-                    octo_core::write_config(&cfg);
-                    info!("[cli] config updated at {}", octo_core::config_path().display());
+                    okto_core::write_config(&cfg);
+                    info!("[cli] config updated at {}", okto_core::config_path().display());
                     println!("Config updated.");
                 }
             }
@@ -872,7 +872,7 @@ async fn main() -> Result<()> {
                         .filter(|(k, _)| !init::MANAGED_ENV_KEYS.contains(&k.as_str()))
                         .collect();
                     if operator.is_empty() {
-                        println!("(no operator env vars set — use `octo env set KEY=VALUE`)");
+                        println!("(no operator env vars set — use `okto env set KEY=VALUE`)");
                     } else {
                         for (k, v) in operator {
                             println!("{k}={}", mask(v));
@@ -903,7 +903,7 @@ async fn main() -> Result<()> {
                     }
                     for k in &keys {
                         if init::MANAGED_ENV_KEYS.contains(&k.as_str()) {
-                            anyhow::bail!("'{k}' is managed by octo and can't be unset");
+                            anyhow::bail!("'{k}' is managed by okto and can't be unset");
                         }
                     }
                     let before = entries.len();

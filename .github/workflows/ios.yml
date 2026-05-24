@@ -47,8 +47,8 @@ jobs:
       - name: Build for simulator (no signing)
         run: |
           xcodebuild \
-            -workspace ios/octo.xcworkspace \
-            -scheme octo \
+            -workspace ios/okto.xcworkspace \
+            -scheme okto \
             -configuration Debug \
             -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
             -derivedDataPath ios/build \
@@ -140,11 +140,11 @@ jobs:
       - name: Archive
         run: |
           xcodebuild archive \
-            -workspace ios/octo.xcworkspace \
-            -scheme octo \
+            -workspace ios/okto.xcworkspace \
+            -scheme okto \
             -configuration Release \
             -destination 'generic/platform=iOS' \
-            -archivePath ios/build/octo.xcarchive \
+            -archivePath ios/build/okto.xcarchive \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="iPhone Distribution" \
             PROVISIONING_PROFILE="$PROFILE_UUID"
@@ -174,7 +174,7 @@ jobs:
           EOF
           set -o pipefail
           xcodebuild -exportArchive \
-            -archivePath ios/build/octo.xcarchive \
+            -archivePath ios/build/okto.xcarchive \
             -exportPath ios/build/ipa \
             -exportOptionsPlist /tmp/ExportOptions.plist \
             | xcpretty

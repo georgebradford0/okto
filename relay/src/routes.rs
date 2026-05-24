@@ -173,7 +173,7 @@ pub async fn register_challenge(
             // Silent push: wakes the app and carries the nonce, shows no alert.
             let payload = json!({
                 "aps": { "content-available": 1 },
-                "octo_challenge": nonce,
+                "okto_challenge": nonce,
             });
             match state.apns.push_background(&body.device_token, &state.bundle_id, &payload).await {
                 PushOutcome::Delivered => {

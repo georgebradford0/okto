@@ -18,7 +18,7 @@ pub enum Role {
 }
 
 #[derive(Parser)]
-#[command(version, about = "octo merged lair binary — pick role with --role")]
+#[command(version, about = "okto merged lair binary — pick role with --role")]
 struct Args {
     /// Which role to run.
     #[arg(long, value_enum)]

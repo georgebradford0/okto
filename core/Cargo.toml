@@ -1,5 +1,5 @@
 [package]
-name    = "octo-core"
+name    = "okto-core"
 version = "0.0.4"
 edition = "2021"
 

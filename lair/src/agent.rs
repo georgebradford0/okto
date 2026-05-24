@@ -24,7 +24,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use octo_core::{
+use okto_core::{
     self,
     build_agent_system_prompt, build_system_prompt,
     build_tools_with_mcp, cancel_task as core_cancel_task, chain_executor_with_mcp,
@@ -51,11 +51,11 @@ use tower_http::cors::{Any, CorsLayer};
 // ── Session persistence ───────────────────────────────────────────────────────
 
 fn save_messages(messages: &[ApiMessage]) {
-    octo_core::save_messages(&data_dir(), messages, "agent");
+    okto_core::save_messages(&data_dir(), messages, "agent");
 }
 
 fn load_messages() -> Vec<ApiMessage> {
-    octo_core::load_messages(&data_dir(), "agent")
+    okto_core::load_messages(&data_dir(), "agent")
 }
 
 /// Unified turn-gate: all decisions about who gets the next conversation turn
@@ -545,7 +545,7 @@ async fn get_completions_handler(
 
 async fn get_branches_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     if !PathBuf::from(&state.cwd).join(".git").is_dir() {
-        return Json(Vec::<octo_core::Branch>::new()).into_response();
+        return Json(Vec::<okto_core::Branch>::new()).into_response();
     }
     match get_branches_for_repo(&state.cwd) {
         Ok(b)  => Json(b).into_response(),
@@ -588,14 +588,14 @@ fn make_extra_tools() -> Vec<AnthropicTool> {
 /// agent-spawned children get one; operator-spawned (top-level) children do
 /// not, and therefore can't see the `spawn_agent` / `terminate_agent` tools.
 fn has_spawn_capability() -> bool {
-    std::env::var("OCTO_AGENT_TOKEN").ok().filter(|s| !s.is_empty()).is_some()
+    std::env::var("OKTO_AGENT_TOKEN").ok().filter(|s| !s.is_empty()).is_some()
         && std::env::var("LAIR_INTERNAL_URL").ok().filter(|s| !s.is_empty()).is_some()
 }
 
 fn spawn_agent_tool() -> AnthropicTool {
     AnthropicTool {
         name: "spawn_agent".to_string(),
-        description: "Spawn a new octo child agent owned by this agent. The new agent runs as \
+        description: "Spawn a new okto child agent owned by this agent. The new agent runs as \
                        a separate OS process inside the lair container with its own loopback \
                        port and per-agent uid. You can terminate any agent you spawn (or any \
                        transitive descendant) with `terminate_agent`. Operator caps may refuse \
@@ -682,9 +682,9 @@ fn make_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
 }
 
 async fn exec_spawn_agent(input: serde_json::Value) -> String {
-    let Some(token) = std::env::var("OCTO_AGENT_TOKEN").ok().filter(|s| !s.is_empty()) else {
-        warn!("[agent/spawn_agent] refused: no OCTO_AGENT_TOKEN in env");
-        return "error: this agent has no spawn capability (no OCTO_AGENT_TOKEN in env).".to_string();
+    let Some(token) = std::env::var("OKTO_AGENT_TOKEN").ok().filter(|s| !s.is_empty()) else {
+        warn!("[agent/spawn_agent] refused: no OKTO_AGENT_TOKEN in env");
+        return "error: this agent has no spawn capability (no OKTO_AGENT_TOKEN in env).".to_string();
     };
     let Some(base)  = std::env::var("LAIR_INTERNAL_URL").ok().filter(|s| !s.is_empty()) else {
         warn!("[agent/spawn_agent] refused: LAIR_INTERNAL_URL unset");
@@ -703,7 +703,7 @@ async fn exec_spawn_agent(input: serde_json::Value) -> String {
     let url = format!("{base}/agents/child");
     info!("[agent/spawn_agent] requesting child spawn via {url}");
     let resp = match client.post(&url)
-        .header("X-Octo-Agent-Token", token)
+        .header("X-Okto-Agent-Token", token)
         .json(&input)
         .send()
         .await
@@ -730,9 +730,9 @@ async fn exec_terminate_agent(input: serde_json::Value) -> String {
         Some(n) if !n.is_empty() => n.to_string(),
         _ => return "error: missing 'name' field".to_string(),
     };
-    let Some(token) = std::env::var("OCTO_AGENT_TOKEN").ok().filter(|s| !s.is_empty()) else {
-        warn!("[agent/terminate_agent] refused: no OCTO_AGENT_TOKEN in env");
-        return "error: this agent has no terminate capability (no OCTO_AGENT_TOKEN in env).".to_string();
+    let Some(token) = std::env::var("OKTO_AGENT_TOKEN").ok().filter(|s| !s.is_empty()) else {
+        warn!("[agent/terminate_agent] refused: no OKTO_AGENT_TOKEN in env");
+        return "error: this agent has no terminate capability (no OKTO_AGENT_TOKEN in env).".to_string();
     };
     let Some(base)  = std::env::var("LAIR_INTERNAL_URL").ok().filter(|s| !s.is_empty()) else {
         warn!("[agent/terminate_agent] refused: LAIR_INTERNAL_URL unset");
@@ -751,7 +751,7 @@ async fn exec_terminate_agent(input: serde_json::Value) -> String {
     let url = format!("{base}/agents/child/{name}");
     info!("[agent/terminate_agent] requesting termination of '{name}' via {url}");
     let resp = match client.delete(&url)
-        .header("X-Octo-Agent-Token", token)
+        .header("X-Okto-Agent-Token", token)
         .send()
         .await
     {
@@ -1049,7 +1049,7 @@ fn write_agent_info(dir: &std::path::Path, pubkey_b32: &str, public_port: u16) -
     let info = serde_json::json!({
         "pubkey":   pubkey_b32,
         "port":     public_port,
-        "ready_at": octo_core::now_secs(),
+        "ready_at": okto_core::now_secs(),
     });
     let path = dir.join("agent-info.json");
     std::fs::create_dir_all(dir).ok();
@@ -1165,7 +1165,7 @@ pub async fn run() -> anyhow::Result<()> {
         cwd,
         stream_state:  Mutex::new({
             let mut ss = StreamState::new();
-            ss.tasks = octo_core::load_tasks(&data_dir(), "agent");
+            ss.tasks = okto_core::load_tasks(&data_dir(), "agent");
             ss
         }),
         turn_gate:    Mutex::new(TurnGate::new()),

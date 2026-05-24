@@ -43,7 +43,7 @@ impl std::error::Error for ProbeClosed {}
 pub const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_SHA256";
 
 /// Fixed dev keypair — always the same so the mobile app can hardcode the public key.
-/// Active when OCTO_DEV=1. Generated once; DO NOT rotate.
+/// Active when OKTO_DEV=1. Generated once; DO NOT rotate.
 pub const DEV_STATIC_PRIVATE: [u8; 32] = [
     0x6a, 0x58, 0xeb, 0x21, 0x90, 0x00, 0xf0, 0x5f,
     0xd2, 0x6a, 0xf1, 0x58, 0x74, 0xc6, 0x69, 0xbd,

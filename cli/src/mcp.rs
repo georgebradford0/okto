@@ -1,8 +1,8 @@
-//! `octo mcp …` — manage the per-process `mcp.json`.
+//! `okto mcp …` — manage the per-process `mcp.json`.
 //!
 //! All configs live on the host filesystem now:
-//!   - lair:  `~/.octo/lair/mcp.json`
-//!   - agent: `~/.octo/agents/<name>/data/mcp.json`
+//!   - lair:  `~/.okto/lair/mcp.json`
+//!   - agent: `~/.okto/agents/<name>/data/mcp.json`
 //!
 //! Both lair and child agent processes watch their `mcp.json` and hot-reload
 //! on change. Adding a new entry is a plain file edit followed by tailing the
@@ -243,7 +243,7 @@ pub fn format_marker_report(results: &HashMap<String, McpMarker>, names: &[Strin
             McpMarker::NoTools             => out.push_str(&format!("  '{name}': connected (no tools advertised)\n")),
             McpMarker::SpawnFailed(reason) => out.push_str(&format!("  '{name}': FAILED TO SPAWN — {reason}\n")),
             McpMarker::InitFailed(reason)  => out.push_str(&format!("  '{name}': HANDSHAKE FAILED — {reason}\n")),
-            McpMarker::Timeout             => out.push_str(&format!("  '{name}': no marker seen within timeout (run `octo logs {{agent}}` to investigate)\n")),
+            McpMarker::Timeout             => out.push_str(&format!("  '{name}': no marker seen within timeout (run `okto logs {{agent}}` to investigate)\n")),
         }
     }
     out
@@ -261,7 +261,7 @@ pub fn format_marker_report(results: &HashMap<String, McpMarker>, names: &[Strin
 fn command_in_lair_container(name: &str) -> Result<bool> {
     if !service::is_running() {
         anyhow::bail!(
-            "lair container '{}' is not running — start it with `octo init` or `octo reload` so we can verify MCP command availability inside it.",
+            "lair container '{}' is not running — start it with `okto init` or `okto reload` so we can verify MCP command availability inside it.",
             service::LAIR_CONTAINER_NAME,
         );
     }
@@ -388,7 +388,7 @@ pub async fn add(
         McpMarker::Timeout => {
             error!("[mcp] server '{name}' did not confirm connection within timeout");
             anyhow::bail!(
-                "MCP server '{name}' did not confirm connection within timeout — entry not saved. Run `octo logs {agent}` to investigate."
+                "MCP server '{name}' did not confirm connection within timeout — entry not saved. Run `okto logs {agent}` to investigate."
             );
         }
     }
@@ -556,7 +556,7 @@ pub async fn remove(agent: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
-// ── Helpers used by `octo init` for its MCP-seed health-check ───────────────
+// ── Helpers used by `okto init` for its MCP-seed health-check ───────────────
 
 /// Parse a server-name list from a freshly-written mcp.json. Used by
 /// `init::run` to know which markers to scan for in lair's startup logs.

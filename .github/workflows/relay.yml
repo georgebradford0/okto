@@ -3,12 +3,12 @@ name: Relay Release
 on:
   workflow_dispatch:
 
-# Builds `octo-relay` (the push-notification relay) for both Linux arches and
+# Builds `okto-relay` (the push-notification relay) for both Linux arches and
 # uploads it as the release asset pair attached to `relay-v<version>` (read
 # from `relay/Cargo.toml`). The relay runs as a plain systemd service on its
-# own host — deploy the matching-arch binary to `/usr/local/bin/octo-relay`
-# and restart `octo-relay.service`. The binary carries no secrets; APNs
-# credentials live only on the host (`/etc/octo-relay/`).
+# own host — deploy the matching-arch binary to `/usr/local/bin/okto-relay`
+# and restart `okto-relay.service`. The binary carries no secrets; APNs
+# credentials live only on the host (`/etc/okto-relay/`).
 
 jobs:
   build:
@@ -22,10 +22,10 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            artifact: octo-relay-linux-x86_64
+            artifact: okto-relay-linux-x86_64
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            artifact: octo-relay-linux-aarch64
+            artifact: okto-relay-linux-aarch64
 
     steps:
       - name: Checkout
@@ -47,11 +47,11 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
-      - name: Build octo-relay
-        run: cargo build --release -p octo-relay --target ${{ matrix.target }}
+      - name: Build okto-relay
+        run: cargo build --release -p okto-relay --target ${{ matrix.target }}
 
       - name: Rename binary
-        run: cp target/${{ matrix.target }}/release/octo-relay ${{ matrix.artifact }}
+        run: cp target/${{ matrix.target }}/release/okto-relay ${{ matrix.artifact }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -84,13 +84,13 @@ jobs:
       - name: Create GitHub release
         run: |
           gh release create "relay-v${{ steps.version.outputs.value }}" \
-            --title "octo relay v${{ steps.version.outputs.value }}" \
-            --notes "octo push-notification relay. Linux x86_64 and aarch64.
+            --title "okto relay v${{ steps.version.outputs.value }}" \
+            --notes "okto push-notification relay. Linux x86_64 and aarch64.
 
-          Deploy the matching-arch binary to \`/usr/local/bin/octo-relay\` on
-          the relay host and restart \`octo-relay.service\`. APNs credentials
-          live on the host (\`/etc/octo-relay/\`); the binary carries none." \
-            artifacts/octo-relay-linux-x86_64/octo-relay-linux-x86_64 \
-            artifacts/octo-relay-linux-aarch64/octo-relay-linux-aarch64
+          Deploy the matching-arch binary to \`/usr/local/bin/okto-relay\` on
+          the relay host and restart \`okto-relay.service\`. APNs credentials
+          live on the host (\`/etc/okto-relay/\`); the binary carries none." \
+            artifacts/okto-relay-linux-x86_64/okto-relay-linux-x86_64 \
+            artifacts/okto-relay-linux-aarch64/okto-relay-linux-aarch64
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

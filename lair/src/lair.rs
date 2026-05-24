@@ -4,7 +4,7 @@
 //!   - listens for mobile clients over Noise on `NOISE_PORT` (default 9000),
 //!     forwarding the encrypted stream to its own HTTP server on 127.0.0.1:8000;
 //!   - spawns child agent processes via `AgentSupervisor` and tracks them in
-//!     a JSON registry at `<OCTO_DATA_DIR>/agents.json`;
+//!     a JSON registry at `<OKTO_DATA_DIR>/agents.json`;
 //!   - proxies mobile WebSocket traffic to a chosen child via `/agents/:name/stream`.
 
 use std::{
@@ -29,7 +29,7 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use octo_core::{
+use okto_core::{
     self,
     build_tools_with_mcp, chain_executor_with_mcp,
     cancel_task as core_cancel_task, completion_chat_event, ensure_container_ssh_keypair, finalize_task,
@@ -55,12 +55,12 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::agent_proc::{set_passwd_home_best_effort, AgentSupervisor, SpawnParams};
 use crate::agent_tokens::AgentTokens;
 use crate::ssh as ssh_ops;
-use octo_core::{AgentRecord, AgentStatus, Registry, resolve_agent_spawn_caps};
+use okto_core::{AgentRecord, AgentStatus, Registry, resolve_agent_spawn_caps};
 
 const RELAY_SIGNING_KEY_FILE: &str = "relay_signing_key.bin";
-const DEFAULT_RELAY_URL:      &str = "https://octorelay.directto.link";
+const DEFAULT_RELAY_URL:      &str = "https://oktorelay.directto.link";
 
-fn data_dir() -> PathBuf { octo_core::data_dir() }
+fn data_dir() -> PathBuf { okto_core::data_dir() }
 
 /// Wire-shape pushed to mobile as part of an `agents` event. Just identity
 /// + status — no host/port/pubkey because mobile only ever talks to lair
@@ -83,11 +83,11 @@ struct AgentWire {
 // ── Session persistence ───────────────────────────────────────────────────────
 
 fn save_messages(messages: &[ApiMessage]) {
-    octo_core::save_messages(&data_dir(), messages, "lair");
+    okto_core::save_messages(&data_dir(), messages, "lair");
 }
 
 fn load_messages() -> Vec<ApiMessage> {
-    octo_core::load_messages(&data_dir(), "lair")
+    okto_core::load_messages(&data_dir(), "lair")
 }
 
 /// Unified turn-gate: all decisions about who gets the next conversation turn
@@ -158,7 +158,7 @@ struct AppState {
     relay_url:     String,
     /// Management API bearer token. Set from `LAIR_MGMT_TOKEN` env var at
     /// startup. When `Some(_)`, every state-mutating CLI endpoint requires
-    /// the matching `X-Octo-Token` header — peer processes inside the
+    /// the matching `X-Okto-Token` header — peer processes inside the
     /// container (i.e. child agents) don't get the token in their env
     /// (`agent_proc::spawn` strips it) and run as a different uid so
     /// they can't read `/proc/1/environ` either. When `None`, the
@@ -166,7 +166,7 @@ struct AppState {
     /// the CLI).
     mgmt_token:    Option<String>,
     /// Persistent capability tokens minted for agent-spawned-agent flows.
-    /// Lookup happens on every `X-Octo-Agent-Token` request to resolve the
+    /// Lookup happens on every `X-Okto-Agent-Token` request to resolve the
     /// caller's agent name.
     agent_tokens:      Arc<Mutex<AgentTokens>>,
     /// URL passed to children as `LAIR_INTERNAL_URL` so they can call
@@ -180,7 +180,7 @@ async fn health_handler() -> impl IntoResponse { (StatusCode::OK, "ok") }
 
 /// Bearer-token middleware for the management endpoints. When
 /// `state.mgmt_token` is `Some(_)`, every request must carry a matching
-/// `X-Octo-Token` header. When `None` (no token configured at startup),
+/// `X-Okto-Token` header. When `None` (no token configured at startup),
 /// the middleware is a no-op — useful for `docker run` smoke tests
 /// without minting a token first.
 async fn require_mgmt_token(
@@ -192,11 +192,11 @@ async fn require_mgmt_token(
         return next.run(req).await;
     };
     let supplied = req.headers()
-        .get("x-octo-token")
+        .get("x-okto-token")
         .and_then(|v| v.to_str().ok());
     if supplied != Some(expected) {
-        warn!("[lair/auth] rejected {} {}: missing or invalid X-Octo-Token", req.method(), req.uri().path());
-        return (StatusCode::FORBIDDEN, "missing or invalid X-Octo-Token").into_response();
+        warn!("[lair/auth] rejected {} {}: missing or invalid X-Okto-Token", req.method(), req.uri().path());
+        return (StatusCode::FORBIDDEN, "missing or invalid X-Okto-Token").into_response();
     }
     next.run(req).await
 }
@@ -209,7 +209,7 @@ struct AgentCaller {
 }
 
 /// Capability-token middleware for the agent-spawned-agent endpoints. Looks
-/// up the supplied `X-Octo-Agent-Token` in the persisted store, resolves it
+/// up the supplied `X-Okto-Agent-Token` in the persisted store, resolves it
 /// to the calling agent's name, and attaches that name as a request
 /// extension so the handler can fill in `parent` and enforce descendant
 /// scoping. Unlike `require_mgmt_token`, this is always strict — there is no
@@ -220,18 +220,18 @@ async fn require_agent_token(
     next: axum::middleware::Next,
 ) -> Response {
     let supplied = req.headers()
-        .get("x-octo-agent-token")
+        .get("x-okto-agent-token")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
     let Some(token) = supplied.filter(|s| !s.is_empty()) else {
-        warn!("[lair/auth] rejected {} {}: missing X-Octo-Agent-Token", req.method(), req.uri().path());
-        return (StatusCode::FORBIDDEN, "missing X-Octo-Agent-Token").into_response();
+        warn!("[lair/auth] rejected {} {}: missing X-Okto-Agent-Token", req.method(), req.uri().path());
+        return (StatusCode::FORBIDDEN, "missing X-Okto-Agent-Token").into_response();
     };
     let name = state.agent_tokens.lock().unwrap()
         .name_for_token(&token).map(str::to_string);
     let Some(name) = name else {
-        warn!("[lair/auth] rejected {} {}: invalid X-Octo-Agent-Token", req.method(), req.uri().path());
-        return (StatusCode::FORBIDDEN, "invalid X-Octo-Agent-Token").into_response();
+        warn!("[lair/auth] rejected {} {}: invalid X-Okto-Agent-Token", req.method(), req.uri().path());
+        return (StatusCode::FORBIDDEN, "invalid X-Okto-Agent-Token").into_response();
     };
     debug!("[lair/auth] agent-token request authenticated as '{name}': {} {}", req.method(), req.uri().path());
     req.extensions_mut().insert(AgentCaller { name });
@@ -265,7 +265,7 @@ struct InternalNotifyBody {
 /// to the relay. Deliberately unauthenticated: only processes inside the lair
 /// container can reach this HTTP server, and the worst a caller can do is
 /// trigger a push to the operator's own device — not a lifecycle op, which is
-/// what the `X-Octo-Token` / `X-Octo-Agent-Token` walls actually protect.
+/// what the `X-Okto-Token` / `X-Okto-Agent-Token` walls actually protect.
 async fn internal_notify_handler(
     State(state): State<Arc<AppState>>,
     Json(body):   Json<InternalNotifyBody>,
@@ -714,7 +714,7 @@ async fn start_agent_by_name(state: &AppState, name: &str) -> Result<(), String>
         info!("[lair/start_agent] agent='{name}' already running (pid={:?}) — no-op", record.pid);
         return Ok(());
     }
-    let cfg = octo_core::read_config();
+    let cfg = okto_core::read_config();
     let gh_token = std::env::var("GH_TOKEN").ok().filter(|s| !s.is_empty());
     // git_url isn't stored in the registry — the workspace dir already holds
     // the clone (if any), and `bootstrap::ensure_workspace` detects it on
@@ -739,7 +739,7 @@ async fn start_agent_by_name(state: &AppState, name: &str) -> Result<(), String>
         agent_token:       agent_token.as_deref(),
         lair_internal_url: Some(&lair_internal_url),
         // Restart preserves the existing mcp.json (which may have been
-        // edited via `octo mcp add --agent <name>`). Initial inheritance
+        // edited via `okto mcp add --agent <name>`). Initial inheritance
         // from lair happens once at create time, not on every restart.
         mcp:               None,
     };
@@ -952,7 +952,7 @@ async fn poll_agents(state: Arc<AppState>, ready_tx: watch::Sender<bool>) {
         // An agent may have been removed between phases (terminate); skip it.
         let new_agents: Vec<AgentWire> = {
             let mut reg = state.registry.lock().unwrap();
-            let now = octo_core::now_secs();
+            let now = okto_core::now_secs();
             let mut out = Vec::with_capacity(classified.len());
             for (record, status) in &classified {
                 if reg.get(&record.name).is_none() { continue; }
@@ -1259,18 +1259,18 @@ async fn proxy_to_child(mobile_ws: WebSocket, record: AgentRecord, lair_priv: Ve
 
 fn build_system_prompt() -> String {
     r#"# Identity & context
-You are octo -- the helpful but mysterious octopus.
+You are okto -- the helpful but mysterious octopus.
 
-octo can host any kind of agent workload, not only coding agents — don't assume the user is doing software work unless they say so.
+okto can host any kind of agent workload, not only coding agents — don't assume the user is doing software work unless they say so.
 
 # What you help with
 1. Orchestration — spin up, tear down, and inspect children, local or remote.
 2. Direct work — answer questions, run shell commands, read external resources, and handle small fixes that don't require a child's repo.
 
 # Environment
-- Linux host. Lair runs inside a Docker container; local children are plain OS processes (`lair --role agent`) spawned *inside the same container* as lair (non-root uid 10001). Each has a per-agent data dir + workspace under `/data/agents/<name>/` (bind-mounted from `~/.octo/agents/<name>/` on the host) and binds a loopback HTTP port (30100–30199). Mobile reaches a local child via lair's `/agents/<name>/stream` proxy URL.
-- Remote children run the same `lair` image on a separate VM you provisioned via a cloud-MCP. The userdata installs Docker, `docker pull`s the lair image, and `docker run`s it with `--role agent` under a systemd unit. They listen on a public Noise port; lair opens an outbound Noise tunnel for the WS proxy so traffic stays encrypted end-to-end. Lair's SSH key bootstraps the VM (drops `config.json` into the host's `/var/lib/octo`, optional repo clone, `systemctl restart` to refresh the container).
-- `gh` and `git` are expected to be installed on the host; `GH_TOKEN` is in lair's env when the operator set it via `octo env`.
+- Linux host. Lair runs inside a Docker container; local children are plain OS processes (`lair --role agent`) spawned *inside the same container* as lair (non-root uid 10001). Each has a per-agent data dir + workspace under `/data/agents/<name>/` (bind-mounted from `~/.okto/agents/<name>/` on the host) and binds a loopback HTTP port (30100–30199). Mobile reaches a local child via lair's `/agents/<name>/stream` proxy URL.
+- Remote children run the same `lair` image on a separate VM you provisioned via a cloud-MCP. The userdata installs Docker, `docker pull`s the lair image, and `docker run`s it with `--role agent` under a systemd unit. They listen on a public Noise port; lair opens an outbound Noise tunnel for the WS proxy so traffic stays encrypted end-to-end. Lair's SSH key bootstraps the VM (drops `config.json` into the host's `/var/lib/okto`, optional repo clone, `systemctl restart` to refresh the container).
+- `gh` and `git` are expected to be installed on the host; `GH_TOKEN` is in lair's env when the operator set it via `okto env`.
 - MCP servers may be configured at init time or hot-added at runtime; their tools appear alongside the built-ins. `web_fetch` (and `web_search` when Brave is configured) cover external lookups.
 - A path prefixed with `@` (e.g. `@core/src/lib.rs`) is a file reference inside a repo — treat it as a path.
 
@@ -1283,7 +1283,7 @@ octo can host any kind of agent workload, not only coding agents — don't assum
   - `startup_prompt` is sent as the child's first user message once it's ready and triggers a full agentic loop.
   - **Never put secrets in `startup_script` or `startup_prompt`** — provider credentials are forwarded via env automatically; you don't need to bake them in.
 - **`mint_bootstrap_userdata`** — args: `name`, `agent_purpose?`, `startup_script?`, `public_port?`, `lair_version?`, `image?`. Returns a cloud-init bash script for a **remote** agent. The userdata is **credentials-free** — it trusts lair's SSH key, installs Docker if absent, `docker pull`s the lair image, and writes a systemd unit that `docker run`s the image with `--role agent`. Hand the returned `userdata` to whichever provisioning MCP the user has configured (AWS, Hetzner, etc.). The MCP returns the new VM's IP → call `register_remote_agent`.
-- **`register_remote_agent`** — args: `name`, `host`, `provider?`, `instance_id?`, `git_url?`, `metadata?`. After the provisioning MCP returns the VM's IP, lair SSHes in and: (a) waits for the agent container to publish `/var/lib/octo/lair/agent-info.json` (the agent writes it inside the container; the host sees it via the bind mount), (b) drops `config.json` to `/var/lib/octo/config.json` with the API keys, (c) clones `git_url` into the workspace if given, (d) `systemctl restart`s the agent unit (which `docker run`s a fresh container, picking up the new config). Total timeout ~6 minutes. `name` must match what you passed to `mint_bootstrap_userdata`.
+- **`register_remote_agent`** — args: `name`, `host`, `provider?`, `instance_id?`, `git_url?`, `metadata?`. After the provisioning MCP returns the VM's IP, lair SSHes in and: (a) waits for the agent container to publish `/var/lib/okto/lair/agent-info.json` (the agent writes it inside the container; the host sees it via the bind mount), (b) drops `config.json` to `/var/lib/okto/config.json` with the API keys, (c) clones `git_url` into the workspace if given, (d) `systemctl restart`s the agent unit (which `docker run`s a fresh container, picking up the new config). Total timeout ~6 minutes. `name` must match what you passed to `mint_bootstrap_userdata`.
 - **`terminate_agent(name)`** — *destructive.* Kills the named agent **and every transitive descendant** (leaves-first), then deletes their per-agent data + workspace dirs. Sub-agents spawned by other agents are torn down automatically with their parent. For remote agents, returns instructions to terminate the VM via the provisioning MCP first, then call `forget_agent`. Always run `list_agents` first to confirm the exact name; confirm with the user before calling unless the request was unambiguous.
 
 # Agent ownership
@@ -1352,8 +1352,8 @@ octo can host any kind of agent workload, not only coding agents — don't assum
 fn create_agent_tool() -> AnthropicTool {
     AnthropicTool {
         name: "create_agent".to_string(),
-        description: "Spawn a new *local* octo child agent as an OS process on the lair host. \
-                       Handles per-agent dir layout (~/.octo/agents/<name>/{data,workspace}/) \
+        description: "Spawn a new *local* okto child agent as an OS process on the lair host. \
+                       Handles per-agent dir layout (~/.okto/agents/<name>/{data,workspace}/) \
                        and loopback port assignment (30100–30199). For remote agents on a \
                        cloud VM, use mint_bootstrap_userdata + register_remote_agent instead."
             .to_string(),
@@ -1446,7 +1446,7 @@ fn mint_bootstrap_userdata_tool() -> AnthropicTool {
     AnthropicTool {
         name: "mint_bootstrap_userdata".to_string(),
         description: "Mint a cloud-init bash script (\"userdata\") for bootstrapping a remote \
-                       octo agent on a freshly-provisioned Linux VM. The userdata contains **no \
+                       okto agent on a freshly-provisioned Linux VM. The userdata contains **no \
                        credentials** — only lair's SSH public key, a Docker install (if absent), \
                        a `docker pull` of the multi-arch `lair` image, and a systemd unit \
                        that `docker run`s the image with `--role agent`. The agent boots without \
@@ -1496,9 +1496,9 @@ fn register_remote_agent_tool() -> AnthropicTool {
         name: "register_remote_agent".to_string(),
         description: "Finish bootstrapping a remote agent and register it with lair. SSHes in \
                        (using lair's operator key), waits for the agent container to publish \
-                       `/var/lib/octo/lair/agent-info.json` (host path; bind-mounted to \
+                       `/var/lib/okto/lair/agent-info.json` (host path; bind-mounted to \
                        `/data/lair/` inside the agent container), drops `config.json` to \
-                       `/var/lib/octo/config.json` with the API keys, optionally clones \
+                       `/var/lib/okto/config.json` with the API keys, optionally clones \
                        `git_url` into the workspace, and `systemctl restart`s the agent service \
                        (which restarts the docker container). Total timeout ~6 minutes. `name` \
                        must match what was passed to `mint_bootstrap_userdata`. Each SSH op \
@@ -1666,12 +1666,12 @@ async fn exec_create_agent_for_parent(
     // (which may be empty to mean "no MCP servers"). The resolved list is
     // written to the child's data dir by `AgentSupervisor::spawn` before
     // it starts the process.
-    let mcp_servers: Vec<octo_core::mcp::McpServerConfig> = match input.get("mcp") {
+    let mcp_servers: Vec<okto_core::mcp::McpServerConfig> = match input.get("mcp") {
         None => {
             // Inherit lair's mcp.json verbatim. `load_mcp_configs` reads
-            // from `OCTO_DATA_DIR/mcp.json` and returns an empty Vec if
+            // from `OKTO_DATA_DIR/mcp.json` and returns an empty Vec if
             // the file is absent — both are valid defaults for the child.
-            let inherited = octo_core::mcp::load_mcp_configs();
+            let inherited = okto_core::mcp::load_mcp_configs();
             info!(
                 "[lair/create_agent] {child_name} inheriting {} MCP server(s) from lair",
                 inherited.len(),
@@ -1679,7 +1679,7 @@ async fn exec_create_agent_for_parent(
             inherited
         }
         Some(serde_json::Value::Array(arr)) => {
-            match serde_json::from_value::<Vec<octo_core::mcp::McpServerConfig>>(serde_json::Value::Array(arr.clone())) {
+            match serde_json::from_value::<Vec<okto_core::mcp::McpServerConfig>>(serde_json::Value::Array(arr.clone())) {
                 Ok(v) => {
                     info!("[lair/create_agent] {child_name} using {} MCP server(s) from override", v.len());
                     v
@@ -1700,7 +1700,7 @@ async fn exec_create_agent_for_parent(
         }
     };
 
-    let cfg = octo_core::read_config();
+    let cfg = okto_core::read_config();
     let gh_token = std::env::var("GH_TOKEN").ok().filter(|s| !s.is_empty());
 
     // Mint a capability token only when the new child has a parent (i.e.
@@ -1711,7 +1711,7 @@ async fn exec_create_agent_for_parent(
     // child running with a token that was never written to disk.
     let agent_token = if parent.is_some() {
         Some(state.agent_tokens.lock().unwrap()
-            .ensure(&child_name, octo_core::now_secs())
+            .ensure(&child_name, okto_core::now_secs())
             .map_err(|e| format!("mint agent token for '{child_name}': {e:#}"))?)
     } else {
         None
@@ -1737,7 +1737,7 @@ async fn exec_create_agent_for_parent(
 
     match state.supervisor.spawn(&params).await {
         Ok(pid) => {
-            let now = octo_core::now_secs();
+            let now = okto_core::now_secs();
             let record = AgentRecord {
                 name:           child_name.clone(),
                 pid:            Some(pid),
@@ -1768,9 +1768,9 @@ async fn exec_create_agent_for_parent(
             // child is still doing git clone + startup script + MCP init, and
             // callers that immediately try to talk to it hit connection
             // refused. The default 180s covers a normal git clone and short
-            // startup scripts; override with OCTO_CREATE_AGENT_TIMEOUT_SECS
+            // startup scripts; override with OKTO_CREATE_AGENT_TIMEOUT_SECS
             // for hosts with slower bootstrap (large repos, heavy scripts).
-            let ready_timeout = std::env::var("OCTO_CREATE_AGENT_TIMEOUT_SECS")
+            let ready_timeout = std::env::var("OKTO_CREATE_AGENT_TIMEOUT_SECS")
                 .ok().and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(180);
             match wait_for_agent_ready(port, pid, Duration::from_secs(ready_timeout)).await {
@@ -1844,14 +1844,14 @@ async fn exec_mint_bootstrap_userdata(state: Arc<AppState>, input: serde_json::V
     let lair_noise_pubkey_b32 = state.pubkey_b32.clone();
 
     // Env file passed to `docker run --env-file`. All container-internal
-    // paths — the image bakes `OCTO_HOME=/data` and `OCTO_DATA_DIR=/data/lair`
-    // already, and `-v /var/lib/octo:/data` maps those to host paths.
+    // paths — the image bakes `OKTO_HOME=/data` and `OKTO_DATA_DIR=/data/lair`
+    // already, and `-v /var/lib/okto:/data` maps those to host paths.
     let mut env_lines: Vec<String> = vec![
         "AGENT_PORT=8000".to_string(),
         format!("AGENT_NOISE_PORT={public_port}"),
         format!("LAIR_PUBKEY={lair_noise_pubkey_b32}"),
         "WORKSPACE_DIR=/data/workspace".to_string(),
-        "OCTO_SKIP_SHELL_ENV=1".to_string(),
+        "OKTO_SKIP_SHELL_ENV=1".to_string(),
     ];
     if let Some(v) = &agent_purpose  { env_lines.push(format!("AGENT_PURPOSE={v}")); }
     if let Some(v) = &startup_script { env_lines.push(format!("STARTUP_SCRIPT={v}")); }
@@ -1862,9 +1862,9 @@ set -eux
 
 # 1. Trust lair's operator SSH key.
 mkdir -p /root/.ssh && chmod 700 /root/.ssh
-cat >> /root/.ssh/authorized_keys <<'OCTO_SSH_EOF'
+cat >> /root/.ssh/authorized_keys <<'OKTO_SSH_EOF'
 {lair_pubkey}
-OCTO_SSH_EOF
+OKTO_SSH_EOF
 chmod 600 /root/.ssh/authorized_keys
 
 # 2. Install Docker if it isn't already there. Uses the official Docker
@@ -1875,18 +1875,18 @@ fi
 systemctl enable --now docker
 
 # 3. Host dirs that the agent container bind-mounts at /data. Lair's SSH
-#    bootstrap phase writes `/var/lib/octo/config.json` (the operator's
-#    API keys) and reads `/var/lib/octo/lair/agent-info.json` (the agent's
+#    bootstrap phase writes `/var/lib/okto/config.json` (the operator's
+#    API keys) and reads `/var/lib/okto/lair/agent-info.json` (the agent's
 #    Noise pubkey + port) — both via this same bind mount.
-install -d -m 700 /var/lib/octo /var/lib/octo/lair /var/lib/octo/workspace /etc/octo
+install -d -m 700 /var/lib/okto /var/lib/okto/lair /var/lib/okto/workspace /etc/okto
 
 # 4. Non-secret bootstrap env passed to `docker run --env-file`. API keys
 #    are dropped over SSH after the container is up; the container is
-#    restarted afterwards via `systemctl restart octo-agent`.
+#    restarted afterwards via `systemctl restart okto-agent`.
 umask 077
-cat > /etc/octo/agent.env <<'OCTO_ENV_EOF'
+cat > /etc/okto/agent.env <<'OKTO_ENV_EOF'
 {env_content}
-OCTO_ENV_EOF
+OKTO_ENV_EOF
 umask 022
 
 # 5. Pull the multi-arch lair image. The image hosts both --role lair and
@@ -1897,32 +1897,32 @@ docker pull "{image}"
 #    container; ExecStart launches a fresh one in the foreground so systemd
 #    can supervise it. Restart is always — if the container crashes or the
 #    host reboots, systemd brings it back.
-cat > /etc/systemd/system/octo-agent.service <<'OCTO_UNIT_EOF'
+cat > /etc/systemd/system/okto-agent.service <<'OKTO_UNIT_EOF'
 [Unit]
-Description=octo agent container
+Description=okto agent container
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStartPre=-/usr/bin/docker rm -f octo-agent
-ExecStart=/usr/bin/docker run --rm --name octo-agent \
+ExecStartPre=-/usr/bin/docker rm -f okto-agent
+ExecStart=/usr/bin/docker run --rm --name okto-agent \
     -p {public_port}:{public_port} \
-    -v /var/lib/octo:/data \
-    --env-file /etc/octo/agent.env \
+    -v /var/lib/okto:/data \
+    --env-file /etc/okto/agent.env \
     --entrypoint /usr/local/bin/lair \
     {image} --role agent
-ExecStop=/usr/bin/docker stop -t 10 octo-agent
+ExecStop=/usr/bin/docker stop -t 10 okto-agent
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-OCTO_UNIT_EOF
+OKTO_UNIT_EOF
 
 systemctl daemon-reload
-systemctl enable --now octo-agent
+systemctl enable --now okto-agent
 "#);
 
     let result = serde_json::json!({
@@ -1960,7 +1960,7 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
             return "error: HOME is not set in lair's env — cannot resolve SSH key path.".to_string();
         }
     };
-    let key_path = octo_core::container_ssh_private_key(&home);
+    let key_path = okto_core::container_ssh_private_key(&home);
     if !key_path.exists() {
         return format!(
             "error: lair has no SSH private key at {}. Restart lair to generate one.",
@@ -1999,7 +1999,7 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
                 r.host,
             );
         }
-        None => (octo_core::now_secs(), false),
+        None => (okto_core::now_secs(), false),
     };
 
     // Pre-flight: TCP probe `host:22` before kicking off the multi-minute
@@ -2056,7 +2056,7 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
             status:         AgentStatus::Pending,
             binary_version: env!("CARGO_PKG_VERSION").to_string(),
             created_at,
-            last_seen:      octo_core::now_secs(),
+            last_seen:      okto_core::now_secs(),
             instance_id:    instance_id.clone(),
             provider:       provider.clone(),
             metadata:       metadata.clone(),
@@ -2069,7 +2069,7 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
     }
 
     // Phase 2: drop config.json over SSH.
-    let lair_cfg = octo_core::read_config();
+    let lair_cfg = okto_core::read_config();
     let cfg = serde_json::json!({
         "name":              null,
         "anthropic_api_key": lair_cfg.anthropic_api_key,
@@ -2097,8 +2097,8 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
     // Phase 3: optional git clone.
     if let Some(url) = git_url.clone() {
         let token = std::env::var("GH_TOKEN").unwrap_or_default();
-        let user_name  = std::env::var("GIT_USER_NAME") .unwrap_or_else(|_| "octo".to_string());
-        let user_email = std::env::var("GIT_USER_EMAIL").unwrap_or_else(|_| "octo@localhost".to_string());
+        let user_name  = std::env::var("GIT_USER_NAME") .unwrap_or_else(|_| "okto".to_string());
+        let user_email = std::env::var("GIT_USER_EMAIL").unwrap_or_else(|_| "okto@localhost".to_string());
         let script = build_remote_clone_script(&url, &token, &user_name, &user_email);
         info!("[lair/register_remote_agent] {host}: cloning {url}");
         if let Err(e) = ssh_ops::run_script(&host, "root", &key_path, &script).await {
@@ -2110,14 +2110,14 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
     }
 
     // Phase 4: systemctl restart to pick up config + cloned workspace.
-    info!("[lair/register_remote_agent] {host}: restarting octo-agent");
+    info!("[lair/register_remote_agent] {host}: restarting okto-agent");
     if let Err(e) = ssh_ops::run_script(
         &host, "root", &key_path,
-        "set -e; systemctl restart octo-agent",
+        "set -e; systemctl restart okto-agent",
     ).await {
         error!("[lair/register_remote_agent] {host}: systemctl restart failed: {e:#}");
         return format!(
-            "error restarting octo-agent on {host}: {e:#}. Re-run register_remote_agent to retry.",
+            "error restarting okto-agent on {host}: {e:#}. Re-run register_remote_agent to retry.",
         );
     }
 
@@ -2144,7 +2144,7 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
         status:         AgentStatus::Running,
         binary_version: env!("CARGO_PKG_VERSION").to_string(),
         created_at,
-        last_seen:      octo_core::now_secs(),
+        last_seen:      okto_core::now_secs(),
         instance_id,
         provider,
         metadata,
@@ -2596,7 +2596,7 @@ async fn cli_delete_agent(
 // ── Agent-token-gated routes (agent ↔ lair, for agent-spawned-agent flow) ────
 
 /// Body for `POST /agents/child`. Same shape as `CreateAgentBody` — the
-/// parent name comes from the X-Octo-Agent-Token middleware extension, not
+/// parent name comes from the X-Okto-Agent-Token middleware extension, not
 /// the body. We split it from `CreateAgentBody` so we can add per-flow
 /// fields later without affecting the operator endpoint.
 #[derive(Deserialize, Default)]
@@ -2613,7 +2613,7 @@ struct CreateChildAgentBody {
 }
 
 /// Spawn a new agent whose parent is the caller. The caller is identified by
-/// `X-Octo-Agent-Token` (handled by the `require_agent_token` middleware,
+/// `X-Okto-Agent-Token` (handled by the `require_agent_token` middleware,
 /// which attaches an `AgentCaller` extension).
 async fn agent_create_child(
     State(state):  State<Arc<AppState>>,
@@ -2622,7 +2622,7 @@ async fn agent_create_child(
 ) -> Response {
     info!("[lair/http] POST /agents/child (caller='{}')", caller.name);
     // Enforce spawn caps before doing any work.
-    let cfg = octo_core::read_config();
+    let cfg = okto_core::read_config();
     let (max_depth, max_descendants) = resolve_agent_spawn_caps(&cfg);
     {
         let reg = state.registry.lock().unwrap();
@@ -2742,7 +2742,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
     let dir = data_dir();
     fs::create_dir_all(&dir).ok();
 
-    let is_dev   = std::env::var("OCTO_DEV").as_deref() == Ok("1");
+    let is_dev   = std::env::var("OKTO_DEV").as_deref() == Ok("1");
     let key_file = std::env::var("NOISE_KEY_FILE")
         .unwrap_or_else(|_| dir.join("noise_key.bin").to_string_lossy().to_string());
 
@@ -2804,9 +2804,9 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
     // root and the usermod call no-ops with a debug log.
     set_passwd_home_best_effort("root", &lair_home, "lair");
 
-    // Agents root: `<OCTO_DATA_DIR>/../agents` so multiple lairs on one host
-    // wouldn't share dirs. Default operator layout has it at `~/.octo/agents`.
-    let agents_root = std::env::var("OCTO_AGENTS_DIR")
+    // Agents root: `<OKTO_DATA_DIR>/../agents` so multiple lairs on one host
+    // wouldn't share dirs. Default operator layout has it at `~/.okto/agents`.
+    let agents_root = std::env::var("OKTO_AGENTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             // Sibling of the lair data dir by default.
@@ -2865,7 +2865,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
         let relay_signer  = Arc::new(RelaySigner::load_or_generate(
             &dir.join(RELAY_SIGNING_KEY_FILE).to_string_lossy(),
         ));
-        let relay_url_str = std::env::var("OCTO_RELAY_URL")
+        let relay_url_str = std::env::var("OKTO_RELAY_URL")
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| DEFAULT_RELAY_URL.to_string());
@@ -2880,7 +2880,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             .filter(|s| !s.is_empty());
         std::env::remove_var("LAIR_MGMT_TOKEN");
         if mgmt_token.is_some() {
-            info!("[lair] management API gated on X-Octo-Token header");
+            info!("[lair] management API gated on X-Okto-Token header");
         } else {
             warn!("[lair] LAIR_MGMT_TOKEN not set — management endpoints (POST /agents, /:name/start, /:name/stop, DELETE /:name) are OPEN to peer processes inside the container. Production deploys should always set this.");
         }
@@ -2911,7 +2911,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             turn_gate:     Mutex::new(TurnGate::new()),
             stream_state:  Mutex::new({
                 let mut ss = StreamState::new();
-                ss.tasks = octo_core::load_tasks(&data_dir(), "lair");
+                ss.tasks = okto_core::load_tasks(&data_dir(), "lair");
                 ss
             }),
             ready_rx,
@@ -2938,7 +2938,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
             .allow_headers(Any);
 
-        // Routes that mutate agent lifecycle — gated by `X-Octo-Token`. Peer
+        // Routes that mutate agent lifecycle — gated by `X-Okto-Token`. Peer
         // processes inside the container (i.e. child agents) don't get the
         // token in their env, so this is the wall that keeps children from
         // spawning siblings, terminating each other, or terminating lair
@@ -2954,7 +2954,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             ));
 
         // Routes available to child agents via the per-agent capability
-        // token (`X-Octo-Agent-Token`). Strict scope: the caller can only
+        // token (`X-Okto-Agent-Token`). Strict scope: the caller can only
         // spawn agents owned by itself, and can only terminate agents
         // that descend from itself.
         let agent_protected = Router::new()

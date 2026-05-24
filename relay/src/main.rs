@@ -1,4 +1,4 @@
-//! octo-relay — push-notification relay for self-hosted lair instances.
+//! okto-relay — push-notification relay for self-hosted lair instances.
 //!
 //! Architecture: lair has its own keypair; mobile pairs with lair over the
 //! Noise tunnel and learns the lair's Ed25519 *relay-signing* pubkey, then
@@ -20,7 +20,7 @@ mod db;
 mod routes;
 
 #[derive(Parser, Debug, Clone)]
-#[command(name = "octo-relay", version)]
+#[command(name = "okto-relay", version)]
 struct Args {
     /// Address to bind. Caddy (or another TLS terminator) reverse-proxies
     /// 443 → this address. Bind to 127.0.0.1 in production.
@@ -28,11 +28,11 @@ struct Args {
     listen: SocketAddr,
 
     /// SQLite database path. Stores subscriptions and replay-protection nonces.
-    #[arg(long, env = "RELAY_DB_PATH", default_value = "/var/lib/octo-relay/relay.db")]
+    #[arg(long, env = "RELAY_DB_PATH", default_value = "/var/lib/okto-relay/relay.db")]
     db_path: PathBuf,
 
     /// Apple .p8 private key file (PKCS#8 PEM).
-    #[arg(long, env = "APNS_P8_PATH", default_value = "/etc/octo-relay/apns.p8")]
+    #[arg(long, env = "APNS_P8_PATH", default_value = "/etc/okto-relay/apns.p8")]
     apns_p8: PathBuf,
 
     /// APNs Auth Key ID (10 chars).
@@ -68,7 +68,7 @@ pub struct AppState {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,octo_relay=debug")))
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,okto_relay=debug")))
         .init();
 
     let args = Args::parse();

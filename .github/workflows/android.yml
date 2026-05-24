@@ -21,7 +21,7 @@ jobs:
         working-directory: mobile
 
     # Required GitHub Secrets:
-    #   ANDROID_KEYSTORE                  — base64: base64 -i octo-upload-key.keystore | pbcopy
+    #   ANDROID_KEYSTORE                  — base64: base64 -i okto-upload-key.keystore | pbcopy
     #   ANDROID_KEYSTORE_PASSWORD         — keystore password
     #   ANDROID_KEY_ALIAS                 — key alias
     #   ANDROID_KEY_PASSWORD              — key password
@@ -56,7 +56,7 @@ jobs:
       - name: Decode keystore
         env:
           ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
-        run: echo "$ANDROID_KEYSTORE" | base64 --decode > /tmp/octo-upload-key.keystore
+        run: echo "$ANDROID_KEYSTORE" | base64 --decode > /tmp/okto-upload-key.keystore
 
       - name: Write gradle.properties
         env:
@@ -71,7 +71,7 @@ jobs:
             'newArchEnabled=true' \
             'hermesEnabled=true' \
             'edgeToEdgeEnabled=false' \
-            "RELEASE_STORE_FILE=/tmp/octo-upload-key.keystore" \
+            "RELEASE_STORE_FILE=/tmp/okto-upload-key.keystore" \
             "RELEASE_STORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" \
             "RELEASE_KEY_ALIAS=$ANDROID_KEY_ALIAS" \
             "RELEASE_KEY_PASSWORD=$ANDROID_KEY_PASSWORD" \

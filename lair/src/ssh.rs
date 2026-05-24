@@ -1,9 +1,9 @@
 //! Outbound SSH from lair to a remote-VM agent. Used by
 //! `register_remote_agent` to (a) pull the agent's published identity from
-//! `/var/lib/octo/lair/agent-info.json` (host path; bind-mounted to
+//! `/var/lib/okto/lair/agent-info.json` (host path; bind-mounted to
 //! `/data/lair/agent-info.json` inside the agent container) after cloud-init
 //! finishes, and (b) drop the operator's `config.json` + optionally clone a
-//! git repo, then `systemctl restart octo-agent` (which restarts the
+//! git repo, then `systemctl restart okto-agent` (which restarts the
 //! `docker run`'d container).
 //!
 //! Shells out to the system `ssh` binary so host-key handling, key auth, and
@@ -20,31 +20,31 @@ use tokio::process::Command;
 use tracing::{debug, error, info, warn};
 
 /// Where the agent process publishes its identity on the remote VM. The
-/// agent container has `OCTO_DATA_DIR=/data/lair` baked in by the image and
-/// runs with `-v /var/lib/octo:/data`, so the host-side path is
-/// `/var/lib/octo/lair/agent-info.json`. Lair reads it over SSH.
-pub const REMOTE_AGENT_INFO_PATH: &str = "/var/lib/octo/lair/agent-info.json";
+/// agent container has `OKTO_DATA_DIR=/data/lair` baked in by the image and
+/// runs with `-v /var/lib/okto:/data`, so the host-side path is
+/// `/var/lib/okto/lair/agent-info.json`. Lair reads it over SSH.
+pub const REMOTE_AGENT_INFO_PATH: &str = "/var/lib/okto/lair/agent-info.json";
 
 /// Where lair drops the operator's `config.json` on the remote VM. The
-/// agent container has `OCTO_HOME=/data` baked in, so it reads
+/// agent container has `OKTO_HOME=/data` baked in, so it reads
 /// `/data/config.json` — host path with the bind mount is
-/// `/var/lib/octo/config.json`.
-pub const REMOTE_CONFIG_PATH:     &str = "/var/lib/octo/config.json";
+/// `/var/lib/okto/config.json`.
+pub const REMOTE_CONFIG_PATH:     &str = "/var/lib/okto/config.json";
 
 /// Workspace dir on the remote VM. The userdata sets the container's
-/// `WORKSPACE_DIR=/data/workspace`; host-side it's `/var/lib/octo/workspace`.
-pub const REMOTE_WORKSPACE_PATH:  &str = "/var/lib/octo/workspace";
+/// `WORKSPACE_DIR=/data/workspace`; host-side it's `/var/lib/okto/workspace`.
+pub const REMOTE_WORKSPACE_PATH:  &str = "/var/lib/okto/workspace";
 
-/// Lair-side known_hosts file. Stored under `OCTO_DATA_DIR` so accept-new
+/// Lair-side known_hosts file. Stored under `OKTO_DATA_DIR` so accept-new
 /// entries persist across lair restarts.
 pub fn known_hosts_path() -> PathBuf {
-    octo_core::data_dir().join("known_hosts")
+    okto_core::data_dir().join("known_hosts")
 }
 
-/// Parsed contents of `/var/lib/octo/lair/agent-info.json` as written by
+/// Parsed contents of `/var/lib/okto/lair/agent-info.json` as written by
 /// the agent role inside its container (the container writes
 /// `/data/lair/agent-info.json` which the host sees at
-/// `/var/lib/octo/lair/agent-info.json` via the bind mount).
+/// `/var/lib/okto/lair/agent-info.json` via the bind mount).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AgentInfo {
     pub pubkey:   String,
@@ -149,7 +149,7 @@ pub fn read_lair_public_key() -> Result<String> {
     let home = std::env::var("HOME")
         .map(PathBuf::from)
         .context("HOME is not set — cannot resolve lair container SSH pubkey path")?;
-    let path = octo_core::container_ssh_public_key(&home);
+    let path = okto_core::container_ssh_public_key(&home);
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("read lair ssh public key at {}", path.display()))?;
     Ok(text.trim().to_string())

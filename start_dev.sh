@@ -10,7 +10,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 DEV_ROOT="${REPO_ROOT}/dev-data"
-DEV_CONFIG_SRC="${HOME}/.octo/config.json"
+DEV_CONFIG_SRC="${HOME}/.okto/config.json"
 DEV_NOISE_PORT="${DEV_NOISE_PORT:-9000}"
 DEV_HTTP_PORT="${DEV_HTTP_PORT:-9001}"
 DEV_CONTAINER="${DEV_CONTAINER:-lair-dev}"
@@ -55,7 +55,7 @@ docker run -d \
     -v "${DEV_ROOT}:/data" \
     --env-file "${DEV_ROOT}/lair-env" \
     -e "PUBLIC_PORT=${DEV_NOISE_PORT}" \
-    -e "OCTO_DEV=1" \
+    -e "OKTO_DEV=1" \
     "${EXTRA_ENV[@]}" \
     "${DEV_IMAGE}"
 

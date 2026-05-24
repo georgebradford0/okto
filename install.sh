@@ -1,12 +1,12 @@
 #!/bin/bash
 set -e
 
-echo "Building octo..."
+echo "Building okto..."
 touch desktop/src-tauri/src/main.rs
 make desktop
 
-APP_SRC="target/release/bundle/macos/octo.app"
-APP_DEST="/Applications/octo.app"
+APP_SRC="target/release/bundle/macos/okto.app"
+APP_DEST="/Applications/okto.app"
 
 if [ ! -d "$APP_SRC" ]; then
   echo "Error: build output not found at $APP_SRC"
@@ -14,7 +14,7 @@ if [ ! -d "$APP_SRC" ]; then
 fi
 
 echo "Killing existing app..."
-pkill -9 -x octo 2>/dev/null || true
+pkill -9 -x okto 2>/dev/null || true
 sleep 1
 
 echo "Installing to $APP_DEST..."
@@ -28,7 +28,7 @@ killall Finder 2>/dev/null || true
 INSTALLED_VERSION=$(defaults read "$APP_DEST/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo "unknown")
 echo "Installed version: $INSTALLED_VERSION"
 
-echo "Launching octo..."
+echo "Launching okto..."
 open "$APP_DEST"
 
 echo "Done."

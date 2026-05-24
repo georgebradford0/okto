@@ -1,15 +1,15 @@
 [package]
-name        = "octo"
+name        = "okto"
 version     = "0.6.0"
 edition     = "2021"
-description = "octo lair management CLI"
+description = "okto lair management CLI"
 
 [[bin]]
-name = "octo"
+name = "okto"
 path = "src/main.rs"
 
 [dependencies]
-octo-core         = { path = "../core" }
+okto-core         = { path = "../core" }
 anyhow            = "1.0"
 clap              = { version = "4", features = ["derive", "env"] }
 clap_complete     = "4"
@@ -24,7 +24,7 @@ futures-util      = "0.3"
 tracing           = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # Vendor openssl-sys so the aarch64 cross-compile in cli.yml doesn't try to
-# pkg-config a host OpenSSL it can't find. octo-core's git2 dep transitively
+# pkg-config a host OpenSSL it can't find. okto-core's git2 dep transitively
 # pulls in openssl-sys; this forces the entire dep tree to use an in-tree
 # source build of OpenSSL.
 openssl           = { version = "0.10", features = ["vendored"] }

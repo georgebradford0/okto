@@ -87,28 +87,28 @@ COPY --from=builder /build/target/release/lair /usr/local/bin/lair
 #   * `kill 1` against lair (different uid → EPERM)
 #   * reading `LAIR_MGMT_TOKEN` from `/proc/1/environ` (different uid → EACCES)
 #   * reading `/data/config.json` and `/data/lair/*` if those are 0600 root-owned
-#   * sibling impersonation — agent A can't read agent B's `OCTO_AGENT_TOKEN`
+#   * sibling impersonation — agent A can't read agent B's `OKTO_AGENT_TOKEN`
 #     from `/proc/<B-pid>/environ` because uid checks deny cross-uid reads
 #
-# uid 10001 / user `octo-agent` is kept around as the legacy fallback for
+# uid 10001 / user `okto-agent` is kept around as the legacy fallback for
 # the rare case where the supervisor can't assign a per-agent uid slot.
-RUN useradd -u 10001 -M -N -s /bin/bash octo-agent && \
+RUN useradd -u 10001 -M -N -s /bin/bash okto-agent && \
     for i in $(seq 0 99); do \
-        useradd -u $((10100 + i)) -M -N -s /bin/bash octo-agent-$i; \
+        useradd -u $((10100 + i)) -M -N -s /bin/bash okto-agent-$i; \
     done
 
-LABEL org.opencontainers.image.source=https://github.com/georgebradford0/octo
+LABEL org.opencontainers.image.source=https://github.com/georgebradford0/okto
 LABEL org.opencontainers.image.description="lair — merged lair/agent binary, runs as --role lair by default"
 
 # Operator's host dir is bind-mounted here. config.json, lair/, agents/, and
 # lair-env all live under /data so they survive container restarts and stay
-# visible to the host CLI for `octo logs`, `octo agents list`, etc.
+# visible to the host CLI for `okto logs`, `okto agents list`, etc.
 ENV HOME=/data \
-    OCTO_HOME=/data \
-    OCTO_DATA_DIR=/data/lair \
-    OCTO_AGENTS_DIR=/data/agents \
-    OCTO_SKIP_SHELL_ENV=1 \
-    OCTO_LAIR_BINARY=/usr/local/bin/lair \
+    OKTO_HOME=/data \
+    OKTO_DATA_DIR=/data/lair \
+    OKTO_AGENTS_DIR=/data/agents \
+    OKTO_SKIP_SHELL_ENV=1 \
+    OKTO_LAIR_BINARY=/usr/local/bin/lair \
     NOISE_PORT=8443
 
 EXPOSE 8000 8443
