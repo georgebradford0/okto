@@ -15,6 +15,7 @@ desktop: build
 dev:
 	cd desktop && npm run tauri:dev
 
-# Run just the Vite dev server (browser mode, requires octod running separately)
+# Run just the Vite dev server (browser mode — no Tauri IPC, so the
+# noise_connect command is unavailable; useful for pure UI iteration only).
 dev-web:
 	cd desktop && npm run dev

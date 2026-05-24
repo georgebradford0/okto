@@ -1,5 +1,5 @@
-# octo
-`octo` is a mobile agent management system that runs a fleet of local and remote LLM agents. It was originally designed for coding but can be used to deploy LLM agents for any task.  It supports the Anthropic and any OpenAI-compatible API.  It uses the Noise Protocol to setup an encrypted connection between mobile and server without the need for DNS.
+# okto
+`okto` is a mobile agent management system that runs a fleet of local and remote LLM agents. It was originally designed for coding but can be used to deploy LLM agents for any task.  It supports the Anthropic and any OpenAI-compatible API.  It uses the Noise Protocol to setup an encrypted connection between mobile and server without the need for DNS.
 
 This code is experimental and will change frequently between version updates.
 
@@ -11,11 +11,11 @@ To get up and running you'll need
 
 Grab the CLI on your linux host with the helper script
 ```sh
-curl -fsSL https://raw.githubusercontent.com/georgebradford0/octo/main/scripts/get-cli.sh | sh
+curl -fsSL https://raw.githubusercontent.com/georgebradford0/okto/main/scripts/get-cli.sh | sh
 ```
 then
 ```
-octo init
+okto init
 ```
 It will prompt for:
 - **Anthropic API key** — press Enter to skip.
@@ -25,11 +25,11 @@ It will prompt for:
 
 `init` will then:
 
-1. Persist credentials to `~/.octo/config.json`.
+1. Persist credentials to `~/.okto/config.json`.
 2. Install docker if not already available
 3. Generate a Noise keypair and an Ed25519 SSH keypair (the SSH key is reserved for ops backchannels — e.g. SSHing into a remote host for tailing logs).
-4. Write an env file (`~/.octo/lair-env`) — this is what `docker --env-file` ingests.
-5. `docker pull` the lair image, then `docker run -d --name lair -v ~/.octo:/data -p 8443:8443 …`.
+4. Write an env file (`~/.okto/lair-env`) — this is what `docker --env-file` ingests.
+5. `docker pull` the lair image, then `docker run -d --name lair -v ~/.okto:/data -p 8443:8443 …`.
 6. Wait for the management API on `127.0.0.1:8000/health`, then print a QR code containing the host, port, and Noise pubkey.
 
 Once the QR code prints to the terminal, download the mobile app at (TODO build ios for production and list here) or build code in `mobile/` to local device (iOS or Android).  Open the app, press icon and scan the QR.
@@ -38,39 +38,39 @@ If you are on iOS it will ask for push notification permissions.  These are gene
 
 To tear down everything except the config, run
 ```
-octo destroy
+okto destroy
 ```
 ## Github 
 The project was originally built to manage coding-based projects on Github.  For this reason the `gh` command line client is installed by default on `lair` and all agents.  To use it you'll have to pass in GH_TOKEN as an environment variable, which can be done at init with
 ```
-octo init -e GH_TOKEN=<token>
+okto init -e GH_TOKEN=<token>
 ```
 or after initialization with 
 ```
-octo env set GH_TOKEN=<token>
-octo reload
+okto env set GH_TOKEN=<token>
+okto reload
 ```
 The Github (or Gitlab) MCP can always be added to `lair` instead. It will be propagated to child agents by default.  The caveat for this is that there is no dedicated tools list in the LLM prompt for Github, so usually the model has to be directed by the user to use `gh` but significantly shortens the prompt prefix length.  The system prompt references `gh` and explains that the model has access to it.  If you decide to go with the MCP, the inline `GH_TOKEN` to `init` is not needed and the env var should added in the MCP setup.
 
 ## MCP Support
 MCP servers can be seeded at init time by passing an MCP JSON file:
 ```sh
-octo init --mcp-config <path_to_mcp_json>
+okto init --mcp-config <path_to_mcp_json>
 ```
 An example file is [here](.mcp.json). They can also be added at runtime with CLI and are hot-reloaded 
 ```sh
 # uvx-based server
-octo mcp add --name aws-ec2 --command uvx \
+okto mcp add --name aws-ec2 --command uvx \
   --env AWS_ACCESS_KEY_ID=... --env AWS_SECRET_ACCESS_KEY=... --env AWS_REGION=us-east-1 \
   -- awslabs.amazon-ec2-mcp-server
 
 # Add to a specific child agent (default is lair)
-octo mcp add --agent lair-myrepo --name linear --command npx \
+okto mcp add --agent lair-myrepo --name linear --command npx \
   --env LINEAR_API_KEY=lin_api_... \
   -- -y @linear/mcp-server
 
-octo mcp list
-octo mcp remove --name github
+okto mcp list
+okto mcp remove --name github
 ```
 One thing to note.  MCPs by default are inherited by parent to spawned child.  This will probably change but I haven't decided on a design to handle MCP inheritance in detail.  Currently the CLI can only update MCPs for local agents, this will probably change soon.
 

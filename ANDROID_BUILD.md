@@ -20,7 +20,7 @@ gh workflow run android.yml -f track=production
 
 | Secret | How to set |
 |---|---|
-| `ANDROID_KEYSTORE` | `base64 -i octo-upload-key.keystore \| pbcopy` |
+| `ANDROID_KEYSTORE` | `base64 -i okto-upload-key.keystore \| pbcopy` |
 | `ANDROID_KEYSTORE_PASSWORD` | keystore password |
 | `ANDROID_KEY_ALIAS` | key alias |
 | `ANDROID_KEY_PASSWORD` | key password |
@@ -30,7 +30,7 @@ gh workflow run android.yml -f track=production
 
 1. Checks out code and installs JS deps (`npm ci`) with Node 22
 2. Sets up Java 17 (Temurin) and Ruby 3.3
-3. Decodes the keystore to `/tmp/octo-upload-key.keystore`
+3. Decodes the keystore to `/tmp/okto-upload-key.keystore`
 4. Writes `android/gradle.properties` with signing config
 5. Decodes the Play service account JSON to `/tmp/play-service-account.json`
 6. Runs `bundle exec fastlane android <track>`

@@ -1,6 +1,6 @@
 // Wire schema for the /stream WebSocket between mobile and lair/agent.
 //
-// Mirrors octo_core::ChatEvent in core/src/lib.rs (Rust) plus the small set of
+// Mirrors okto_core::ChatEvent in core/src/lib.rs (Rust) plus the small set of
 // client → server frames. Update this file whenever the Rust enum or the
 // stream-handler JSON shape changes; both sides MUST stay in sync.
 //
@@ -52,7 +52,7 @@ export interface AgentInfo {
   parent?: string  // name of the spawning agent, if any (omitted for operator-spawned roots)
 }
 
-/** Mirrors octo_core::TaskRecord. */
+/** Mirrors okto_core::TaskRecord. */
 export interface TaskRecord {
   task_id:      string
   command:      string
