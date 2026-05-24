@@ -2547,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "lair"
-version = "0.14.3"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "axum",
