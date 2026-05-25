@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { parseQrPayload, type QrPayload } from './qr'
+import { parseQrPayload, formatQrPayload, type QrPayload } from './qr'
 import {
   encodeClientFrame, parseServerEvent,
   type AgentInfo, type ServerEvent, type TaskRecord,
@@ -27,6 +27,27 @@ const STOP_ACK_TIMEOUT_MS = 3000
 const CANCEL_ACK_TIMEOUT_MS = 6000
 
 const EMPTY_TASKS: TaskRecord[] = []
+
+// localStorage key for the persisted client state. Bump the suffix on
+// incompatible schema changes so old blobs are silently ignored instead of
+// crashing the hydrate path.
+const STORAGE_KEY = 'okto.desktop.state.v1'
+
+/** What we serialize to localStorage between launches. Notably *not*
+ *  persisted: connStatus (rebuilt from WS state on reconnect), the tunnel
+ *  port (a fresh ephemeral one is bound by the Tauri side every launch),
+ *  and the transient interrupt/cancel latches. */
+interface PersistedState {
+  qrPayload?:    QrPayload
+  itemsByAgent?: Record<string, ChatItem[]>
+  draftByAgent?: Record<string, string>
+  tasksByAgent?: Record<string, TaskRecord[]>
+  activeAgent?:  string
+}
+
+/** Debounce window for the save effect — coalesce bursts of state updates
+ *  (e.g. each text-delta during streaming) into one write. */
+const PERSIST_DEBOUNCE_MS = 500
 
 // ── Chat item model ──────────────────────────────────────────────────────────
 //
@@ -115,6 +136,15 @@ function App() {
   // server's interrupt_ack never arrives. Keyed by agent id.
   const stopAckTimersRef = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({})
 
+  // Last QrPayload that produced an OPEN master WS — used both as the
+  // "same lair?" check inside connect() and as the qrPayload we persist
+  // so the next launch can auto-reconnect.
+  const lastQrPayloadRef = useRef<QrPayload | null>(null)
+  // Guards the hydrate effect (so it runs exactly once) and the save effect
+  // (which we skip until hydration has completed, otherwise the first
+  // empty render would clobber our stored state with defaults).
+  const hydratedRef = useRef(false)
+
   const setDraft = (s: string) => {
     setDraftByAgent(prev => ({ ...prev, [activeAgent]: s }))
   }
@@ -143,6 +173,64 @@ function App() {
     stickToBottomRef.current = true
     if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
   }, [activeAgent])
+
+  // ── Persistence ──────────────────────────────────────────────────────────
+  //
+  // One-shot hydrate on mount: pull the last session out of localStorage,
+  // restore the per-agent slots + active tab + last QR, and if we have a
+  // stored QR kick off an auto-reconnect so the user doesn't have to
+  // re-paste it every launch.
+  useEffect(() => {
+    if (hydratedRef.current) return
+    let stored: PersistedState | null = null
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY)
+      if (raw) stored = JSON.parse(raw) as PersistedState
+    } catch { /* corrupt blob → start clean */ }
+    // Mark hydrated *after* the read so the save effect doesn't fire
+    // mid-restore and write defaults back over our stored state.
+    hydratedRef.current = true
+    if (!stored) return
+    if (stored.itemsByAgent) setItemsByAgent(stored.itemsByAgent)
+    if (stored.draftByAgent) setDraftByAgent(stored.draftByAgent)
+    if (stored.tasksByAgent) setTasksByAgent(stored.tasksByAgent)
+    if (stored.activeAgent)  setActiveAgent(stored.activeAgent)
+    if (stored.qrPayload) {
+      lastQrPayloadRef.current = stored.qrPayload
+      // Prefill the connect-screen textarea so a failed auto-reconnect
+      // leaves the user one click from retrying (and so the input shows
+      // what we're connected to if they later hit Disconnect).
+      setQrInput(formatQrPayload(stored.qrPayload))
+      const childToReopen = stored.activeAgent && stored.activeAgent !== LAIR_ID
+        ? stored.activeAgent
+        : null
+      // Fire and forget — failures surface via setStatus({kind:'error'})
+      // and the user lands on the connect screen with the QR already known.
+      connectInternal(stored.qrPayload, /* preserveState */ true, childToReopen)
+        .catch(() => { /* already surfaced via status */ })
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Save on every meaningful state change, debounced so streaming text
+  // deltas don't write to disk hundreds of times per second. Skipped
+  // pre-hydration so the initial render's empty defaults can't clobber a
+  // freshly-loaded session.
+  useEffect(() => {
+    if (!hydratedRef.current) return
+    const t = setTimeout(() => {
+      const payload: PersistedState = {
+        qrPayload:    lastQrPayloadRef.current ?? undefined,
+        itemsByAgent,
+        draftByAgent,
+        tasksByAgent,
+        activeAgent,
+      }
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(payload)) }
+      catch { /* over quota — drop this save, next one will retry */ }
+    }, PERSIST_DEBOUNCE_MS)
+    return () => clearTimeout(t)
+  }, [itemsByAgent, draftByAgent, tasksByAgent, activeAgent])
 
   const clearStopLock = (agentId: string) => {
     const t = stopAckTimersRef.current[agentId]
@@ -243,27 +331,43 @@ function App() {
     applyChatEvent(LAIR_ID, ev)
   }
 
-  const connect = async () => {
-    const target = parseQrPayload(qrInput)
-    if (!target) {
-      setStatus({ kind: 'error', message: 'Invalid QR payload — expected 2:<host>:<port>:<pubkey>' })
-      return
-    }
+  /** Reusable connect path used by both user-driven `connect()` and the
+   *  auto-reconnect on launch from persisted state. When `preserveState`
+   *  is true we leave items/drafts/tasks alone (caller asserts this is the
+   *  same lair as before, so the restored history is still valid); when
+   *  false we wipe to a clean slate. `childToReopen` lets the caller name
+   *  a non-lair active agent whose child WS should be opened immediately
+   *  on master-open so the user's saved tab is usable. */
+  const connectInternal = async (
+    target:       QrPayload,
+    preserveState:boolean,
+    childToReopen:string | null,
+  ) => {
     setStatus({ kind: 'connecting', target })
-    // Fresh session — wipe every per-agent slot so nothing leaks across
-    // logins to different lairs.
-    setItemsByAgent({})
-    setDraftByAgent({})
-    setConnStatusByAgent({ [LAIR_ID]: 'pending' })
-    setStopSentByAgent({})
-    setTasksByAgent({})
-    setCancellingIds(new Set())
-    for (const t of cancelTimersRef.current.values()) clearTimeout(t)
-    cancelTimersRef.current.clear()
-    stopAckTimersRef.current = {}
-    setAgents([])
-    setActiveAgent(LAIR_ID)
-    setShowTasksModal(false)
+    if (!preserveState) {
+      setItemsByAgent({})
+      setDraftByAgent({})
+      setConnStatusByAgent({ [LAIR_ID]: 'pending' })
+      setStopSentByAgent({})
+      setTasksByAgent({})
+      setCancellingIds(new Set())
+      for (const t of cancelTimersRef.current.values()) clearTimeout(t)
+      cancelTimersRef.current.clear()
+      stopAckTimersRef.current = {}
+      setAgents([])
+      setActiveAgent(LAIR_ID)
+      setShowTasksModal(false)
+    } else {
+      // Restored session — reset only the transient slices that depend on
+      // a live WS. Persistent slots stay intact.
+      setConnStatusByAgent(prev => ({ ...prev, [LAIR_ID]: 'pending' }))
+      setStopSentByAgent({})
+      setCancellingIds(new Set())
+      for (const t of cancelTimersRef.current.values()) clearTimeout(t)
+      cancelTimersRef.current.clear()
+      stopAckTimersRef.current = {}
+      setShowTasksModal(false)
+    }
     try {
       const tunnelPort = await invoke<number>('noise_connect', {
         host:            target.host,
@@ -272,7 +376,17 @@ function App() {
       })
       const ws = new WebSocket(`ws://127.0.0.1:${tunnelPort}/stream`)
       masterWsRef.current = ws
-      ws.onopen  = () => setStatus({ kind: 'connected', target, tunnelPort, ws })
+      ws.onopen  = () => {
+        setStatus({ kind: 'connected', target, tunnelPort, ws })
+        // Mark this QR as the canonical "what we're connected to" so the
+        // save effect persists it and future connect() attempts can detect
+        // same-vs-different lair.
+        lastQrPayloadRef.current = target
+        // Re-open the WS for the restored active child (if any) so the
+        // user's saved tab is immediately interactive — otherwise typing
+        // into a child chat would silently no-op until they re-click it.
+        if (childToReopen) openChildWs(tunnelPort, childToReopen)
+      }
       ws.onclose = () => {
         masterWsRef.current = null
         // Master is gone — close any child WSes; they all sit on the same
@@ -304,6 +418,24 @@ function App() {
       setStatus({ kind: 'error', message: String(e) })
       setConnStatusByAgent(prev => ({ ...prev, [LAIR_ID]: 'error' }))
     }
+  }
+
+  const connect = async () => {
+    const target = parseQrPayload(qrInput)
+    if (!target) {
+      setStatus({ kind: 'error', message: 'Invalid QR payload — expected 2:<host>:<port>:<pubkey>' })
+      return
+    }
+    // If the user re-pasted the same QR (same host/port/pubkey), keep the
+    // restored session intact and just reopen the tunnel. A new QR points
+    // at a different lair — wipe and start over.
+    const last = lastQrPayloadRef.current
+    const sameLair = !!last
+      && last.host === target.host
+      && last.port === target.port
+      && last.pk   === target.pk
+    const child = sameLair && activeAgent !== LAIR_ID ? activeAgent : null
+    await connectInternal(target, sameLair, child)
   }
 
   const openChildWs = (tunnelPort: number, name: string): WebSocket | null => {
