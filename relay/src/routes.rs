@@ -83,9 +83,8 @@ pub struct RegisterBody {
     #[serde(default)]
     challenge_nonce: Option<String>,
     /// `"sandbox"` or `"production"` — which APNs gateway the device's token
-    /// resolves on. Older clients omit this; the relay falls back to
-    /// `AppState::default_env` (set from the `APNS_PRODUCTION` flag) in that
-    /// case. Ignored by `/unregister`, which shares this struct.
+    /// resolves on. Required by `/register`; ignored by `/unregister`, which
+    /// shares this struct.
     #[serde(default)]
     environment: Option<String>,
 }
@@ -111,10 +110,10 @@ pub async fn register(
         warn!("[routes] /register rejected: lair_pubkey not a valid base32 Ed25519 key");
         return (StatusCode::BAD_REQUEST, "lair_pubkey: not a valid base32 Ed25519 key").into_response();
     }
-    let env = match resolve_env(body.environment.as_deref(), state.default_env) {
-        Ok(e) => e,
-        Err(bad) => {
-            warn!("[routes] /register rejected: bad environment={bad}");
+    let env = match body.environment.as_deref().and_then(|s| Environment::from_str(s).ok()) {
+        Some(e) => e,
+        None => {
+            warn!("[routes] /register rejected: environment missing or invalid={:?}", body.environment);
             return (StatusCode::BAD_REQUEST, "environment must be 'sandbox' or 'production'").into_response();
         }
     };
@@ -156,26 +155,15 @@ pub async fn register(
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// Pick the gateway for this request: the body value if present and valid,
-/// otherwise the relay's configured default. Returns `Err(raw)` if the body
-/// supplied an unknown string.
-fn resolve_env(body_env: Option<&str>, default: Environment) -> Result<Environment, &str> {
-    match body_env {
-        None              => Ok(default),
-        Some(s) if s.is_empty() => Ok(default),
-        Some(s) => Environment::from_str(s).map_err(|_| s),
-    }
-}
-
 #[derive(Deserialize)]
 pub struct ChallengeBody {
     device_token: String,
     platform:     String,
-    /// Same semantics as [`RegisterBody::environment`]. The challenge push
-    /// itself must go to the gateway the token resolves on, otherwise APNs
-    /// rejects with `BadDeviceToken` before the device ever sees the nonce.
-    #[serde(default)]
-    environment: Option<String>,
+    /// Required. Same semantics as [`RegisterBody::environment`]. The
+    /// challenge push itself must go to the gateway the token resolves on —
+    /// otherwise APNs rejects with `BadDeviceToken` before the device ever
+    /// sees the nonce.
+    environment: String,
 }
 
 /// Step one of registration: prove the caller controls `device_token` by
@@ -201,10 +189,10 @@ pub async fn register_challenge(
         warn!("[routes] /register/challenge rejected: device_token not hex");
         return (StatusCode::BAD_REQUEST, "device_token must be hex").into_response();
     }
-    let env = match resolve_env(body.environment.as_deref(), state.default_env) {
+    let env = match Environment::from_str(&body.environment) {
         Ok(e) => e,
-        Err(bad) => {
-            warn!("[routes] /register/challenge rejected: bad environment={bad}");
+        Err(_) => {
+            warn!("[routes] /register/challenge rejected: bad environment={}", body.environment);
             return (StatusCode::BAD_REQUEST, "environment must be 'sandbox' or 'production'").into_response();
         }
     };
@@ -393,9 +381,17 @@ pub async fn notify(
         }
         // Per-row environment so a relay shared across dev (Xcode) and
         // TestFlight/App Store builds pushes each token through its own
-        // gateway. Rows migrated from the pre-env schema default to
-        // 'production' (matches the old single-gateway behavior).
-        let env = Environment::from_str(&s.environment).unwrap_or(state.default_env);
+        // gateway. The DB CHECK constraint guarantees the string is valid,
+        // so the parse never realistically fails — skip the row if it does
+        // rather than silently pushing to the wrong gateway.
+        let env = match Environment::from_str(&s.environment) {
+            Ok(e) => e,
+            Err(_) => {
+                warn!("[routes] /notify skipping subscriber with corrupt env={:?} token=…{}",
+                    s.environment, tail4(&s.device_token));
+                continue;
+            }
+        };
         match state.apns.push(&s.device_token, &state.bundle_id, env, &payload).await {
             PushOutcome::Delivered    => delivered += 1,
             PushOutcome::InvalidToken => {

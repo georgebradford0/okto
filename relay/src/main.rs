@@ -47,14 +47,6 @@ struct Args {
     #[arg(long, env = "APNS_BUNDLE_ID")]
     apns_bundle_id: String,
 
-    /// Default APNs gateway when a client `/register` request omits the
-    /// `environment` field. Live (`true`) maps to production, dev (`false`) to
-    /// sandbox. Clients on the new schema send `environment` explicitly so
-    /// dev (Xcode) and TestFlight/App Store devices coexist; this flag only
-    /// covers older clients that haven't been updated.
-    #[arg(long, env = "APNS_PRODUCTION", default_value_t = true, action = clap::ArgAction::Set)]
-    apns_production: bool,
-
     /// Subscriptions not re-registered within this many days are pruned. The
     /// mobile client re-registers on every chat-mount, so live devices stay;
     /// abandoned or abusively-created rows age out, bounding table growth.
@@ -66,9 +58,6 @@ pub struct AppState {
     pub db:        db::Db,
     pub apns:      apns::Client,
     pub bundle_id: String,
-    /// Gateway used when a client `/register` body omits `environment` — kept
-    /// for backwards compatibility with the pre-multi-env mobile clients.
-    pub default_env: apns::Environment,
 }
 
 #[tokio::main]
@@ -78,15 +67,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
-    let default_env = if args.apns_production {
-        apns::Environment::Production
-    } else {
-        apns::Environment::Sandbox
-    };
-    tracing::info!(
-        "[relay] starting; listen={} bundle={} default_env={}",
-        args.listen, args.apns_bundle_id, default_env.as_str(),
-    );
+    tracing::info!("[relay] starting; listen={} bundle={}", args.listen, args.apns_bundle_id);
 
     let db = db::Db::open(&args.db_path).context("open db")?;
     let apns = apns::Client::new(
@@ -99,7 +80,6 @@ async fn main() -> anyhow::Result<()> {
         db,
         apns,
         bundle_id: args.apns_bundle_id,
-        default_env,
     });
 
     // Periodically prune subscriptions that no live device has refreshed.
