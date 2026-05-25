@@ -1061,7 +1061,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "okto-core",
  "serde",
@@ -3170,7 +3170,7 @@ dependencies = [
 
 [[package]]
 name = "okto"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "clap",

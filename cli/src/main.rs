@@ -90,7 +90,7 @@ enum Command {
         yes: bool,
     },
 
-    /// Restart lair (and optionally agents) — picks up env / binary changes
+    /// Restart lair to update env / config
     Reload {
         /// Specific agent names to also restart
         #[arg(long, value_name = "NAME", num_args = 1..)]
