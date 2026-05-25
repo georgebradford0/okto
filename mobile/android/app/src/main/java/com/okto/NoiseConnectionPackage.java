@@ -1,4 +1,4 @@
-package com.octo;
+package com.okto;
 
 import com.facebook.react.TurboReactPackage;
 import com.facebook.react.bridge.NativeModule;

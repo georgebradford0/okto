@@ -1,4 +1,4 @@
-package com.octo;
+package com.okto;
 
 import android.util.Log;
 

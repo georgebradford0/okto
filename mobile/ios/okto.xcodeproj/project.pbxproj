@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		0C80B921A6F3F58F76C31292 /* libPods-octo.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5DCACB8F33CDC322A6C60F78 /* libPods-octo.a */; };
+		0C80B921A6F3F58F76C31292 /* libPods-okto.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5DCACB8F33CDC322A6C60F78 /* libPods-okto.a */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		68C787C78F268F9A20A78F56 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
@@ -21,22 +21,22 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		13B07F961A680F5B00A75B9A /* octo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = octo.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = octo/Images.xcassets; sourceTree = "<group>"; };
-		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = octo/Info.plist; sourceTree = "<group>"; };
-		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = octo/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
-		3B4392A12AC88292D35C810B /* Pods-octo.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-octo.debug.xcconfig"; path = "Target Support Files/Pods-octo/Pods-octo.debug.xcconfig"; sourceTree = "<group>"; };
-		5709B34CF0A7D63546082F79 /* Pods-octo.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-octo.release.xcconfig"; path = "Target Support Files/Pods-octo/Pods-octo.release.xcconfig"; sourceTree = "<group>"; };
-		5DCACB8F33CDC322A6C60F78 /* libPods-octo.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-octo.a"; sourceTree = BUILT_PRODUCTS_DIR; };
-		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = octo/AppDelegate.swift; sourceTree = "<group>"; };
-		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = octo/LaunchScreen.storyboard; sourceTree = "<group>"; };
-		AA11BB211A68108700A75C1A /* NoiseConnectionModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NoiseConnectionModule.swift; path = octo/NoiseConnectionModule.swift; sourceTree = "<group>"; };
-		AA11BB241A68108700A75C1A /* NoiseConnectionModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = NoiseConnectionModule.m; path = octo/NoiseConnectionModule.m; sourceTree = "<group>"; };
-		ARIMO001B00000000000000001 /* Arimo-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; name = "Arimo-Regular.ttf"; path = "octo/Arimo-Regular.ttf"; sourceTree = "<group>"; };
-		ARIMO002B00000000000000001 /* Arimo-Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; name = "Arimo-Italic.ttf"; path = "octo/Arimo-Italic.ttf"; sourceTree = "<group>"; };
-		BCBC0001A68108700A75C001 /* PushModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PushModule.swift; path = octo/PushModule.swift; sourceTree = "<group>"; };
-		BCBC0003A68108700A75C001 /* PushModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = PushModule.m; path = octo/PushModule.m; sourceTree = "<group>"; };
-		BCBC0005A68108700A75C001 /* octo.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = octo.entitlements; path = octo/octo.entitlements; sourceTree = "<group>"; };
+		13B07F961A680F5B00A75B9A /* okto.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = okto.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = okto/Images.xcassets; sourceTree = "<group>"; };
+		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = okto/Info.plist; sourceTree = "<group>"; };
+		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = okto/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		3B4392A12AC88292D35C810B /* Pods-okto.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-okto.debug.xcconfig"; path = "Target Support Files/Pods-okto/Pods-okto.debug.xcconfig"; sourceTree = "<group>"; };
+		5709B34CF0A7D63546082F79 /* Pods-okto.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-okto.release.xcconfig"; path = "Target Support Files/Pods-okto/Pods-okto.release.xcconfig"; sourceTree = "<group>"; };
+		5DCACB8F33CDC322A6C60F78 /* libPods-okto.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-okto.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = okto/AppDelegate.swift; sourceTree = "<group>"; };
+		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = okto/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		AA11BB211A68108700A75C1A /* NoiseConnectionModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NoiseConnectionModule.swift; path = okto/NoiseConnectionModule.swift; sourceTree = "<group>"; };
+		AA11BB241A68108700A75C1A /* NoiseConnectionModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = NoiseConnectionModule.m; path = okto/NoiseConnectionModule.m; sourceTree = "<group>"; };
+		ARIMO001B00000000000000001 /* Arimo-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; name = "Arimo-Regular.ttf"; path = "okto/Arimo-Regular.ttf"; sourceTree = "<group>"; };
+		ARIMO002B00000000000000001 /* Arimo-Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; name = "Arimo-Italic.ttf"; path = "okto/Arimo-Italic.ttf"; sourceTree = "<group>"; };
+		BCBC0001A68108700A75C001 /* PushModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PushModule.swift; path = okto/PushModule.swift; sourceTree = "<group>"; };
+		BCBC0003A68108700A75C001 /* PushModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = PushModule.m; path = okto/PushModule.m; sourceTree = "<group>"; };
+		BCBC0005A68108700A75C001 /* okto.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = okto.entitlements; path = okto/okto.entitlements; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -45,14 +45,14 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				0C80B921A6F3F58F76C31292 /* libPods-octo.a in Frameworks */,
+				0C80B921A6F3F58F76C31292 /* libPods-okto.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		13B07FAE1A68108700A75B9A /* octo */ = {
+		13B07FAE1A68108700A75B9A /* okto */ = {
 			isa = PBXGroup;
 			children = (
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
@@ -61,21 +61,21 @@
 				AA11BB241A68108700A75C1A /* NoiseConnectionModule.m */,
 				BCBC0001A68108700A75C001 /* PushModule.swift */,
 				BCBC0003A68108700A75C001 /* PushModule.m */,
-				BCBC0005A68108700A75C001 /* octo.entitlements */,
+				BCBC0005A68108700A75C001 /* okto.entitlements */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */,
 				13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */,
 				ARIMO001B00000000000000001 /* Arimo-Regular.ttf */,
 				ARIMO002B00000000000000001 /* Arimo-Italic.ttf */,
 			);
-			name = octo;
+			name = okto;
 			sourceTree = "<group>";
 		};
 		2D16E6871FA4F8E400B85C8A /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
-				5DCACB8F33CDC322A6C60F78 /* libPods-octo.a */,
+				5DCACB8F33CDC322A6C60F78 /* libPods-okto.a */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -90,7 +90,7 @@
 		83CBB9F61A601CBA00E9B192 = {
 			isa = PBXGroup;
 			children = (
-				13B07FAE1A68108700A75B9A /* octo */,
+				13B07FAE1A68108700A75B9A /* okto */,
 				832341AE1AAA6A7D00B99B32 /* Libraries */,
 				83CBBA001A601CBA00E9B192 /* Products */,
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
@@ -104,7 +104,7 @@
 		83CBBA001A601CBA00E9B192 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				13B07F961A680F5B00A75B9A /* octo.app */,
+				13B07F961A680F5B00A75B9A /* okto.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -112,8 +112,8 @@
 		BBD78D7AC51CEA395F1C20DB /* Pods */ = {
 			isa = PBXGroup;
 			children = (
-				3B4392A12AC88292D35C810B /* Pods-octo.debug.xcconfig */,
-				5709B34CF0A7D63546082F79 /* Pods-octo.release.xcconfig */,
+				3B4392A12AC88292D35C810B /* Pods-okto.debug.xcconfig */,
+				5709B34CF0A7D63546082F79 /* Pods-okto.release.xcconfig */,
 			);
 			path = Pods;
 			sourceTree = "<group>";
@@ -121,9 +121,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		13B07F861A680F5B00A75B9A /* octo */ = {
+		13B07F861A680F5B00A75B9A /* okto */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "octo" */;
+			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "okto" */;
 			buildPhases = (
 				C38B50BA6285516D6DCD4F65 /* [CP] Check Pods Manifest.lock */,
 				13B07F871A680F5B00A75B9A /* Sources */,
@@ -137,9 +137,9 @@
 			);
 			dependencies = (
 			);
-			name = octo;
-			productName = octo;
-			productReference = 13B07F961A680F5B00A75B9A /* octo.app */;
+			name = okto;
+			productName = okto;
+			productReference = 13B07F961A680F5B00A75B9A /* okto.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -160,7 +160,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "octo" */;
+			buildConfigurationList = 83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "okto" */;
 			compatibilityVersion = "Xcode 12.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -173,7 +173,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				13B07F861A680F5B00A75B9A /* octo */,
+				13B07F861A680F5B00A75B9A /* okto */,
 			);
 		};
 /* End PBXProject section */
@@ -216,15 +216,15 @@
 			files = (
 			);
 			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-octo/Pods-octo-frameworks-${CONFIGURATION}-input-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-okto/Pods-okto-frameworks-${CONFIGURATION}-input-files.xcfilelist",
 			);
 			name = "[CP] Embed Pods Frameworks";
 			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-octo/Pods-octo-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-okto/Pods-okto-frameworks-${CONFIGURATION}-output-files.xcfilelist",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-octo/Pods-octo-frameworks.sh\"\n";
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-okto/Pods-okto-frameworks.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 		C38B50BA6285516D6DCD4F65 /* [CP] Check Pods Manifest.lock */ = {
@@ -242,7 +242,7 @@
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"$(DERIVED_FILE_DIR)/Pods-octo-checkManifestLockResult.txt",
+				"$(DERIVED_FILE_DIR)/Pods-okto-checkManifestLockResult.txt",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -255,15 +255,15 @@
 			files = (
 			);
 			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-octo/Pods-octo-resources-${CONFIGURATION}-input-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-okto/Pods-okto-resources-${CONFIGURATION}-input-files.xcfilelist",
 			);
 			name = "[CP] Copy Pods Resources";
 			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-octo/Pods-octo-resources-${CONFIGURATION}-output-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-okto/Pods-okto-resources-${CONFIGURATION}-output-files.xcfilelist",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-octo/Pods-octo-resources.sh\"\n";
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-okto/Pods-okto-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
@@ -286,15 +286,15 @@
 /* Begin XCBuildConfiguration section */
 		13B07F941A680F5B00A75B9A /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 3B4392A12AC88292D35C810B /* Pods-octo.debug.xcconfig */;
+			baseConfigurationReference = 3B4392A12AC88292D35C810B /* Pods-okto.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = octo/octo.entitlements;
+				CODE_SIGN_ENTITLEMENTS = okto/okto.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = Y9M847D6NV;
 				ENABLE_BITCODE = NO;
-				INFOPLIST_FILE = octo/Info.plist;
+				INFOPLIST_FILE = okto/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -307,7 +307,7 @@
 					"-lc++",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.okto;
-				PRODUCT_NAME = octo;
+				PRODUCT_NAME = okto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
@@ -318,14 +318,14 @@
 		};
 		13B07F951A680F5B00A75B9A /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 5709B34CF0A7D63546082F79 /* Pods-octo.release.xcconfig */;
+			baseConfigurationReference = 5709B34CF0A7D63546082F79 /* Pods-okto.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = octo/octo.entitlements;
+				CODE_SIGN_ENTITLEMENTS = okto/okto.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = Y9M847D6NV;
-				INFOPLIST_FILE = octo/Info.plist;
+				INFOPLIST_FILE = okto/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -338,7 +338,7 @@
 					"-lc++",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.okto;
-				PRODUCT_NAME = octo;
+				PRODUCT_NAME = okto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -505,7 +505,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "octo" */ = {
+		13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "okto" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				13B07F941A680F5B00A75B9A /* Debug */,
@@ -514,7 +514,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "octo" */ = {
+		83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "okto" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				83CBBA201A601CBA00E9B192 /* Debug */,

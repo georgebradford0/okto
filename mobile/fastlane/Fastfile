@@ -13,7 +13,7 @@ platform :ios do
 
     increment_build_number(
       build_number: max_build_number + 1,
-      xcodeproj: "ios/octo.xcodeproj",
+      xcodeproj: "ios/okto.xcodeproj",
     )
   end
 

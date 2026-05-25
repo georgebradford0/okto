@@ -38,7 +38,7 @@ export interface CachedMessage {
   output?: string
 }
 
-const storage = createMMKV({ id: 'octo-history' })
+const storage = createMMKV({ id: 'okto-history' })
 
 const keyFor = (key: string) => `history:v${VERSION}:${key}`
 

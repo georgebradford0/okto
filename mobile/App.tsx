@@ -850,7 +850,7 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
         <View style={s.scannerTopBar}>
           <Image source={require('./assets/icon.png')} style={s.scannerIcon} />
           <Text style={s.scannerTitle}>Scan Session QR</Text>
-          <Text style={s.scannerSubtitle}>Point at the code shown by your octo server</Text>
+          <Text style={s.scannerSubtitle}>Point at the code shown by your Okto server</Text>
         </View>
         <View style={[s.scannerReticle, { width: reticleSize, height: reticleSize }]}>
           <View style={[s.scannerCorner, s.cornerTL]} />

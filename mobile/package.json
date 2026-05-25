@@ -1,5 +1,5 @@
 {
-  "name": "octo",
+  "name": "okto",
   "version": "0.0.1",
   "private": true,
   "scripts": {
@@ -51,7 +51,7 @@
     "type": "modules",
     "jsSrcsDir": "src",
     "android": {
-      "javaPackageName": "com.octo"
+      "javaPackageName": "com.okto"
     }
   }
 }
