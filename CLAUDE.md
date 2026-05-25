@@ -12,7 +12,19 @@ Do **not** commit debug/diagnostic logging (`println!`, `console.log`, etc. adde
 
 Linux only — x86_64 and aarch64. macOS and Windows are out of scope for the runtime host. The `okto` CLI is built per-Linux-arch and published via the `cli.yml` GitHub Actions workflow; the lair runtime ships exclusively as a multi-arch Docker image (`ghcr.io/georgebradford0/lair`).
 
-Image releases run via the `lair.yml` workflow (manual dispatch): after a `lair/Cargo.toml` version bump, run `gh workflow run lair.yml --ref main`. The workflow does a `docker buildx` build for `linux/amd64,linux/arm64` on a GitHub-hosted runner and pushes to ghcr. `scripts/build-lair-image.sh` remains as a local fallback.
+Image releases are cut **locally**, by hand, after each `lair/Cargo.toml` version bump:
+
+```sh
+docker buildx build \
+  --builder multiplatform \
+  --platform linux/amd64,linux/arm64 \
+  -f lair/Dockerfile \
+  -t ghcr.io/georgebradford0/lair:<version> \
+  -t ghcr.io/georgebradford0/lair:latest \
+  --push .
+```
+
+There is no CI workflow for the lair image — the arm64 leg under QEMU takes long enough that pushing from a developer machine is the supported path. Make sure `docker login ghcr.io` has been run beforehand.
 
 ## Binaries & deployment
 
@@ -30,7 +42,7 @@ Build:
 cargo build --release -p okto
 
 # Lair image — multi-arch, pushed to ghcr by hand after each version bump.
-scripts/build-lair-image.sh
+# See the "Platform" section above for the full `docker buildx` invocation.
 ```
 
 The CLI binaries end up at `target/release/okto`; CI publishes them per-target as Release assets attached to `cli-v<version>`. The lair image is tagged `ghcr.io/georgebradford0/lair:<version>` and `:latest`.
@@ -160,8 +172,7 @@ Inheritance is a snapshot at create time — subsequent edits to lair's `mcp.jso
 |----------|--------------|
 | `cli.yml` | Builds the `okto` CLI per-target and uploads as Release assets. |
 | `relay.yml` | Builds `okto-relay` per-Linux-arch and uploads as assets on `relay-v<version>` (read from `relay/Cargo.toml`). |
-| `lair.yml` | Multi-arch `docker buildx` of `lair/Dockerfile`, pushes to `ghcr.io/<owner>/lair:<version>` + `:latest`. |
 | `android.yml` | Builds AAB via fastlane, uploads to Google Play. |
 | `ios.yml` | Builds on macOS runner, optionally uploads to TestFlight. |
 
-`scripts/build-lair-image.sh` is a local fallback for `lair.yml` when CI is unavailable.
+The lair image is **not** built by CI — see the "Platform" section above for the local `docker buildx` invocation that builds + pushes it to ghcr.
