@@ -58,6 +58,16 @@ export async function registerWithRelay(baseUrl: string, log: (m: string) => voi
     return
   }
 
+  // Which APNs gateway this build's token resolves on. The relay needs to
+  // know because a token minted under a development provisioning profile only
+  // works on the sandbox gateway, regardless of what okto.entitlements says.
+  let environment: 'sandbox' | 'production' = 'production'
+  try {
+    environment = await NativePush.apsEnvironment()
+  } catch (e) {
+    log(`[push] apsEnvironment failed, defaulting to production: ${String(e)}`)
+  }
+
   const relay = info.relay_url.replace(/\/$/, '')
 
   // Step 1 — ask the relay to prove we control this device token. It sends a
@@ -66,7 +76,7 @@ export async function registerWithRelay(baseUrl: string, log: (m: string) => voi
     const res = await fetch(`${relay}/register/challenge`, {
       method:  'POST',
       headers: { 'content-type': 'application/json' },
-      body:    JSON.stringify({ device_token: token, platform: 'ios' }),
+      body:    JSON.stringify({ device_token: token, platform: 'ios', environment }),
     })
     if (!res.ok) { log(`[push] /register/challenge HTTP ${res.status}`); return }
   } catch (e) {
@@ -98,6 +108,7 @@ export async function registerWithRelay(baseUrl: string, log: (m: string) => voi
         platform:        'ios',
         lair_pubkey:     info.relay_signing_pubkey,
         challenge_nonce: nonce,
+        environment,
       }),
     })
     if (!res.ok) {

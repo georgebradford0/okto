@@ -14,6 +14,9 @@ RCT_EXTERN_METHOD(awaitRegistrationChallenge:(nonnull NSNumber *)timeoutMs
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
+RCT_EXTERN_METHOD(apsEnvironment:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
 + (BOOL)requiresMainQueueSetup { return NO; }
 
 @end

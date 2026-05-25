@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     lair_pubkey  TEXT NOT NULL,
     created_at   INTEGER NOT NULL,
     last_seen    INTEGER NOT NULL,
+    environment  TEXT NOT NULL DEFAULT 'production'
+                 CHECK(environment IN ('sandbox','production')),
     PRIMARY KEY (device_token, lair_pubkey)
 );
 CREATE INDEX IF NOT EXISTS idx_subs_pubkey ON subscriptions(lair_pubkey);
@@ -47,6 +49,7 @@ pub struct Db {
 pub struct Subscription {
     pub device_token: String,
     pub platform:     String,
+    pub environment:  String,
 }
 
 impl Db {
@@ -79,6 +82,25 @@ impl Db {
             ).context("migrate subscriptions.last_seen")?;
             info!("[db] migrated subscriptions: added last_seen column");
         }
+
+        // Migrate pre-`environment` databases. Existing rows default to
+        // 'production' since the relay's previous single-gateway mode was
+        // production for live deployments — that keeps existing TestFlight/App
+        // Store devices pushing through the same gateway after upgrade.
+        let has_environment = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('subscriptions') WHERE name = 'environment'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        if !has_environment {
+            conn.execute_batch(
+                "ALTER TABLE subscriptions ADD COLUMN environment TEXT NOT NULL DEFAULT 'production';",
+            ).context("migrate subscriptions.environment")?;
+            info!("[db] migrated subscriptions: added environment column");
+        }
         info!("[db] schema migrations applied (subscriptions, nonces, register_challenges)");
         // Pragmas for the access pattern: tiny writes, point reads.
         conn.pragma_update(None, "journal_mode", "WAL").ok();
@@ -86,20 +108,28 @@ impl Db {
         Ok(Self { conn: Mutex::new(conn) })
     }
 
-    pub fn upsert_subscription(&self, device_token: &str, platform: &str, lair_pubkey: &str) -> Result<()> {
+    pub fn upsert_subscription(
+        &self,
+        device_token: &str,
+        platform:     &str,
+        lair_pubkey:  &str,
+        environment:  &str,
+    ) -> Result<()> {
         let now = unix_now();
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO subscriptions(device_token, platform, lair_pubkey, created_at, last_seen)
-             VALUES (?1, ?2, ?3, ?4, ?4)
+            "INSERT INTO subscriptions(device_token, platform, lair_pubkey, created_at, last_seen, environment)
+             VALUES (?1, ?2, ?3, ?4, ?4, ?5)
              ON CONFLICT(device_token, lair_pubkey)
-             DO UPDATE SET platform=excluded.platform, last_seen=excluded.last_seen",
-            params![device_token, platform, lair_pubkey, now],
+             DO UPDATE SET platform=excluded.platform,
+                           last_seen=excluded.last_seen,
+                           environment=excluded.environment",
+            params![device_token, platform, lair_pubkey, now, environment],
         ).map_err(|e| {
             error!("[db] upsert_subscription failed for pubkey={lair_pubkey}: {e}");
             e
         })?;
-        debug!("[db] subscription upserted; platform={platform} pubkey={lair_pubkey}");
+        debug!("[db] subscription upserted; platform={platform} env={environment} pubkey={lair_pubkey}");
         Ok(())
     }
 
@@ -119,7 +149,7 @@ impl Db {
     pub fn subscriptions_for_pubkey(&self, lair_pubkey: &str) -> Result<Vec<Subscription>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT device_token, platform FROM subscriptions WHERE lair_pubkey = ?1",
+            "SELECT device_token, platform, environment FROM subscriptions WHERE lair_pubkey = ?1",
         ).map_err(|e| {
             error!("[db] subscriptions_for_pubkey prepare failed: {e}");
             e
@@ -128,6 +158,7 @@ impl Db {
             Ok(Subscription {
                 device_token: r.get(0)?,
                 platform:     r.get(1)?,
+                environment:  r.get(2)?,
             })
         }).map_err(|e| {
             error!("[db] subscriptions_for_pubkey query failed for pubkey={lair_pubkey}: {e}");

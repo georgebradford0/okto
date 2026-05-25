@@ -16,7 +16,7 @@
 //! `ts` (within 60s of server clock) and unique `nonce` per pubkey prevent
 //! replay.
 
-use crate::{apns::PushOutcome, AppState};
+use crate::{apns::{Environment, PushOutcome}, AppState};
 use axum::{
     body::Bytes,
     extract::State,
@@ -29,7 +29,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey, PUBLIC_KEY_LENGTH, SIGNAT
 use rand::RngCore;
 use serde::Deserialize;
 use serde_json::json;
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 use tracing::{debug, error, info, warn};
 
 const FRESH_WINDOW_SECS: i64 = 60;
@@ -82,6 +82,12 @@ pub struct RegisterBody {
     /// `/unregister`, which shares this struct.
     #[serde(default)]
     challenge_nonce: Option<String>,
+    /// `"sandbox"` or `"production"` — which APNs gateway the device's token
+    /// resolves on. Older clients omit this; the relay falls back to
+    /// `AppState::default_env` (set from the `APNS_PRODUCTION` flag) in that
+    /// case. Ignored by `/unregister`, which shares this struct.
+    #[serde(default)]
+    environment: Option<String>,
 }
 
 pub async fn register(
@@ -105,6 +111,13 @@ pub async fn register(
         warn!("[routes] /register rejected: lair_pubkey not a valid base32 Ed25519 key");
         return (StatusCode::BAD_REQUEST, "lair_pubkey: not a valid base32 Ed25519 key").into_response();
     }
+    let env = match resolve_env(body.environment.as_deref(), state.default_env) {
+        Ok(e) => e,
+        Err(bad) => {
+            warn!("[routes] /register rejected: bad environment={bad}");
+            return (StatusCode::BAD_REQUEST, "environment must be 'sandbox' or 'production'").into_response();
+        }
+    };
     // Proof of device-token ownership: the caller must echo the nonce the
     // relay pushed to this token in the /register/challenge step. A caller
     // who only knows the token string never received that push.
@@ -126,21 +139,43 @@ pub async fn register(
             return (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response();
         }
     }
-    if let Err(e) = state.db.upsert_subscription(&body.device_token, &body.platform, &body.lair_pubkey) {
+    if let Err(e) = state.db.upsert_subscription(
+        &body.device_token,
+        &body.platform,
+        &body.lair_pubkey,
+        env.as_str(),
+    ) {
         error!("[routes] /register db error: {e:#}");
         return (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response();
     }
-    info!("[routes] /register: device registered; platform={} pubkey={} token=…{}",
+    info!("[routes] /register: device registered; platform={} env={} pubkey={} token=…{}",
         body.platform,
+        env.as_str(),
         body.lair_pubkey,
         tail4(&body.device_token));
     StatusCode::NO_CONTENT.into_response()
+}
+
+/// Pick the gateway for this request: the body value if present and valid,
+/// otherwise the relay's configured default. Returns `Err(raw)` if the body
+/// supplied an unknown string.
+fn resolve_env(body_env: Option<&str>, default: Environment) -> Result<Environment, &str> {
+    match body_env {
+        None              => Ok(default),
+        Some(s) if s.is_empty() => Ok(default),
+        Some(s) => Environment::from_str(s).map_err(|_| s),
+    }
 }
 
 #[derive(Deserialize)]
 pub struct ChallengeBody {
     device_token: String,
     platform:     String,
+    /// Same semantics as [`RegisterBody::environment`]. The challenge push
+    /// itself must go to the gateway the token resolves on, otherwise APNs
+    /// rejects with `BadDeviceToken` before the device ever sees the nonce.
+    #[serde(default)]
+    environment: Option<String>,
 }
 
 /// Step one of registration: prove the caller controls `device_token` by
@@ -166,6 +201,13 @@ pub async fn register_challenge(
         warn!("[routes] /register/challenge rejected: device_token not hex");
         return (StatusCode::BAD_REQUEST, "device_token must be hex").into_response();
     }
+    let env = match resolve_env(body.environment.as_deref(), state.default_env) {
+        Ok(e) => e,
+        Err(bad) => {
+            warn!("[routes] /register/challenge rejected: bad environment={bad}");
+            return (StatusCode::BAD_REQUEST, "environment must be 'sandbox' or 'production'").into_response();
+        }
+    };
 
     let nonce = gen_nonce();
     match state.db.upsert_challenge(&body.device_token, &nonce, CHALLENGE_COOLDOWN_SECS, CHALLENGE_TTL_SECS) {
@@ -175,19 +217,22 @@ pub async fn register_challenge(
                 "aps": { "content-available": 1 },
                 "okto_challenge": nonce,
             });
-            match state.apns.push_background(&body.device_token, &state.bundle_id, &payload).await {
+            match state.apns.push_background(&body.device_token, &state.bundle_id, env, &payload).await {
                 PushOutcome::Delivered => {
-                    info!("[routes] /register/challenge: nonce push sent; token=…{}", tail4(&body.device_token));
+                    info!("[routes] /register/challenge: nonce push sent; env={} token=…{}",
+                        env.as_str(), tail4(&body.device_token));
                 }
                 PushOutcome::InvalidToken => {
-                    warn!("[routes] /register/challenge: APNs rejected token=…{}", tail4(&body.device_token));
+                    warn!("[routes] /register/challenge: APNs rejected env={} token=…{}",
+                        env.as_str(), tail4(&body.device_token));
                     if let Err(e) = state.db.forget_invalid_token(&body.device_token) {
                         error!("[routes] /register/challenge: failed to forget invalid token: {e:#}");
                     }
                     return (StatusCode::BAD_REQUEST, "device_token rejected by APNs").into_response();
                 }
                 PushOutcome::Failed(msg) => {
-                    warn!("[routes] /register/challenge: APNs push failed token=…{}: {msg}", tail4(&body.device_token));
+                    warn!("[routes] /register/challenge: APNs push failed env={} token=…{}: {msg}",
+                        env.as_str(), tail4(&body.device_token));
                     return (StatusCode::BAD_GATEWAY, "push delivery failed").into_response();
                 }
             }
@@ -346,19 +391,25 @@ pub async fn notify(
             debug!("[routes] /notify skipping non-iOS subscriber; platform={}", s.platform);
             continue;
         }
-        match state.apns.push(&s.device_token, &state.bundle_id, &payload).await {
+        // Per-row environment so a relay shared across dev (Xcode) and
+        // TestFlight/App Store builds pushes each token through its own
+        // gateway. Rows migrated from the pre-env schema default to
+        // 'production' (matches the old single-gateway behavior).
+        let env = Environment::from_str(&s.environment).unwrap_or(state.default_env);
+        match state.apns.push(&s.device_token, &state.bundle_id, env, &payload).await {
             PushOutcome::Delivered    => delivered += 1,
             PushOutcome::InvalidToken => {
                 invalid += 1;
-                warn!("[routes] /notify dropping invalid token=…{} pubkey={pubkey_b32}",
-                    tail4(&s.device_token));
+                warn!("[routes] /notify dropping invalid token=…{} env={} pubkey={pubkey_b32}",
+                    tail4(&s.device_token), env.as_str());
                 if let Err(e) = state.db.forget_invalid_token(&s.device_token) {
                     error!("[routes] /notify failed to forget invalid token=…{}: {e:#}",
                         tail4(&s.device_token));
                 }
             }
             PushOutcome::Failed(msg) => {
-                warn!("[routes] /notify APNs failure for token=…{}: {msg}", tail4(&s.device_token));
+                warn!("[routes] /notify APNs failure for token=…{} env={}: {msg}",
+                    tail4(&s.device_token), env.as_str());
             }
         }
     }

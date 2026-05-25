@@ -3,17 +3,56 @@
 //! Apple's auth model: ES256 JWT signed with the .p8 private key, valid for
 //! up to 1 hour. We mint a token, cache it, refresh just before expiry. Each
 //! push is a POST to `/3/device/{token}` with the JWT as `authorization` and
-//! the app's bundle ID as `apns-topic`.
+//! the app's bundle ID as `apns-topic`. The gateway (sandbox vs production)
+//! is chosen per-call so the same client serves dev (Xcode-signed) and
+//! TestFlight/App Store devices side by side; tokens minted under a
+//! development provisioning profile only resolve on sandbox even when the
+//! app's `aps-environment` entitlement nominally says `production`.
 
 use anyhow::{Context, Result};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::Client as HttpClient;
 use serde::Serialize;
-use std::{path::Path, sync::Mutex, time::{Duration, Instant}};
+use std::{path::Path, str::FromStr, sync::Mutex, time::{Duration, Instant}};
 use tracing::{debug, error, info, warn};
 
 const APNS_PROD: &str = "https://api.push.apple.com";
 const APNS_SANDBOX: &str = "https://api.sandbox.push.apple.com";
+
+/// Which APNs gateway a token resolves on. Mirrors the `aps-environment`
+/// entitlement value baked into the device's APNs token at registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Environment {
+    Sandbox,
+    Production,
+}
+
+impl Environment {
+    fn base_url(self) -> &'static str {
+        match self {
+            Environment::Sandbox    => APNS_SANDBOX,
+            Environment::Production => APNS_PROD,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Environment::Sandbox    => "sandbox",
+            Environment::Production => "production",
+        }
+    }
+}
+
+impl FromStr for Environment {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "sandbox"    => Ok(Environment::Sandbox),
+            "production" => Ok(Environment::Production),
+            _            => Err(()),
+        }
+    }
+}
 
 /// Refresh the JWT slightly before Apple's 1-hour cap — Apple rejects tokens
 /// older than 60 minutes with `ExpiredProviderToken`.
@@ -27,7 +66,6 @@ struct JwtClaims<'a> {
 
 pub struct Client {
     http:        HttpClient,
-    base_url:    &'static str,
     enc_key:     EncodingKey,
     key_id:      String,
     team_id:     String,
@@ -46,7 +84,7 @@ pub enum PushOutcome {
 }
 
 impl Client {
-    pub fn new(p8_path: &Path, key_id: String, team_id: String, production: bool) -> Result<Self> {
+    pub fn new(p8_path: &Path, key_id: String, team_id: String) -> Result<Self> {
         let pem = std::fs::read(p8_path)
             .with_context(|| format!("read APNs key {}", p8_path.display()))?;
         let enc_key = EncodingKey::from_ec_pem(&pem)
@@ -56,11 +94,9 @@ impl Client {
             .pool_idle_timeout(Duration::from_secs(60 * 30))
             .build()
             .context("build HTTP/2 client")?;
-        info!("[apns] client initialized; gateway={} key_id={}",
-            if production { APNS_PROD } else { APNS_SANDBOX }, key_id);
+        info!("[apns] client initialized; gateways=sandbox+production key_id={}", key_id);
         Ok(Self {
             http,
-            base_url: if production { APNS_PROD } else { APNS_SANDBOX },
             enc_key,
             key_id,
             team_id,
@@ -91,24 +127,37 @@ impl Client {
 
     /// Send an alert push. `payload` should be a complete APNs payload object
     /// (i.e. include the `aps` key); the relay just wraps in HTTP/2 + auth.
-    pub async fn push(&self, device_token: &str, bundle_id: &str, payload: &serde_json::Value) -> PushOutcome {
-        self.send(device_token, bundle_id, payload, "alert", "10").await
+    pub async fn push(
+        &self,
+        device_token: &str,
+        bundle_id:    &str,
+        env:          Environment,
+        payload:      &serde_json::Value,
+    ) -> PushOutcome {
+        self.send(device_token, bundle_id, env, payload, "alert", "10").await
     }
 
     /// Send a silent/background push (`content-available`, no alert). Apple
     /// requires `apns-push-type: background` and `apns-priority: 5` for these;
     /// the relay uses them to deliver registration-challenge nonces.
-    pub async fn push_background(&self, device_token: &str, bundle_id: &str, payload: &serde_json::Value) -> PushOutcome {
-        self.send(device_token, bundle_id, payload, "background", "5").await
+    pub async fn push_background(
+        &self,
+        device_token: &str,
+        bundle_id:    &str,
+        env:          Environment,
+        payload:      &serde_json::Value,
+    ) -> PushOutcome {
+        self.send(device_token, bundle_id, env, payload, "background", "5").await
     }
 
     async fn send(
         &self,
         device_token: &str,
-        bundle_id: &str,
-        payload: &serde_json::Value,
-        push_type: &str,
-        priority: &str,
+        bundle_id:    &str,
+        env:          Environment,
+        payload:      &serde_json::Value,
+        push_type:    &str,
+        priority:     &str,
     ) -> PushOutcome {
         let tok_tail = tail4(device_token);
         let jwt = match self.jwt() {
@@ -118,8 +167,9 @@ impl Client {
                 return PushOutcome::Failed(format!("jwt: {e}"));
             }
         };
-        let url = format!("{}/3/device/{device_token}", self.base_url);
-        debug!("[apns] POST /3/device for token=…{tok_tail} topic={bundle_id} type={push_type}");
+        let url = format!("{}/3/device/{device_token}", env.base_url());
+        debug!("[apns] POST /3/device for token=…{tok_tail} topic={bundle_id} env={} type={push_type}",
+            env.as_str());
         let res = self.http
             .post(&url)
             .header("authorization", format!("bearer {jwt}"))

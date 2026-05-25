@@ -121,6 +121,58 @@ final class Push: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    // ── APNs gateway (sandbox vs production) ──────────────────────────────
+    //
+    // The relay needs to know which APNs gateway resolves a given device
+    // token. The canonical source is the `aps-environment` entitlement baked
+    // into the embedded provisioning profile at sign time — NOT what's in
+    // okto.entitlements. A Xcode-signed development build always gets a
+    // sandbox token even if the entitlements file says "production"; only a
+    // distribution-signed build (Ad Hoc, TestFlight, App Store) gets a
+    // production token. JS reads this value and passes it on /register so the
+    // relay picks the right gateway per device.
+
+    private static let apsEnvironmentString: String = computeApsEnvironment()
+
+    private static func computeApsEnvironment() -> String {
+        #if targetEnvironment(simulator)
+        // Simulators don't issue real APNs tokens; the value is moot.
+        return "sandbox"
+        #else
+        guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+              let data = try? Data(contentsOf: url) else {
+            // No embedded profile (Mac Catalyst / unusual packaging). Assume
+            // shipped app — safer to over-pick production than to spam sandbox.
+            return "production"
+        }
+        // The file is a CMS (PKCS7) envelope around an XML plist. We don't
+        // need to verify the signature here — extract the plist by locating
+        // its delimiters in the byte stream. isoLatin1 preserves every byte
+        // 1:1 so range offsets back into the original data are stable.
+        guard let raw = String(data: data, encoding: .isoLatin1),
+              let start = raw.range(of: "<plist"),
+              let end   = raw.range(of: "</plist>") else {
+            return "production"
+        }
+        let plistText = String(raw[start.lowerBound..<end.upperBound])
+        guard let plistData = plistText.data(using: .isoLatin1),
+              let plist     = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil),
+              let dict      = plist as? [String: Any],
+              let ents      = dict["Entitlements"] as? [String: Any],
+              let env       = ents["aps-environment"] as? String else {
+            return "production"
+        }
+        return env == "development" ? "sandbox" : "production"
+        #endif
+    }
+
+    @objc func apsEnvironment(
+        _ resolve: @escaping (Any?) -> Void,
+        rejecter reject: @escaping (String?, String?, Error?) -> Void
+    ) {
+        resolve(Push.apsEnvironmentString)
+    }
+
     // ── Registration-challenge handling ────────────────────────────────────
     //
     // The relay proves a device controls its APNs token by sending a silent
@@ -139,7 +191,7 @@ final class Push: NSObject, UNUserNotificationCenterDelegate {
 
     // Called by AppDelegate for every received remote notification.
     @objc static func handleRemoteNotification(_ userInfo: [AnyHashable: Any]) {
-        guard let nonce = userInfo["octo_challenge"] as? String else { return }
+        guard let nonce = userInfo["okto_challenge"] as? String else { return }
         print("[push] registration challenge received")
 
         lock.lock()

@@ -47,8 +47,11 @@ struct Args {
     #[arg(long, env = "APNS_BUNDLE_ID")]
     apns_bundle_id: String,
 
-    /// Use Apple's production APNs gateway. Set to `false` while building
-    /// against TestFlight/sandbox tokens.
+    /// Default APNs gateway when a client `/register` request omits the
+    /// `environment` field. Live (`true`) maps to production, dev (`false`) to
+    /// sandbox. Clients on the new schema send `environment` explicitly so
+    /// dev (Xcode) and TestFlight/App Store devices coexist; this flag only
+    /// covers older clients that haven't been updated.
     #[arg(long, env = "APNS_PRODUCTION", default_value_t = true, action = clap::ArgAction::Set)]
     apns_production: bool,
 
@@ -60,9 +63,12 @@ struct Args {
 }
 
 pub struct AppState {
-    pub db:   db::Db,
-    pub apns: apns::Client,
+    pub db:        db::Db,
+    pub apns:      apns::Client,
     pub bundle_id: String,
+    /// Gateway used when a client `/register` body omits `environment` — kept
+    /// for backwards compatibility with the pre-multi-env mobile clients.
+    pub default_env: apns::Environment,
 }
 
 #[tokio::main]
@@ -72,20 +78,28 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
-    tracing::info!("[relay] starting; listen={} bundle={} production={}", args.listen, args.apns_bundle_id, args.apns_production);
+    let default_env = if args.apns_production {
+        apns::Environment::Production
+    } else {
+        apns::Environment::Sandbox
+    };
+    tracing::info!(
+        "[relay] starting; listen={} bundle={} default_env={}",
+        args.listen, args.apns_bundle_id, default_env.as_str(),
+    );
 
     let db = db::Db::open(&args.db_path).context("open db")?;
     let apns = apns::Client::new(
         &args.apns_p8,
         args.apns_key_id.clone(),
         args.apns_team_id.clone(),
-        args.apns_production,
     ).context("init apns client")?;
 
     let state = Arc::new(AppState {
         db,
         apns,
         bundle_id: args.apns_bundle_id,
+        default_env,
     });
 
     // Periodically prune subscriptions that no live device has refreshed.

@@ -37,6 +37,19 @@ export interface Spec extends TurboModule {
    * returned immediately, so the caller may request the challenge first.
    */
   awaitRegistrationChallenge(timeoutMs: number): Promise<string | null>
+
+  /**
+   * Which APNs gateway this build's device token resolves on:
+   *   - `"sandbox"` for Xcode-signed development builds (and simulators).
+   *   - `"production"` for Ad Hoc / TestFlight / App Store builds.
+   *
+   * Sourced from the `aps-environment` value in the embedded provisioning
+   * profile, which is what actually determines the token at registration —
+   * the value in `okto.entitlements` is irrelevant unless the signing profile
+   * permits the same value. The caller passes the result to the relay so a
+   * single relay can serve dev and shipped clients side by side.
+   */
+  apsEnvironment(): Promise<'sandbox' | 'production'>
 }
 
 const NativePush = TurboModuleRegistry.get<Spec>('Push')
