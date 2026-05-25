@@ -513,7 +513,7 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
         (replay, resumed)
     };
 
-    let ready = serde_json::json!({"type":"ready","session_id":"","resumed":resumed}).to_string();
+    let ready = serde_json::json!({"type":"ready","session_id":"","resumed":resumed,"model":resolve_model()}).to_string();
     if ws_tx.send(WsMessage::Text(ready)).await.is_err() {
         debug!("[lair/stream] client disconnected before ready frame");
         return;

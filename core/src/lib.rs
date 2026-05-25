@@ -339,7 +339,7 @@ pub const KEEPALIVE_MAX_MISSED: u64 = 2;
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ChatEvent {
-    Ready              { session_id: String, resumed: bool },
+    Ready              { session_id: String, resumed: bool, model: String },
     Text               { text: String },
     ToolUse            {
         tool_use_id: String,

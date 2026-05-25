@@ -9,7 +9,7 @@
 // ── Server → client events ────────────────────────────────────────────────────
 
 export type ServerEvent =
-  | { type: 'ready';         session_id: string; resumed: boolean }
+  | { type: 'ready';         session_id: string; resumed: boolean; model: string }
   | { type: 'text';          text: string }
   | { type: 'tool_use';      tool_use_id: string; tool: string; input: unknown; display?: string }
   | { type: 'tool_output';   tool_use_id: string; line: string }

@@ -49,6 +49,21 @@ interface PersistedState {
  *  (e.g. each text-delta during streaming) into one write. */
 const PERSIST_DEBOUNCE_MS = 500
 
+/** Read the stored session once at module load. Doing this synchronously
+ *  (not in a useEffect) lets us seed the App's initial state from the
+ *  stored values, so the very first render already shows the restored
+ *  chat shell with status='reconnecting' — no flash of the connect form. */
+const initialStored: PersistedState | null = (() => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed as PersistedState : null
+  } catch {
+    return null
+  }
+})()
+
 // ── Chat item model ──────────────────────────────────────────────────────────
 //
 // We don't render one row per ServerEvent — that would scroll the user past
@@ -68,22 +83,43 @@ type ConnStatus = 'ready' | 'streaming' | 'error' | 'pending'
 
 type Status =
   | { kind: 'idle' }
-  | { kind: 'connecting'; target: QrPayload }
-  | { kind: 'connected';  target: QrPayload; tunnelPort: number; ws: WebSocket }
-  | { kind: 'error';      message: string }
+  // Brand-new connect attempt from a pasted QR — show the connect screen
+  // with a "Connecting…" button so the user knows the click registered.
+  | { kind: 'connecting';   target: QrPayload }
+  // Restoring a known session (auto on launch, or user re-pasting the same
+  // QR after Disconnect). Render the chat shell straight away with the
+  // restored items so we never flash the connect form.
+  | { kind: 'reconnecting'; target: QrPayload }
+  | { kind: 'connected';    target: QrPayload; tunnelPort: number; ws: WebSocket }
+  | { kind: 'error';        message: string }
 
 function App() {
-  const [status, setStatus]       = useState<Status>({ kind: 'idle' })
-  const [qrInput, setQrInput]     = useState('')
-  const [agents, setAgents]       = useState<AgentInfo[]>([])
-  const [activeAgent, setActiveAgent] = useState<string>(LAIR_ID)
+  // Initial status: if we have a stored QR, start in 'reconnecting' (which
+  // renders the chat shell directly) rather than 'idle' (which would flash
+  // the connect screen for a tick before the auto-reconnect kicks in).
+  const [status, setStatus] = useState<Status>(() =>
+    initialStored?.qrPayload
+      ? { kind: 'reconnecting', target: initialStored.qrPayload }
+      : { kind: 'idle' }
+  )
+  const [qrInput, setQrInput] = useState<string>(() =>
+    initialStored?.qrPayload ? formatQrPayload(initialStored.qrPayload) : ''
+  )
+  const [agents, setAgents]   = useState<AgentInfo[]>([])
+  const [activeAgent, setActiveAgent] = useState<string>(() =>
+    initialStored?.activeAgent ?? LAIR_ID
+  )
 
   // Per-agent state, keyed by AgentInfo.id (or LAIR_ID). Keeping these
   // separate lets a child's stream keep accumulating while the user is
   // looking at another tab — switching back restores the in-progress
   // transcript, draft, and connection status untouched.
-  const [itemsByAgent,      setItemsByAgent]      = useState<Record<string, ChatItem[]>>({})
-  const [draftByAgent,      setDraftByAgent]      = useState<Record<string, string>>({})
+  const [itemsByAgent,      setItemsByAgent]      = useState<Record<string, ChatItem[]>>(() =>
+    initialStored?.itemsByAgent ?? {}
+  )
+  const [draftByAgent,      setDraftByAgent]      = useState<Record<string, string>>(() =>
+    initialStored?.draftByAgent ?? {}
+  )
   const [connStatusByAgent, setConnStatusByAgent] = useState<Record<string, ConnStatus>>({ [LAIR_ID]: 'pending' })
   // stopSent locks the interrupt button at reduced opacity from click until
   // the server's `interrupt_ack` (or our 3 s fallback timer). Mirrors
@@ -93,7 +129,13 @@ function App() {
   // Background-task registry per agent — lair pushes one `tasks` frame on
   // every spawn/completion/cancellation. Mobile lives in mobile/App.tsx as
   // `masterTasks` + per-child `tasks`.
-  const [tasksByAgent,      setTasksByAgent]      = useState<Record<string, TaskRecord[]>>({})
+  const [tasksByAgent,      setTasksByAgent]      = useState<Record<string, TaskRecord[]>>(() =>
+    initialStored?.tasksByAgent ?? {}
+  )
+
+  // Per-agent model name, learned from the server's `ready` frame. Empty
+  // string until the first ready lands (footer renders blank in that window).
+  const [modelByAgent,      setModelByAgent]      = useState<Record<string, string>>({})
 
   // Optimistic latch for the per-task STOP button. One Set shared across
   // agents — task_ids are server-allocated UUIDs so they don't collide.
@@ -110,6 +152,7 @@ function App() {
   const connStatus = connStatusByAgent[activeAgent] ?? 'pending'
   const stopSent   = stopSentByAgent[activeAgent]   ?? false
   const tasks      = tasksByAgent[activeAgent]      ?? EMPTY_TASKS
+  const model      = modelByAgent[activeAgent]      ?? ''
 
   const chatRef = useRef<HTMLDivElement>(null)
   // Stick to the bottom while the user is at the bottom; let them scroll up.
@@ -138,8 +181,9 @@ function App() {
 
   // Last QrPayload that produced an OPEN master WS — used both as the
   // "same lair?" check inside connect() and as the qrPayload we persist
-  // so the next launch can auto-reconnect.
-  const lastQrPayloadRef = useRef<QrPayload | null>(null)
+  // so the next launch can auto-reconnect. Seeded from the stored session
+  // so the save effect doesn't lose track of it before reconnect lands.
+  const lastQrPayloadRef = useRef<QrPayload | null>(initialStored?.qrPayload ?? null)
   // Guards the hydrate effect (so it runs exactly once) and the save effect
   // (which we skip until hydration has completed, otherwise the first
   // empty render would clobber our stored state with defaults).
@@ -176,39 +220,22 @@ function App() {
 
   // ── Persistence ──────────────────────────────────────────────────────────
   //
-  // One-shot hydrate on mount: pull the last session out of localStorage,
-  // restore the per-agent slots + active tab + last QR, and if we have a
-  // stored QR kick off an auto-reconnect so the user doesn't have to
-  // re-paste it every launch.
+  // State is already populated from `initialStored` via lazy useState
+  // initializers — this effect only needs to kick off the auto-reconnect
+  // so the renderer has a live WS to send through. The render is already
+  // showing the chat shell (status='reconnecting'), so no flash of the
+  // connect form happens while the WS is opening.
   useEffect(() => {
     if (hydratedRef.current) return
-    let stored: PersistedState | null = null
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY)
-      if (raw) stored = JSON.parse(raw) as PersistedState
-    } catch { /* corrupt blob → start clean */ }
-    // Mark hydrated *after* the read so the save effect doesn't fire
-    // mid-restore and write defaults back over our stored state.
     hydratedRef.current = true
-    if (!stored) return
-    if (stored.itemsByAgent) setItemsByAgent(stored.itemsByAgent)
-    if (stored.draftByAgent) setDraftByAgent(stored.draftByAgent)
-    if (stored.tasksByAgent) setTasksByAgent(stored.tasksByAgent)
-    if (stored.activeAgent)  setActiveAgent(stored.activeAgent)
-    if (stored.qrPayload) {
-      lastQrPayloadRef.current = stored.qrPayload
-      // Prefill the connect-screen textarea so a failed auto-reconnect
-      // leaves the user one click from retrying (and so the input shows
-      // what we're connected to if they later hit Disconnect).
-      setQrInput(formatQrPayload(stored.qrPayload))
-      const childToReopen = stored.activeAgent && stored.activeAgent !== LAIR_ID
-        ? stored.activeAgent
-        : null
-      // Fire and forget — failures surface via setStatus({kind:'error'})
-      // and the user lands on the connect screen with the QR already known.
-      connectInternal(stored.qrPayload, /* preserveState */ true, childToReopen)
-        .catch(() => { /* already surfaced via status */ })
-    }
+    if (!initialStored?.qrPayload) return
+    const childToReopen = initialStored.activeAgent && initialStored.activeAgent !== LAIR_ID
+      ? initialStored.activeAgent
+      : null
+    // Fire and forget — failures surface via setStatus({kind:'error'})
+    // and the user lands on the connect screen with the QR already filled.
+    connectInternal(initialStored.qrPayload, /* preserveState */ true, childToReopen)
+      .catch(() => { /* already surfaced via status */ })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -302,6 +329,9 @@ function App() {
       return
     }
 
+    if (ev.type === 'ready' && ev.model) {
+      setModelByAgent(prev => prev[agentId] === ev.model ? prev : { ...prev, [agentId]: ev.model })
+    }
     setItemsByAgent(prev => ({ ...prev, [agentId]: foldEvent(prev[agentId] ?? [], ev) }))
     let next: ConnStatus | null = null
     if (ev.type === 'ready')        next = 'ready'
@@ -343,7 +373,10 @@ function App() {
     preserveState:boolean,
     childToReopen:string | null,
   ) => {
-    setStatus({ kind: 'connecting', target })
+    // `reconnecting` = known lair → render the chat shell with the
+    // restored items. `connecting` = brand-new attempt → keep the connect
+    // screen visible with a "Connecting…" button. Same WS path under both.
+    setStatus({ kind: preserveState ? 'reconnecting' : 'connecting', target })
     if (!preserveState) {
       setItemsByAgent({})
       setDraftByAgent({})
@@ -549,8 +582,15 @@ function App() {
     for (const t of cancelTimersRef.current.values()) clearTimeout(t)
     cancelTimersRef.current.clear()
     setShowTasksModal(false)
-    if (status.kind === 'connected') status.ws.close()
-    else setStatus({ kind: 'idle' })
+    // Close the master WS via the ref, not status.ws — during 'reconnecting'
+    // (or 'connecting') the WS is mid-handshake and not yet attached to the
+    // status. Closing through the ref handles all three live states.
+    if (masterWsRef.current) {
+      try { masterWsRef.current.close() } catch {}
+      // ws.onclose will flip status → 'idle'.
+    } else {
+      setStatus({ kind: 'idle' })
+    }
   }
 
   const clearChat = () => {
@@ -568,7 +608,11 @@ function App() {
     fetch(url, { method: 'POST' }).catch(() => { /* fire-and-forget */ })
   }
 
-  if (status.kind !== 'connected') {
+  // Render the chat shell for both `connected` (live WS) and `reconnecting`
+  // (restored from storage, WS still opening). The latter shows the stored
+  // chat history immediately while the status pill stays orange until lair
+  // sends its `ready`.
+  if (status.kind !== 'connected' && status.kind !== 'reconnecting') {
     return (
       <ConnectScreen
         qrInput={qrInput}
@@ -623,6 +667,7 @@ function App() {
           onInterrupt={interrupt}
           streaming={connStatus === 'streaming'}
           stopSent={stopSent}
+          model={model}
         />
       </div>
 
@@ -1073,7 +1118,7 @@ function truncate(s: string, n: number): string {
 }
 
 function InputBar({
-  draft, setDraft, onSend, onInterrupt, streaming, stopSent,
+  draft, setDraft, onSend, onInterrupt, streaming, stopSent, model,
 }: {
   draft: string
   setDraft: (s: string) => void
@@ -1081,6 +1126,7 @@ function InputBar({
   onInterrupt: () => void
   streaming: boolean
   stopSent: boolean
+  model: string
 }) {
   const taRef = useRef<HTMLTextAreaElement>(null)
 
@@ -1137,6 +1183,9 @@ function InputBar({
             <span className="send-btn-icon">➤</span>
           </button>
         )}
+      </div>
+      <div className="input-footer">
+        <span className="input-model" title={model || undefined}>{model}</span>
       </div>
     </div>
   )

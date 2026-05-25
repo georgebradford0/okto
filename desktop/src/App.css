@@ -858,6 +858,20 @@ textarea { resize: none; }
   align-items: flex-end;
 }
 
+.input-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+  min-height: 14px;
+}
+
+.input-model {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
 .chat-input {
   flex: 1;
   min-height: 52px;
