@@ -353,6 +353,12 @@ pub async fn noise_handshake_initiator(
 /// This is the lair-side counterpart of the mobile app's
 /// `NativeNoiseConnection` — encrypted point-to-point transport for traffic
 /// that crosses the public internet.
+///
+/// Use this for single-shot scenarios (lair proxying one request to a remote
+/// agent). For long-lived clients that open multiple loopback connections
+/// against the same tunnel (e.g. the desktop renderer opening WS to both
+/// `/stream` and `/agents/<id>/stream`), use [`open_noise_proxy`] instead,
+/// which mirrors mobile's multi-connection semantics.
 pub async fn open_noise_tunnel(
     remote_host:     String,
     remote_port:     u16,
@@ -393,6 +399,71 @@ pub async fn open_noise_tunnel(
 
         pipe_noise_initiator(local_stream, remote_stream, transport).await;
         debug!("[noise/initiator] tunnel to {remote_host}:{remote_port} closed");
+    });
+
+    Ok(local_port)
+}
+
+/// Open an outbound Noise *proxy*: bind an ephemeral local TCP listener that
+/// accepts MANY inbound plaintext connections, each forwarded through its own
+/// Noise session to `remote_host:remote_port`. Returns the local port the
+/// caller should connect to.
+///
+/// Mirrors the multi-connection semantics of mobile's `NativeNoiseConnection`
+/// (one Noise session per loopback connection) — needed when a client opens
+/// multiple WebSockets/HTTP requests against the same lair: e.g. the desktop
+/// renderer holds a master WS to `/stream` *and* opens per-agent WSes to
+/// `/agents/<id>/stream` concurrently.
+///
+/// The listener lives for the lifetime of the spawned accept loop; today
+/// that's until the process exits. For a single-shot tunnel that frees its
+/// port as soon as one connection finishes, use [`open_noise_tunnel`].
+pub async fn open_noise_proxy(
+    remote_host:     String,
+    remote_port:     u16,
+    expected_pubkey: Vec<u8>,
+    static_private:  Vec<u8>,
+) -> anyhow::Result<u16> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await
+        .map_err(|e| anyhow::anyhow!("bind ephemeral local port: {e}"))?;
+    let local_port = listener.local_addr()?.port();
+
+    tokio::spawn(async move {
+        loop {
+            let (local_stream, _) = match listener.accept().await {
+                Ok(v) => v,
+                Err(e) => { warn!("[noise/proxy] accept failed: {e}"); return; }
+            };
+            let remote_host_c     = remote_host.clone();
+            let expected_pubkey_c = expected_pubkey.clone();
+            let static_private_c  = static_private.clone();
+            // One Noise session per loopback connection — each spawned task
+            // does its own handshake so a slow or stuck session can't block
+            // other in-flight connections through the same proxy.
+            tokio::spawn(async move {
+                let mut remote_stream = match tokio::net::TcpStream::connect(
+                    format!("{remote_host_c}:{remote_port}")
+                ).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!("[noise/proxy] connect {remote_host_c}:{remote_port}: {e}");
+                        return;
+                    }
+                };
+
+                let transport = match timeout(
+                    HANDSHAKE_TIMEOUT,
+                    noise_handshake_initiator(&mut remote_stream, &static_private_c, &expected_pubkey_c),
+                ).await {
+                    Ok(Ok(t))  => t,
+                    Ok(Err(e)) => { warn!("[noise/proxy] handshake to {remote_host_c}:{remote_port}: {e}"); return; }
+                    Err(_)     => { warn!("[noise/proxy] handshake timeout to {remote_host_c}:{remote_port}"); return; }
+                };
+
+                pipe_noise_initiator(local_stream, remote_stream, transport).await;
+                debug!("[noise/proxy] session to {remote_host_c}:{remote_port} closed");
+            });
+        }
     });
 
     Ok(local_port)

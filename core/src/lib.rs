@@ -14,7 +14,7 @@ pub mod noise;
 pub use noise::{
     DEV_PUBKEY_BASE32, DEV_STATIC_PRIVATE, DEV_STATIC_PUBLIC,
     load_or_generate_keypair, run_noise_proxy, to_base32, from_base32,
-    open_noise_tunnel,
+    open_noise_tunnel, open_noise_proxy,
 };
 
 pub mod app;

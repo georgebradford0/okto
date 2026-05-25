@@ -1,15 +1,16 @@
 //! Tauri commands exposed to the renderer.
 //!
-//! `noise_connect` wraps `okto_core::noise::open_noise_tunnel`: it performs the
-//! Noise XX handshake against lair on the operator's host and binds an
-//! ephemeral loopback TCP port that proxies one connection through the
-//! encrypted tunnel. The renderer then `new WebSocket('ws://127.0.0.1:<port>/stream')`s
-//! against that port — the browser speaks plaintext to loopback, the Rust side
-//! encrypts on the wire.
+//! `noise_connect` wraps `okto_core::noise::open_noise_proxy`: it binds an
+//! ephemeral loopback TCP port that accepts many inbound plaintext
+//! connections and forwards each through its own Noise session to lair. The
+//! renderer can then open multiple WebSockets against `ws://127.0.0.1:<port>`
+//! (e.g. the master `/stream` plus per-agent `/agents/<id>/stream`) and the
+//! browser speaks plaintext to loopback while the Rust side encrypts on the
+//! wire.
 //!
-//! Mirrors `mobile/src/NativeNoiseConnection.ts`. The desktop client's static
-//! Curve25519 identity lives at `<app_data_dir>/noise_key.bin` and is reused
-//! across launches.
+//! Mirrors `mobile/src/NativeNoiseConnection.ts` — one Noise session per
+//! loopback connection. The desktop client's static Curve25519 identity lives
+//! at `<app_data_dir>/noise_key.bin` and is reused across launches.
 
 use std::sync::Mutex;
 
@@ -49,7 +50,7 @@ async fn noise_connect(
     let (static_private, _static_public) =
         okto_core::load_or_generate_keypair(&key_path.to_string_lossy());
 
-    let local_port = okto_core::open_noise_tunnel(host, port, expected_pubkey, static_private)
+    let local_port = okto_core::open_noise_proxy(host, port, expected_pubkey, static_private)
         .await
         .map_err(|e| format!("open noise tunnel: {e}"))?;
 
