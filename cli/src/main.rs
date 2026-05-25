@@ -98,6 +98,11 @@ enum Command {
         /// Restart lair + every managed agent
         #[arg(long, conflicts_with = "agents")]
         all: bool,
+        /// Upsert an env var into `~/.okto/lair-env` before restarting.
+        /// Existing keys are overwritten in place; new keys are appended.
+        /// Repeatable.
+        #[arg(long = "env", short = 'e', value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+        env: Vec<String>,
     },
 
     /// Print the QR code mobile clients scan to connect to this lair
@@ -766,8 +771,25 @@ async fn main() -> Result<()> {
             }
         }
 
-        Command::Reload { agents: agent_targets, all } => {
-            info!("[cli] reload starting (all={all})");
+        Command::Reload { agents: agent_targets, all, env } => {
+            info!("[cli] reload starting (all={all}, env_pairs={})", env.len());
+            if !env.is_empty() {
+                let new_pairs = init::parse_extra_env(&env)?;
+                let path = service::env_file_path();
+                let text = std::fs::read_to_string(&path)
+                    .with_context(|| format!("read {}", path.display()))
+                    .unwrap_or_default();
+                let mut entries = init::parse_env_file(&text);
+                for (k, v) in new_pairs {
+                    debug!("[cli] reload: upserting env key '{k}'");
+                    if let Some(slot) = entries.iter_mut().find(|(ek, _)| ek == &k) {
+                        slot.1 = v;
+                    } else {
+                        entries.push((k, v));
+                    }
+                }
+                init::write_secret_file(&path, &init::serialize_env_file(&entries))?;
+            }
             init::restart_lair("reload").await?;
 
             let names: Vec<String> = if all {
