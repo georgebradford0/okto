@@ -464,7 +464,6 @@ function App() {
           <span className="main-title">{activeLabel}</span>
           <div className="main-head-right">
             <StatusPill status={connStatus} />
-            <TasksButton tasks={tasks} onClick={() => setShowTasksModal(true)} />
             <button
               className="clear-btn"
               onClick={clearChat}
@@ -473,6 +472,8 @@ function App() {
             >
               Clear
             </button>
+            <span className="main-head-spacer" />
+            <TasksButton tasks={tasks} onClick={() => setShowTasksModal(v => !v)} />
           </div>
         </div>
 
@@ -493,7 +494,7 @@ function App() {
         />
       </div>
 
-      <TasksModal
+      <TasksDrawer
         visible={showTasksModal}
         agentLabel={activeLabel}
         tasks={tasks}
@@ -746,7 +747,7 @@ function TasksButton({ tasks, onClick }: { tasks: TaskRecord[]; onClick: () => v
   )
 }
 
-function TasksModal({
+function TasksDrawer({
   visible, agentLabel, tasks, cancellingIds, onClose, onCancel,
 }: {
   visible:       boolean
@@ -756,7 +757,7 @@ function TasksModal({
   onClose:       () => void
   onCancel:      (taskId: string) => void
 }) {
-  // Close on Escape — desktop-modal convention.
+  // Close on Escape — desktop convention.
   useEffect(() => {
     if (!visible) return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -764,9 +765,8 @@ function TasksModal({
     return () => window.removeEventListener('keydown', onKey)
   }, [visible, onClose])
 
-  if (!visible) return null
-
-  // Running first, then most-recently started.
+  // Always render so the drawer can transition cleanly in/out; visibility is
+  // driven by an `open` class that toggles transform + backdrop opacity.
   const sorted = tasks.slice().sort((a, b) => {
     if (a.status === 'running' && b.status !== 'running') return -1
     if (b.status === 'running' && a.status !== 'running') return 1
@@ -774,16 +774,23 @@ function TasksModal({
   })
 
   return (
-    <div className="tasks-modal-backdrop" onClick={onClose}>
-      <div className="tasks-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="tasks-modal-head">
+    <>
+      <div
+        className={`tasks-drawer-backdrop ${visible ? 'open' : ''}`}
+        onClick={onClose}
+      />
+      <aside
+        className={`tasks-drawer ${visible ? 'open' : ''}`}
+        aria-hidden={!visible}
+      >
+        <div className="tasks-drawer-head">
           <div>
-            <div className="tasks-modal-title">Background Tasks</div>
-            <div className="tasks-modal-sub">{agentLabel}</div>
+            <div className="tasks-drawer-title">Background Tasks</div>
+            <div className="tasks-drawer-sub">{agentLabel}</div>
           </div>
-          <button className="tasks-modal-close" onClick={onClose} title="Close (Esc)">✕</button>
+          <button className="tasks-drawer-close" onClick={onClose} title="Close (Esc)">✕</button>
         </div>
-        <div className="tasks-modal-body">
+        <div className="tasks-drawer-body">
           {sorted.length === 0 ? (
             <div className="tasks-empty">No background tasks</div>
           ) : (
@@ -797,8 +804,8 @@ function TasksModal({
             ))
           )}
         </div>
-      </div>
-    </div>
+      </aside>
+    </>
   )
 }
 

@@ -385,6 +385,13 @@ textarea { resize: none; }
   gap: 12px;
 }
 
+/* Spacer pushes the Tasks button to the far right of the header row while
+   keeping the status pill + Clear grouped together near the title side. */
+.main-head-spacer {
+  display: inline-block;
+  width: 28px;
+}
+
 .clear-btn {
   background: transparent;
   border: 1px solid var(--border);
@@ -465,50 +472,54 @@ textarea { resize: none; }
   100% { box-shadow: 0 0 0 0   rgba(11, 110, 115, 0);    }
 }
 
-/* Tasks modal ───────────────────────────────────────────────────────────────── */
+/* Tasks drawer — right-side sliding panel ──────────────────────────────────── */
 
-.tasks-modal-backdrop {
+.tasks-drawer-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(14, 26, 36, 0.42);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-  animation: tasks-modal-fade 0.18s ease;
+  background: rgba(14, 26, 36, 0.32);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.22s ease;
+  z-index: 99;
 }
 
-@keyframes tasks-modal-fade {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+.tasks-drawer-backdrop.open {
+  opacity: 1;
+  pointer-events: auto;
 }
 
-.tasks-modal {
-  width: min(640px, 92vw);
-  max-height: 80vh;
+.tasks-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(460px, 92vw);
   background: var(--bg);
-  border: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  box-shadow: -18px 0 44px rgba(14, 26, 36, 0.18);
   display: flex;
   flex-direction: column;
-  box-shadow: 0 24px 60px rgba(14, 26, 36, 0.22);
-  animation: tasks-modal-rise 0.22s ease;
+  transform: translateX(100%);
+  transition: transform 0.26s cubic-bezier(0.2, 0.7, 0.3, 1);
+  z-index: 100;
+  will-change: transform;
 }
 
-@keyframes tasks-modal-rise {
-  from { transform: translateY(14px); opacity: 0; }
-  to   { transform: translateY(0);    opacity: 1; }
+.tasks-drawer.open {
+  transform: translateX(0);
 }
 
-.tasks-modal-head {
+.tasks-drawer-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  padding: 18px 20px 14px;
+  padding: 22px 20px 16px;
   border-bottom: 1px solid var(--border);
 }
 
-.tasks-modal-title {
+.tasks-drawer-title {
   font-family: var(--sans);
   font-size: 13px;
   font-weight: 800;
@@ -517,7 +528,7 @@ textarea { resize: none; }
   color: var(--text-primary);
 }
 
-.tasks-modal-sub {
+.tasks-drawer-sub {
   margin-top: 4px;
   font-family: var(--mono);
   font-size: 10px;
@@ -527,7 +538,7 @@ textarea { resize: none; }
   color: var(--text-muted);
 }
 
-.tasks-modal-close {
+.tasks-drawer-close {
   background: transparent;
   border: 1px solid var(--border);
   color: var(--text-secondary);
@@ -541,13 +552,13 @@ textarea { resize: none; }
   transition: color 0.12s ease, border-color 0.12s ease;
 }
 
-.tasks-modal-close:hover { color: var(--text-primary); border-color: var(--text-primary); }
+.tasks-drawer-close:hover { color: var(--text-primary); border-color: var(--text-primary); }
 
-.tasks-modal-body {
+.tasks-drawer-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 12px 20px 20px;
+  padding: 14px 20px 20px;
 }
 
 .tasks-empty {
