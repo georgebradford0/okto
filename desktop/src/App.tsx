@@ -11,6 +11,16 @@ import './App.css'
 // their names (per AgentInfo.id); 'lair' is reserved so it can never collide.
 const LAIR_ID = 'lair'
 
+// Stable empty defaults — important: `itemsByAgent[id] ?? []` would mint a new
+// array reference every render, which causes the chat-scroll useEffect to
+// fire on every keystroke. Sharing one frozen array keeps reference equality.
+const EMPTY_ITEMS:  ChatItem[] = []
+
+// How long to keep the interrupt button locked after the user clicks it,
+// before assuming the server's `interrupt_ack` was lost and re-enabling.
+// Matches mobile's stopAckTimerRef behavior in mobile/App.tsx.
+const STOP_ACK_TIMEOUT_MS = 3000
+
 // ── Chat item model ──────────────────────────────────────────────────────────
 //
 // We don't render one row per ServerEvent — that would scroll the user past
@@ -37,32 +47,56 @@ type Status =
 function App() {
   const [status, setStatus]       = useState<Status>({ kind: 'idle' })
   const [qrInput, setQrInput]     = useState('')
-  const [items, setItems]         = useState<ChatItem[]>([])
-  const [draft, setDraft]         = useState('')
-  const [connStatus, setConnStatus] = useState<ConnStatus>('pending')
   const [agents, setAgents]       = useState<AgentInfo[]>([])
   const [activeAgent, setActiveAgent] = useState<string>(LAIR_ID)
+
+  // Per-agent state, keyed by AgentInfo.id (or LAIR_ID). Keeping these
+  // separate lets a child's stream keep accumulating while the user is
+  // looking at another tab — switching back restores the in-progress
+  // transcript, draft, and connection status untouched.
+  const [itemsByAgent,      setItemsByAgent]      = useState<Record<string, ChatItem[]>>({})
+  const [draftByAgent,      setDraftByAgent]      = useState<Record<string, string>>({})
+  const [connStatusByAgent, setConnStatusByAgent] = useState<Record<string, ConnStatus>>({ [LAIR_ID]: 'pending' })
+  // stopSent locks the interrupt button at reduced opacity from click until
+  // the server's `interrupt_ack` (or our 3 s fallback timer). Mirrors
+  // mobile's stopSent/stopAckTimerRef.
+  const [stopSentByAgent,   setStopSentByAgent]   = useState<Record<string, boolean>>({})
+
+  // Derived per-agent slices for the active tab. EMPTY_ITEMS is a stable
+  // reference so [items] dep checks don't fire when an unrelated tab updates.
+  const items      = itemsByAgent[activeAgent]      ?? EMPTY_ITEMS
+  const draft      = draftByAgent[activeAgent]      ?? ''
+  const connStatus = connStatusByAgent[activeAgent] ?? 'pending'
+  const stopSent   = stopSentByAgent[activeAgent]   ?? false
 
   const chatRef = useRef<HTMLDivElement>(null)
   // Stick to the bottom while the user is at the bottom; let them scroll up.
   const stickToBottomRef = useRef(true)
 
-  // We maintain *two* WebSockets when chatting with a child:
+  // WebSocket layout:
   //
-  //   masterWsRef → ws://tunnel/stream            (always-on after connect;
-  //                                                feeds the agents list)
-  //   childWsRef  → ws://tunnel/agents/<id>/stream (opened on agent select,
-  //                                                closed when leaving)
+  //   masterWsRef           → ws://tunnel/stream            (always-on after
+  //                                                          connect; feeds
+  //                                                          the agents list
+  //                                                          *and* lair chat)
+  //   childWsRefs.get(name) → ws://tunnel/agents/<id>/stream (opened on first
+  //                                                          select, stays
+  //                                                          open until
+  //                                                          disconnect)
   //
-  // When activeAgent === LAIR_ID, the master WS *is* the chat WS — child is
-  // null. This mirrors the master/child split in mobile/App.tsx.
+  // Holding the child sockets open in the background lets an agent's stream
+  // keep landing in its per-agent slot while the user is looking at a
+  // different tab — switch back and the chat is current, no replay seam.
+  // Mirrors mobile's per-child ChatPane behavior.
   const masterWsRef = useRef<WebSocket | null>(null)
-  const childWsRef  = useRef<WebSocket | null>(null)
-  // WS message handlers fire from event-loop callbacks and would otherwise
-  // close over a stale `activeAgent`. Bounce through a ref so the master's
-  // chat-vs-list routing always sees the current selection.
-  const activeAgentRef = useRef<string>(LAIR_ID)
-  useEffect(() => { activeAgentRef.current = activeAgent }, [activeAgent])
+  const childWsRefs = useRef<Map<string, WebSocket>>(new Map())
+  // Per-agent fallback timers that re-enable the interrupt button if the
+  // server's interrupt_ack never arrives. Keyed by agent id.
+  const stopAckTimersRef = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({})
+
+  const setDraft = (s: string) => {
+    setDraftByAgent(prev => ({ ...prev, [activeAgent]: s }))
+  }
 
   useEffect(() => {
     const el = chatRef.current
@@ -81,26 +115,52 @@ function App() {
     }
   }, [items])
 
-  const applyChatEvent = (ev: ServerEvent) => {
-    setItems(prev => foldEvent(prev, ev))
-    if (ev.type === 'ready')         setConnStatus('ready')
-    if (ev.type === 'text')          setConnStatus('streaming')
-    if (ev.type === 'tool_use')      setConnStatus('streaming')
-    if (ev.type === 'done')          setConnStatus('ready')
-    if (ev.type === 'interrupted')   setConnStatus('ready')
-    if (ev.type === 'error')         setConnStatus('error')
+  // On agent switch, snap the new tab's chat to its bottom so the user
+  // lands on the latest content instead of mid-scroll from the previous
+  // tab's scroll position.
+  useEffect(() => {
+    stickToBottomRef.current = true
+    if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
+  }, [activeAgent])
+
+  const clearStopLock = (agentId: string) => {
+    const t = stopAckTimersRef.current[agentId]
+    if (t) { clearTimeout(t); stopAckTimersRef.current[agentId] = null }
+    setStopSentByAgent(prev => prev[agentId] ? { ...prev, [agentId]: false } : prev)
+  }
+
+  // Apply a chat-stream event to a specific agent's slot. Runs regardless of
+  // which tab is currently visible — that's what makes per-agent persistence
+  // work; events flow into their own slot and the active tab just renders
+  // whichever one is selected.
+  const applyChatEvent = (agentId: string, ev: ServerEvent) => {
+    setItemsByAgent(prev => ({ ...prev, [agentId]: foldEvent(prev[agentId] ?? [], ev) }))
+    let next: ConnStatus | null = null
+    if (ev.type === 'ready')        next = 'ready'
+    if (ev.type === 'text')         next = 'streaming'
+    if (ev.type === 'tool_use')     next = 'streaming'
+    if (ev.type === 'done')         next = 'ready'
+    if (ev.type === 'interrupted')  next = 'ready'
+    if (ev.type === 'error')        next = 'error'
+    if (next !== null) {
+      setConnStatusByAgent(prev => ({ ...prev, [agentId]: next! }))
+    }
+    // Server acknowledged our interrupt — re-enable the stop button so the
+    // user can interrupt the next turn without waiting for the 3s fallback.
+    if (ev.type === 'interrupt_ack' || ev.type === 'interrupted' || ev.type === 'done') {
+      clearStopLock(agentId)
+    }
   }
 
   // The master WS is special: it always handles `agents` (which only lair
-  // emits), but its chat events should only feed the visible chat when Lair
-  // is the active agent. Children never push `agents`, so their handler is
-  // plain applyChatEvent.
+  // emits) regardless of which tab is visible. Its chat events feed lair's
+  // slot. Children never push `agents`, so their handler is plain applyChatEvent.
   const handleMasterEvent = (ev: ServerEvent) => {
     if (ev.type === 'agents') {
       setAgents(ev.agents)
       return
     }
-    if (activeAgentRef.current === LAIR_ID) applyChatEvent(ev)
+    applyChatEvent(LAIR_ID, ev)
   }
 
   const connect = async () => {
@@ -110,11 +170,15 @@ function App() {
       return
     }
     setStatus({ kind: 'connecting', target })
-    setItems([])
+    // Fresh session — wipe every per-agent slot so nothing leaks across
+    // logins to different lairs.
+    setItemsByAgent({})
+    setDraftByAgent({})
+    setConnStatusByAgent({ [LAIR_ID]: 'pending' })
+    setStopSentByAgent({})
+    stopAckTimersRef.current = {}
     setAgents([])
     setActiveAgent(LAIR_ID)
-    activeAgentRef.current = LAIR_ID
-    setConnStatus('pending')
     try {
       const tunnelPort = await invoke<number>('noise_connect', {
         host:            target.host,
@@ -126,11 +190,21 @@ function App() {
       ws.onopen  = () => setStatus({ kind: 'connected', target, tunnelPort, ws })
       ws.onclose = () => {
         masterWsRef.current = null
+        // Master is gone — close any child WSes; they all sit on the same
+        // (now-defunct) Noise proxy. Their onclose handlers will flip each
+        // slot's connStatus to 'pending' for the next reconnect.
+        for (const w of childWsRefs.current.values()) {
+          try { w.close() } catch {}
+        }
+        childWsRefs.current.clear()
         setStatus({ kind: 'idle' })
-        setConnStatus('pending')
+        setConnStatusByAgent(prev => ({ ...prev, [LAIR_ID]: 'pending' }))
         setAgents([])
       }
-      ws.onerror = () => { setStatus({ kind: 'error', message: 'WebSocket error' }); setConnStatus('error') }
+      ws.onerror = () => {
+        setStatus({ kind: 'error', message: 'WebSocket error' })
+        setConnStatusByAgent(prev => ({ ...prev, [LAIR_ID]: 'error' }))
+      }
       ws.onmessage = (e) => {
         const data = typeof e.data === 'string' ? e.data : ''
         const ev = parseServerEvent(data)
@@ -143,21 +217,24 @@ function App() {
       }
     } catch (e) {
       setStatus({ kind: 'error', message: String(e) })
-      setConnStatus('error')
+      setConnStatusByAgent(prev => ({ ...prev, [LAIR_ID]: 'error' }))
     }
   }
 
-  const openChildWs = (tunnelPort: number, name: string) => {
+  const openChildWs = (tunnelPort: number, name: string): WebSocket | null => {
+    // If we already have an open or in-flight WS for this child, reuse it
+    // — opening a second would just race with the first.
+    const existing = childWsRefs.current.get(name)
+    if (existing && existing.readyState <= WebSocket.OPEN) return existing
+
     const ws = new WebSocket(`ws://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(name)}/stream`)
-    childWsRef.current = ws
+    childWsRefs.current.set(name, ws)
     ws.onclose = () => {
-      if (childWsRef.current === ws) childWsRef.current = null
-      // Only flip status if this child is still the active target; if the
-      // user has already switched away, leave their new chat alone.
-      if (activeAgentRef.current === name) setConnStatus('pending')
+      if (childWsRefs.current.get(name) === ws) childWsRefs.current.delete(name)
+      setConnStatusByAgent(prev => ({ ...prev, [name]: 'pending' }))
     }
     ws.onerror = () => {
-      if (activeAgentRef.current === name) setConnStatus('error')
+      setConnStatusByAgent(prev => ({ ...prev, [name]: 'error' }))
     }
     ws.onmessage = (e) => {
       const data = typeof e.data === 'string' ? e.data : ''
@@ -167,33 +244,37 @@ function App() {
         ws.send(encodeClientFrame({ type: 'pong', id: ev.id }))
         return
       }
-      if (activeAgentRef.current === name) applyChatEvent(ev)
+      // Always write to *this* agent's slot — even if the user has navigated
+      // away. That's what makes the in-progress chat survive a tab switch.
+      applyChatEvent(name, ev)
     }
+    return ws
   }
 
   const selectAgent = (id: string) => {
     if (status.kind !== 'connected') return
     if (id === activeAgent) return
-    // Drop any in-flight child WS — its chat events would otherwise leak
-    // into the new selection's chat for a tick after the switch.
-    if (childWsRef.current) {
-      try { childWsRef.current.close() } catch {}
-      childWsRef.current = null
-    }
-    setItems([])
     setActiveAgent(id)
-    activeAgentRef.current = id
     if (id === LAIR_ID) {
-      // Master is already open; mirror its current ready/streaming state.
-      setConnStatus(masterWsRef.current?.readyState === WebSocket.OPEN ? 'ready' : 'pending')
+      // Master is already open; sync the status pill to its actual state
+      // (preserve a streaming/ready status if a turn is mid-flight).
+      setConnStatusByAgent(prev => ({
+        ...prev,
+        [LAIR_ID]: masterWsRef.current?.readyState === WebSocket.OPEN ? (prev[LAIR_ID] ?? 'ready') : 'pending',
+      }))
     } else {
-      setConnStatus('pending')
+      // First time opening this child? Spin up a WS; otherwise reuse the
+      // one we already have streaming into its slot.
+      if (!childWsRefs.current.has(id)) {
+        setConnStatusByAgent(prev => ({ ...prev, [id]: 'pending' }))
+      }
       openChildWs(status.tunnelPort, id)
     }
   }
 
   const activeWs = (): WebSocket | null => {
-    return activeAgent === LAIR_ID ? masterWsRef.current : childWsRef.current
+    if (activeAgent === LAIR_ID) return masterWsRef.current
+    return childWsRefs.current.get(activeAgent) ?? null
   }
 
   const send = () => {
@@ -203,34 +284,67 @@ function App() {
     const ws = activeWs()
     if (!ws || ws.readyState !== WebSocket.OPEN) return
     ws.send(encodeClientFrame({ type: 'user_message', text }))
-    setItems(prev => [...prev, { kind: 'user', text }])
-    setDraft('')
+    const agentId = activeAgent
+    setItemsByAgent(prev => ({
+      ...prev,
+      [agentId]: [...(prev[agentId] ?? []), { kind: 'user', text }],
+    }))
+    setDraftByAgent(prev => ({ ...prev, [agentId]: '' }))
+    // Optimistically flip to 'streaming' so the orbit indicator + stop button
+    // appear the moment Send is pressed, not only when the first text delta
+    // lands (which can be a noticeable beat with model thinking time). The
+    // first server event will reaffirm 'streaming'; done/interrupted/error
+    // flip it back to 'ready' as usual.
+    setConnStatusByAgent(prev => ({ ...prev, [agentId]: 'streaming' }))
     stickToBottomRef.current = true
   }
 
   const interrupt = () => {
     const ws = activeWs()
     if (!ws || ws.readyState !== WebSocket.OPEN) return
+    if (stopSent) return  // double-tap guard — wait for ack or fallback
     ws.send(encodeClientFrame({ type: 'interrupt' }))
+    const agentId = activeAgent
+    setStopSentByAgent(prev => ({ ...prev, [agentId]: true }))
+    // Clear any stale timer for this agent, then arm a 3 s fallback.
+    const prevTimer = stopAckTimersRef.current[agentId]
+    if (prevTimer) clearTimeout(prevTimer)
+    stopAckTimersRef.current[agentId] = setTimeout(() => {
+      stopAckTimersRef.current[agentId] = null
+      setStopSentByAgent(prev => ({ ...prev, [agentId]: false }))
+    }, STOP_ACK_TIMEOUT_MS)
   }
 
   const disconnect = () => {
-    if (childWsRef.current) { try { childWsRef.current.close() } catch {}; childWsRef.current = null }
+    // Tear down every child WS we hold; their onclose handlers will flip
+    // each slot's connStatus to 'pending'.
+    for (const ws of childWsRefs.current.values()) {
+      try { ws.close() } catch {}
+    }
+    childWsRefs.current.clear()
+    // Cancel any outstanding stop-ack timers; their state will be reset on
+    // the next connect.
+    for (const k of Object.keys(stopAckTimersRef.current)) {
+      const t = stopAckTimersRef.current[k]
+      if (t) clearTimeout(t)
+    }
+    stopAckTimersRef.current = {}
     if (status.kind === 'connected') status.ws.close()
     else setStatus({ kind: 'idle' })
   }
 
   const clearChat = () => {
     if (status.kind !== 'connected') return
+    const agentId = activeAgent
     // Wipe the visible log immediately so the click feels instant.
-    setItems([])
+    setItemsByAgent(prev => ({ ...prev, [agentId]: [] }))
     // Ask the server to drop its conversation state too — without this the
     // next message would resume on top of the previous transcript. lair's
     // /clear lives at the root; child clears go through the proxy.
     const base = `http://127.0.0.1:${status.tunnelPort}`
-    const url  = activeAgent === LAIR_ID
+    const url  = agentId === LAIR_ID
       ? `${base}/clear`
-      : `${base}/agents/${encodeURIComponent(activeAgent)}/clear`
+      : `${base}/agents/${encodeURIComponent(agentId)}/clear`
     fetch(url, { method: 'POST' }).catch(() => { /* fire-and-forget */ })
   }
 
@@ -254,7 +368,6 @@ function App() {
       <Sidebar
         agents={agents}
         activeAgent={activeAgent}
-        connStatus={connStatus}
         onSelect={selectAgent}
         onDisconnect={disconnect}
       />
@@ -287,6 +400,7 @@ function App() {
           onSend={send}
           onInterrupt={interrupt}
           streaming={connStatus === 'streaming'}
+          stopSent={stopSent}
         />
       </div>
     </div>
@@ -435,37 +549,34 @@ function ConnectScreen({
 }
 
 function Sidebar({
-  agents, activeAgent, connStatus, onSelect, onDisconnect,
+  agents, activeAgent, onSelect, onDisconnect,
 }: {
   agents: AgentInfo[]
   activeAgent: string
-  connStatus: ConnStatus
   onSelect: (id: string) => void
   onDisconnect: () => void
 }) {
   return (
     <aside className="sidebar">
-      <div className="sidebar-head">
-        <div className="sidebar-brand">OKTO</div>
-        <div className="sidebar-brand-sub">Lair · Desktop</div>
-      </div>
-
-      <div className="sidebar-section">
-        <p className="sidebar-section-title">Status</p>
-        <StatusPill status={connStatus} />
+      <div className="sidebar-section sidebar-agents sidebar-section-first">
+        <ul className="agent-list">
+          <AgentRow
+            id={LAIR_ID}
+            name="Lair"
+            statusText="main"
+            statusKind="ready"
+            active={activeAgent === LAIR_ID}
+            onSelect={onSelect}
+          />
+        </ul>
       </div>
 
       <div className="sidebar-section sidebar-agents">
         <p className="sidebar-section-title">Agents</p>
         <ul className="agent-list">
-          <AgentRow
-            id={LAIR_ID}
-            name="Lair"
-            statusText="master"
-            statusKind="ready"
-            active={activeAgent === LAIR_ID}
-            onSelect={onSelect}
-          />
+          {agents.length === 0 && (
+            <li className="agent-empty">No child agents</li>
+          )}
           {agents.map(a => (
             <AgentRow
               key={a.id}
@@ -583,13 +694,14 @@ function truncate(s: string, n: number): string {
 }
 
 function InputBar({
-  draft, setDraft, onSend, onInterrupt, streaming,
+  draft, setDraft, onSend, onInterrupt, streaming, stopSent,
 }: {
   draft: string
   setDraft: (s: string) => void
   onSend: () => void
   onInterrupt: () => void
   streaming: boolean
+  stopSent: boolean
 }) {
   const taRef = useRef<HTMLTextAreaElement>(null)
 
@@ -621,9 +733,21 @@ function InputBar({
           rows={1}
         />
         {streaming ? (
-          <button className="stop-btn" onClick={onInterrupt} title="Interrupt">
-            <span className="stop-icon" />
-          </button>
+          // Mirrors mobile's stop-button-with-orbit: the OrbitingArc spins
+          // around the red stop button while the model is generating;
+          // clicking sends an interrupt and locks the button at reduced
+          // opacity until the server's interrupt_ack (or our 3 s fallback).
+          <div className={`input-btn-slot ${stopSent ? 'stop-sent' : ''}`}>
+            <span className="orbit-arc" />
+            <button
+              className="stop-btn"
+              onClick={onInterrupt}
+              disabled={stopSent}
+              title={stopSent ? 'Interrupt sent…' : 'Interrupt'}
+            >
+              <span className="stop-icon" />
+            </button>
+          </div>
         ) : (
           <button
             className="send-btn"

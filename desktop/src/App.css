@@ -182,6 +182,7 @@ textarea { resize: none; }
 
 .sidebar-section { padding: 18px 20px 8px; }
 .sidebar-agents { padding-bottom: 14px; }
+.sidebar-section-first { padding-top: 24px; }
 
 .sidebar-section-title {
   font-family: var(--mono);
@@ -282,6 +283,18 @@ textarea { resize: none; }
 
 .agent-row.active .agent-status {
   color: var(--accent);
+}
+
+.agent-empty {
+  list-style: none;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 .sidebar-foot {
@@ -572,7 +585,7 @@ textarea { resize: none; }
 
 .chat-input:focus { border-color: var(--accent); }
 
-.send-btn, .stop-btn {
+.send-btn {
   width: 52px;
   height: 52px;
   border-radius: 6px;
@@ -582,9 +595,8 @@ textarea { resize: none; }
   flex-shrink: 0;
   border: none;
   color: #fff;
+  background: var(--user-blue);
 }
-
-.send-btn { background: var(--user-blue); }
 .send-btn:disabled {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -592,14 +604,35 @@ textarea { resize: none; }
   cursor: default;
 }
 
-.stop-btn { background: #FF3B30; }
-
-.send-btn-icon {
-  display: inline-block;
-  transform: translateY(-1px) rotate(-22deg);
-  font-size: 20px;
-  font-weight: 700;
+/* Interrupt button + orbiting activity indicator — mirrors mobile's
+   stop-button-with-OrbitingArc (mobile/App.tsx ~line 1654). The slot is a
+   relative box that contains both the spinning arc (absolute, full slot
+   size) and the centered red stop button (50x50, circular). */
+.input-btn-slot {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
+
+.input-btn-slot .stop-btn {
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  border: none;
+  background: #FF3B30;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.input-btn-slot.stop-sent .stop-btn { opacity: 0.4; cursor: default; }
 
 .stop-icon {
   display: inline-block;
@@ -607,4 +640,26 @@ textarea { resize: none; }
   height: 14px;
   background: #fff;
   border-radius: 2px;
+}
+
+.orbit-arc {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 3px solid transparent;
+  border-top-color: var(--accent);
+  animation: orbit-spin 1.1s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes orbit-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.send-btn-icon {
+  display: inline-block;
+  transform: translateY(-1px) rotate(-22deg);
+  font-size: 20px;
+  font-weight: 700;
 }
