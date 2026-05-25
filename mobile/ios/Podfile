@@ -8,6 +8,12 @@ require Pod::Executable.execute_command('node', ['-p',
 platform :ios, min_ios_version_supported
 prepare_react_native_project!
 
+# Workspace filename. Without this, CocoaPods would derive it from the
+# `octo.xcodeproj` filename and regenerate `octo.xcworkspace` on every
+# `pod install`. Pin it to `okto` so the workspace bundle matches the
+# product/bundle id and the path CI expects (.github/workflows/ios.yml).
+workspace 'okto'
+
 linkage = ENV['USE_FRAMEWORKS']
 if linkage != nil
   Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green
