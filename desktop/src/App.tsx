@@ -3,9 +3,13 @@ import { invoke } from '@tauri-apps/api/core'
 import { parseQrPayload, type QrPayload } from './qr'
 import {
   encodeClientFrame, parseServerEvent,
-  type ServerEvent,
+  type AgentInfo, type ServerEvent,
 } from './wire'
 import './App.css'
+
+// The pseudo-id we use for lair itself in the sidebar list. Children's ids are
+// their names (per AgentInfo.id); 'lair' is reserved so it can never collide.
+const LAIR_ID = 'lair'
 
 // ── Chat item model ──────────────────────────────────────────────────────────
 //
@@ -36,10 +40,29 @@ function App() {
   const [items, setItems]         = useState<ChatItem[]>([])
   const [draft, setDraft]         = useState('')
   const [connStatus, setConnStatus] = useState<ConnStatus>('pending')
+  const [agents, setAgents]       = useState<AgentInfo[]>([])
+  const [activeAgent, setActiveAgent] = useState<string>(LAIR_ID)
 
   const chatRef = useRef<HTMLDivElement>(null)
   // Stick to the bottom while the user is at the bottom; let them scroll up.
   const stickToBottomRef = useRef(true)
+
+  // We maintain *two* WebSockets when chatting with a child:
+  //
+  //   masterWsRef → ws://tunnel/stream            (always-on after connect;
+  //                                                feeds the agents list)
+  //   childWsRef  → ws://tunnel/agents/<id>/stream (opened on agent select,
+  //                                                closed when leaving)
+  //
+  // When activeAgent === LAIR_ID, the master WS *is* the chat WS — child is
+  // null. This mirrors the master/child split in mobile/App.tsx.
+  const masterWsRef = useRef<WebSocket | null>(null)
+  const childWsRef  = useRef<WebSocket | null>(null)
+  // WS message handlers fire from event-loop callbacks and would otherwise
+  // close over a stale `activeAgent`. Bounce through a ref so the master's
+  // chat-vs-list routing always sees the current selection.
+  const activeAgentRef = useRef<string>(LAIR_ID)
+  useEffect(() => { activeAgentRef.current = activeAgent }, [activeAgent])
 
   useEffect(() => {
     const el = chatRef.current
@@ -58,7 +81,7 @@ function App() {
     }
   }, [items])
 
-  const applyEvent = (ev: ServerEvent) => {
+  const applyChatEvent = (ev: ServerEvent) => {
     setItems(prev => foldEvent(prev, ev))
     if (ev.type === 'ready')         setConnStatus('ready')
     if (ev.type === 'text')          setConnStatus('streaming')
@@ -66,6 +89,18 @@ function App() {
     if (ev.type === 'done')          setConnStatus('ready')
     if (ev.type === 'interrupted')   setConnStatus('ready')
     if (ev.type === 'error')         setConnStatus('error')
+  }
+
+  // The master WS is special: it always handles `agents` (which only lair
+  // emits), but its chat events should only feed the visible chat when Lair
+  // is the active agent. Children never push `agents`, so their handler is
+  // plain applyChatEvent.
+  const handleMasterEvent = (ev: ServerEvent) => {
+    if (ev.type === 'agents') {
+      setAgents(ev.agents)
+      return
+    }
+    if (activeAgentRef.current === LAIR_ID) applyChatEvent(ev)
   }
 
   const connect = async () => {
@@ -76,6 +111,9 @@ function App() {
     }
     setStatus({ kind: 'connecting', target })
     setItems([])
+    setAgents([])
+    setActiveAgent(LAIR_ID)
+    activeAgentRef.current = LAIR_ID
     setConnStatus('pending')
     try {
       const tunnelPort = await invoke<number>('noise_connect', {
@@ -84,8 +122,14 @@ function App() {
         serverPubkeyB32: target.pk,
       })
       const ws = new WebSocket(`ws://127.0.0.1:${tunnelPort}/stream`)
+      masterWsRef.current = ws
       ws.onopen  = () => setStatus({ kind: 'connected', target, tunnelPort, ws })
-      ws.onclose = () => { setStatus({ kind: 'idle' }); setConnStatus('pending') }
+      ws.onclose = () => {
+        masterWsRef.current = null
+        setStatus({ kind: 'idle' })
+        setConnStatus('pending')
+        setAgents([])
+      }
       ws.onerror = () => { setStatus({ kind: 'error', message: 'WebSocket error' }); setConnStatus('error') }
       ws.onmessage = (e) => {
         const data = typeof e.data === 'string' ? e.data : ''
@@ -95,7 +139,7 @@ function App() {
           ws.send(encodeClientFrame({ type: 'pong', id: ev.id }))
           return
         }
-        applyEvent(ev)
+        handleMasterEvent(ev)
       }
     } catch (e) {
       setStatus({ kind: 'error', message: String(e) })
@@ -103,22 +147,75 @@ function App() {
     }
   }
 
+  const openChildWs = (tunnelPort: number, name: string) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(name)}/stream`)
+    childWsRef.current = ws
+    ws.onclose = () => {
+      if (childWsRef.current === ws) childWsRef.current = null
+      // Only flip status if this child is still the active target; if the
+      // user has already switched away, leave their new chat alone.
+      if (activeAgentRef.current === name) setConnStatus('pending')
+    }
+    ws.onerror = () => {
+      if (activeAgentRef.current === name) setConnStatus('error')
+    }
+    ws.onmessage = (e) => {
+      const data = typeof e.data === 'string' ? e.data : ''
+      const ev = parseServerEvent(data)
+      if (!ev) return
+      if (ev.type === 'ping') {
+        ws.send(encodeClientFrame({ type: 'pong', id: ev.id }))
+        return
+      }
+      if (activeAgentRef.current === name) applyChatEvent(ev)
+    }
+  }
+
+  const selectAgent = (id: string) => {
+    if (status.kind !== 'connected') return
+    if (id === activeAgent) return
+    // Drop any in-flight child WS — its chat events would otherwise leak
+    // into the new selection's chat for a tick after the switch.
+    if (childWsRef.current) {
+      try { childWsRef.current.close() } catch {}
+      childWsRef.current = null
+    }
+    setItems([])
+    setActiveAgent(id)
+    activeAgentRef.current = id
+    if (id === LAIR_ID) {
+      // Master is already open; mirror its current ready/streaming state.
+      setConnStatus(masterWsRef.current?.readyState === WebSocket.OPEN ? 'ready' : 'pending')
+    } else {
+      setConnStatus('pending')
+      openChildWs(status.tunnelPort, id)
+    }
+  }
+
+  const activeWs = (): WebSocket | null => {
+    return activeAgent === LAIR_ID ? masterWsRef.current : childWsRef.current
+  }
+
   const send = () => {
     if (status.kind !== 'connected') return
     const text = draft.trim()
     if (!text) return
-    status.ws.send(encodeClientFrame({ type: 'user_message', text }))
+    const ws = activeWs()
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    ws.send(encodeClientFrame({ type: 'user_message', text }))
     setItems(prev => [...prev, { kind: 'user', text }])
     setDraft('')
     stickToBottomRef.current = true
   }
 
   const interrupt = () => {
-    if (status.kind !== 'connected') return
-    status.ws.send(encodeClientFrame({ type: 'interrupt' }))
+    const ws = activeWs()
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    ws.send(encodeClientFrame({ type: 'interrupt' }))
   }
 
   const disconnect = () => {
+    if (childWsRef.current) { try { childWsRef.current.close() } catch {}; childWsRef.current = null }
     if (status.kind === 'connected') status.ws.close()
     else setStatus({ kind: 'idle' })
   }
@@ -134,17 +231,22 @@ function App() {
     )
   }
 
+  const activeLabel = activeAgent === LAIR_ID
+    ? 'Lair'
+    : agents.find(a => a.id === activeAgent)?.name ?? activeAgent
+
   return (
     <div className="shell">
       <Sidebar
-        target={status.target}
-        tunnelPort={status.tunnelPort}
+        agents={agents}
+        activeAgent={activeAgent}
         connStatus={connStatus}
+        onSelect={selectAgent}
         onDisconnect={disconnect}
       />
       <div className="main">
         <div className="main-head">
-          <span className="main-title">Lair · /</span>
+          <span className="main-title">{activeLabel}</span>
           <StatusPill status={connStatus} />
         </div>
 
@@ -309,11 +411,12 @@ function ConnectScreen({
 }
 
 function Sidebar({
-  target, tunnelPort, connStatus, onDisconnect,
+  agents, activeAgent, connStatus, onSelect, onDisconnect,
 }: {
-  target: QrPayload
-  tunnelPort: number
+  agents: AgentInfo[]
+  activeAgent: string
   connStatus: ConnStatus
+  onSelect: (id: string) => void
   onDisconnect: () => void
 }) {
   return (
@@ -328,24 +431,29 @@ function Sidebar({
         <StatusPill status={connStatus} />
       </div>
 
-      <div className="sidebar-section">
-        <p className="sidebar-section-title">Endpoint</p>
-        <div className="sidebar-meta">
-          <b>Host</b>
-          {target.host}
-        </div>
-        <div className="sidebar-meta">
-          <b>Port</b>
-          {target.port}
-        </div>
-        <div className="sidebar-meta">
-          <b>Pubkey</b>
-          {target.pk.slice(0, 16)}…
-        </div>
-        <div className="sidebar-meta">
-          <b>Tunnel</b>
-          127.0.0.1:{tunnelPort}
-        </div>
+      <div className="sidebar-section sidebar-agents">
+        <p className="sidebar-section-title">Agents</p>
+        <ul className="agent-list">
+          <AgentRow
+            id={LAIR_ID}
+            name="Lair"
+            statusText="master"
+            statusKind="ready"
+            active={activeAgent === LAIR_ID}
+            onSelect={onSelect}
+          />
+          {agents.map(a => (
+            <AgentRow
+              key={a.id}
+              id={a.id}
+              name={a.name}
+              statusText={a.status}
+              statusKind={agentStatusKind(a.status)}
+              active={activeAgent === a.id}
+              onSelect={onSelect}
+            />
+          ))}
+        </ul>
       </div>
 
       <div className="sidebar-spacer" />
@@ -357,6 +465,36 @@ function Sidebar({
       </div>
     </aside>
   )
+}
+
+function AgentRow({
+  id, name, statusText, statusKind, active, onSelect,
+}: {
+  id: string
+  name: string
+  statusText: string
+  statusKind: 'ready' | 'pending' | 'error'
+  active: boolean
+  onSelect: (id: string) => void
+}) {
+  return (
+    <li>
+      <button
+        className={`agent-row ${active ? 'active' : ''}`}
+        onClick={() => onSelect(id)}
+      >
+        <span className={`agent-dot dot-${statusKind}`} />
+        <span className="agent-name">{name}</span>
+        <span className="agent-status">{statusText}</span>
+      </button>
+    </li>
+  )
+}
+
+function agentStatusKind(status: string): 'ready' | 'pending' | 'error' {
+  if (status === 'running') return 'ready'
+  if (status === 'pending') return 'pending'
+  return 'error'
 }
 
 function StatusPill({ status }: { status: ConnStatus }) {
