@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { parseQrPayload, type QrPayload } from './qr'
 import {
   encodeClientFrame, parseServerEvent,
-  type AgentInfo, type ServerEvent,
+  type AgentInfo, type ServerEvent, type TaskRecord,
 } from './wire'
 import './App.css'
 
@@ -20,6 +20,13 @@ const EMPTY_ITEMS:  ChatItem[] = []
 // before assuming the server's `interrupt_ack` was lost and re-enabling.
 // Matches mobile's stopAckTimerRef behavior in mobile/App.tsx.
 const STOP_ACK_TIMEOUT_MS = 3000
+
+// How long to keep a task's STOP button latched in "STOPPING" before assuming
+// the cancel_task_ack was lost on a WS hiccup. Matches mobile's
+// CANCEL_ACK_TIMEOUT_MS.
+const CANCEL_ACK_TIMEOUT_MS = 6000
+
+const EMPTY_TASKS: TaskRecord[] = []
 
 // ── Chat item model ──────────────────────────────────────────────────────────
 //
@@ -62,12 +69,26 @@ function App() {
   // mobile's stopSent/stopAckTimerRef.
   const [stopSentByAgent,   setStopSentByAgent]   = useState<Record<string, boolean>>({})
 
+  // Background-task registry per agent — lair pushes one `tasks` frame on
+  // every spawn/completion/cancellation. Mobile lives in mobile/App.tsx as
+  // `masterTasks` + per-child `tasks`.
+  const [tasksByAgent,      setTasksByAgent]      = useState<Record<string, TaskRecord[]>>({})
+
+  // Optimistic latch for the per-task STOP button. One Set shared across
+  // agents — task_ids are server-allocated UUIDs so they don't collide.
+  const [cancellingIds,     setCancellingIds]     = useState<Set<string>>(() => new Set())
+  const cancelTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+
+  // Visibility for the Background Tasks modal.
+  const [showTasksModal,    setShowTasksModal]    = useState(false)
+
   // Derived per-agent slices for the active tab. EMPTY_ITEMS is a stable
   // reference so [items] dep checks don't fire when an unrelated tab updates.
   const items      = itemsByAgent[activeAgent]      ?? EMPTY_ITEMS
   const draft      = draftByAgent[activeAgent]      ?? ''
   const connStatus = connStatusByAgent[activeAgent] ?? 'pending'
   const stopSent   = stopSentByAgent[activeAgent]   ?? false
+  const tasks      = tasksByAgent[activeAgent]      ?? EMPTY_TASKS
 
   const chatRef = useRef<HTMLDivElement>(null)
   // Stick to the bottom while the user is at the bottom; let them scroll up.
@@ -129,11 +150,70 @@ function App() {
     setStopSentByAgent(prev => prev[agentId] ? { ...prev, [agentId]: false } : prev)
   }
 
+  const clearCancelTimer = (taskId: string) => {
+    const t = cancelTimersRef.current.get(taskId)
+    if (t != null) { clearTimeout(t); cancelTimersRef.current.delete(taskId) }
+  }
+
+  const releaseCancel = (taskId: string) => {
+    clearCancelTimer(taskId)
+    setCancellingIds(prev => {
+      if (!prev.has(taskId)) return prev
+      const next = new Set(prev)
+      next.delete(taskId)
+      return next
+    })
+  }
+
+  // Reconcile the optimistic STOP-button latch against the authoritative task
+  // registry: drop any latched id whose task is gone or no longer running.
+  // Mirrors mobile's useCancelGuard.reconcile.
+  const reconcileCancelling = (taskList: TaskRecord[]) => {
+    setCancellingIds(prev => {
+      if (prev.size === 0) return prev
+      let next: Set<string> | null = null
+      for (const id of prev) {
+        const t = taskList.find(x => x.task_id === id)
+        if (t == null || t.status !== 'running') {
+          if (next == null) next = new Set(prev)
+          next.delete(id)
+          clearCancelTimer(id)
+        }
+      }
+      return next ?? prev
+    })
+  }
+
+  const requestCancelTask = (taskId: string) => {
+    const ws = activeWs()
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    ws.send(encodeClientFrame({ type: 'cancel_task', id: taskId }))
+    setCancellingIds(prev => prev.has(taskId) ? prev : new Set(prev).add(taskId))
+    clearCancelTimer(taskId)
+    cancelTimersRef.current.set(taskId, setTimeout(() => releaseCancel(taskId), CANCEL_ACK_TIMEOUT_MS))
+  }
+
   // Apply a chat-stream event to a specific agent's slot. Runs regardless of
   // which tab is currently visible — that's what makes per-agent persistence
   // work; events flow into their own slot and the active tab just renders
   // whichever one is selected.
   const applyChatEvent = (agentId: string, ev: ServerEvent) => {
+    // `tasks` and `cancel_task_ack` don't belong in the chat scroll — they
+    // drive the background-tasks registry / STOP-button latch instead.
+    if (ev.type === 'tasks') {
+      setTasksByAgent(prev => ({ ...prev, [agentId]: ev.tasks }))
+      reconcileCancelling(ev.tasks)
+      return
+    }
+    if (ev.type === 'cancel_task_ack') {
+      clearCancelTimer(ev.id)
+      // Server had nothing live to cancel — release the latch immediately.
+      // If fired=true, leave it latched; the next `tasks` frame moving the
+      // task off `running` will release via reconcileCancelling.
+      if (!ev.fired) releaseCancel(ev.id)
+      return
+    }
+
     setItemsByAgent(prev => ({ ...prev, [agentId]: foldEvent(prev[agentId] ?? [], ev) }))
     let next: ConnStatus | null = null
     if (ev.type === 'ready')        next = 'ready'
@@ -176,9 +256,14 @@ function App() {
     setDraftByAgent({})
     setConnStatusByAgent({ [LAIR_ID]: 'pending' })
     setStopSentByAgent({})
+    setTasksByAgent({})
+    setCancellingIds(new Set())
+    for (const t of cancelTimersRef.current.values()) clearTimeout(t)
+    cancelTimersRef.current.clear()
     stopAckTimersRef.current = {}
     setAgents([])
     setActiveAgent(LAIR_ID)
+    setShowTasksModal(false)
     try {
       const tunnelPort = await invoke<number>('noise_connect', {
         host:            target.host,
@@ -322,13 +407,16 @@ function App() {
       try { ws.close() } catch {}
     }
     childWsRefs.current.clear()
-    // Cancel any outstanding stop-ack timers; their state will be reset on
-    // the next connect.
+    // Cancel any outstanding stop-ack and cancel-task timers; their state
+    // will be reset on the next connect.
     for (const k of Object.keys(stopAckTimersRef.current)) {
       const t = stopAckTimersRef.current[k]
       if (t) clearTimeout(t)
     }
     stopAckTimersRef.current = {}
+    for (const t of cancelTimersRef.current.values()) clearTimeout(t)
+    cancelTimersRef.current.clear()
+    setShowTasksModal(false)
     if (status.kind === 'connected') status.ws.close()
     else setStatus({ kind: 'idle' })
   }
@@ -376,6 +464,7 @@ function App() {
           <span className="main-title">{activeLabel}</span>
           <div className="main-head-right">
             <StatusPill status={connStatus} />
+            <TasksButton tasks={tasks} onClick={() => setShowTasksModal(true)} />
             <button
               className="clear-btn"
               onClick={clearChat}
@@ -403,6 +492,15 @@ function App() {
           stopSent={stopSent}
         />
       </div>
+
+      <TasksModal
+        visible={showTasksModal}
+        agentLabel={activeLabel}
+        tasks={tasks}
+        cancellingIds={cancellingIds}
+        onClose={() => setShowTasksModal(false)}
+        onCancel={requestCancelTask}
+      />
     </div>
   )
 }
@@ -630,6 +728,148 @@ function agentStatusKind(status: string): 'ready' | 'pending' | 'error' {
   if (status === 'running') return 'ready'
   if (status === 'pending') return 'pending'
   return 'error'
+}
+
+// ── Background tasks ────────────────────────────────────────────────────────
+
+function TasksButton({ tasks, onClick }: { tasks: TaskRecord[]; onClick: () => void }) {
+  const running = tasks.filter(t => t.status === 'running').length
+  return (
+    <button
+      className={`tasks-btn ${running > 0 ? 'tasks-btn-active' : ''}`}
+      onClick={onClick}
+      title="Background tasks"
+    >
+      <span className={`tasks-btn-dot ${running > 0 ? 'tasks-btn-dot-live' : ''}`} />
+      {running > 0 ? `Tasks · ${running}` : 'Tasks'}
+    </button>
+  )
+}
+
+function TasksModal({
+  visible, agentLabel, tasks, cancellingIds, onClose, onCancel,
+}: {
+  visible:       boolean
+  agentLabel:    string
+  tasks:         TaskRecord[]
+  cancellingIds: Set<string>
+  onClose:       () => void
+  onCancel:      (taskId: string) => void
+}) {
+  // Close on Escape — desktop-modal convention.
+  useEffect(() => {
+    if (!visible) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [visible, onClose])
+
+  if (!visible) return null
+
+  // Running first, then most-recently started.
+  const sorted = tasks.slice().sort((a, b) => {
+    if (a.status === 'running' && b.status !== 'running') return -1
+    if (b.status === 'running' && a.status !== 'running') return 1
+    return b.started_at - a.started_at
+  })
+
+  return (
+    <div className="tasks-modal-backdrop" onClick={onClose}>
+      <div className="tasks-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="tasks-modal-head">
+          <div>
+            <div className="tasks-modal-title">Background Tasks</div>
+            <div className="tasks-modal-sub">{agentLabel}</div>
+          </div>
+          <button className="tasks-modal-close" onClick={onClose} title="Close (Esc)">✕</button>
+        </div>
+        <div className="tasks-modal-body">
+          {sorted.length === 0 ? (
+            <div className="tasks-empty">No background tasks</div>
+          ) : (
+            sorted.map(t => (
+              <TaskRow
+                key={t.task_id}
+                task={t}
+                cancelling={cancellingIds.has(t.task_id)}
+                onCancel={() => onCancel(t.task_id)}
+              />
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TaskRow({
+  task, cancelling, onCancel,
+}: {
+  task: TaskRecord
+  cancelling: boolean
+  onCancel: () => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const isRunning = task.status === 'running'
+  const ts = task.completed_at != null
+    ? relativeTime(task.completed_at)
+    : relativeTime(task.started_at)
+  const statusKind = taskStatusKind(task.status)
+  return (
+    <div className="task-row">
+      <div className="task-row-head">
+        <span className={`task-status-tag task-status-${statusKind}`}>
+          <span className={`task-status-dot dot-${statusKind}`} />
+          <span className="task-status-label">{task.status.toUpperCase()}</span>
+        </span>
+        {task.wake_interval_secs != null && (
+          <span className="task-monitored">◈ MONITORED</span>
+        )}
+        <span className="task-timestamp">{ts}</span>
+        {isRunning && (
+          <button
+            className={`task-stop-btn ${cancelling ? 'cancelling' : ''}`}
+            onClick={onCancel}
+            disabled={cancelling}
+          >
+            {cancelling ? 'Stopping' : 'Stop'}
+          </button>
+        )}
+      </div>
+      <button
+        className="task-body"
+        onClick={() => setExpanded(v => !v)}
+        title={expanded ? 'Collapse' : 'Expand'}
+      >
+        <div className={`task-command ${expanded ? '' : 'task-clamp'}`}>{task.command}</div>
+        {task.summary && task.summary.length > 0 && (
+          <div className={`task-summary ${expanded ? '' : 'task-clamp'}`}>{task.summary}</div>
+        )}
+        {task.cost_usd != null && task.cost_usd > 0 && (
+          <div className="task-cost">{formatCost(task.cost_usd)}</div>
+        )}
+      </button>
+    </div>
+  )
+}
+
+function taskStatusKind(status: TaskRecord['status']): 'running' | 'done' | 'cancelled' | 'error' {
+  if (status === 'running')   return 'running'
+  if (status === 'done')      return 'done'
+  if (status === 'cancelled') return 'cancelled'
+  return 'error'
+}
+
+function relativeTime(epochSecs: number): string {
+  const delta = Math.max(0, Math.floor(Date.now() / 1000) - epochSecs)
+  if (delta < 60)    return `${delta}s ago`
+  if (delta < 3600)  return `${Math.floor(delta / 60)}m ago`
+  if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`
+  return `${Math.floor(delta / 86400)}d ago`
+}
+
+function formatCost(usd: number): string {
+  return usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`
 }
 
 function StatusPill({ status }: { status: ConnStatus }) {
