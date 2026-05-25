@@ -145,6 +145,7 @@ textarea { resize: none; }
   grid-template-columns: 260px 1fr;
   height: 100vh;
   background: var(--bg);
+  overflow: hidden;    /* contain children at viewport height */
 }
 
 .sidebar {
@@ -152,6 +153,8 @@ textarea { resize: none; }
   flex-direction: column;
   border-right: 1px solid var(--border);
   background: var(--bg);
+  min-height: 0;       /* respect grid track height, don't grow with content */
+  overflow-y: auto;    /* scroll agent list internally if it ever overflows */
 }
 
 .sidebar-head {
@@ -351,6 +354,8 @@ textarea { resize: none; }
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;       /* respect grid track height, don't overflow downward */
+  overflow: hidden;    /* clip so .chat is the only scrollable area */
 }
 
 .main-head {
@@ -359,6 +364,37 @@ textarea { resize: none; }
   justify-content: space-between;
   padding: 14px 20px;
   border-bottom: 1px solid var(--border);
+}
+
+.main-head-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.clear-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 5px 12px;
+  color: var(--text-secondary);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.8px;
+  text-transform: uppercase;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.clear-btn:not(:disabled):hover {
+  border-color: var(--text-primary);
+  color: var(--text-primary);
+  background: var(--surface);
+}
+
+.clear-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .main-title {
@@ -372,6 +408,7 @@ textarea { resize: none; }
 
 .chat {
   flex: 1;
+  min-height: 0;       /* allow flex item to shrink under content */
   overflow-y: auto;
   padding: 22px 0;
 }
@@ -392,9 +429,6 @@ textarea { resize: none; }
 .row {
   padding: 0 24px;
   margin-bottom: 14px;
-  max-width: 920px;
-  margin-left: auto;
-  margin-right: auto;
 }
 
 .row.right { display: flex; justify-content: flex-end; }
@@ -519,8 +553,6 @@ textarea { resize: none; }
   display: flex;
   gap: 8px;
   align-items: flex-end;
-  max-width: 920px;
-  margin: 0 auto;
 }
 
 .chat-input {

@@ -220,6 +220,20 @@ function App() {
     else setStatus({ kind: 'idle' })
   }
 
+  const clearChat = () => {
+    if (status.kind !== 'connected') return
+    // Wipe the visible log immediately so the click feels instant.
+    setItems([])
+    // Ask the server to drop its conversation state too — without this the
+    // next message would resume on top of the previous transcript. lair's
+    // /clear lives at the root; child clears go through the proxy.
+    const base = `http://127.0.0.1:${status.tunnelPort}`
+    const url  = activeAgent === LAIR_ID
+      ? `${base}/clear`
+      : `${base}/agents/${encodeURIComponent(activeAgent)}/clear`
+    fetch(url, { method: 'POST' }).catch(() => { /* fire-and-forget */ })
+  }
+
   if (status.kind !== 'connected') {
     return (
       <ConnectScreen
@@ -247,7 +261,17 @@ function App() {
       <div className="main">
         <div className="main-head">
           <span className="main-title">{activeLabel}</span>
-          <StatusPill status={connStatus} />
+          <div className="main-head-right">
+            <StatusPill status={connStatus} />
+            <button
+              className="clear-btn"
+              onClick={clearChat}
+              disabled={connStatus !== 'ready' || items.length === 0}
+              title="Clear chat history"
+            >
+              Clear
+            </button>
+          </div>
         </div>
 
         <div className="chat" ref={chatRef}>
