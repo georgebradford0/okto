@@ -536,6 +536,10 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
         for event in replay {
             if ws_tx.send(WsMessage::Text(event)).await.is_err() { return; }
         }
+        // Tail marker so the client knows the replay is done and can atomically
+        // swap its shadow turn state into view (avoids a truncate-then-rebuild
+        // flash mid-turn). Only emitted when we actually replayed.
+        if ws_tx.send(WsMessage::Text(r#"{"type":"replay_end"}"#.to_string())).await.is_err() { return; }
     }
 
     let mut agents_rx = state.agents_rx.clone();

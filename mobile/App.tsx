@@ -936,6 +936,12 @@ const ChatPane = memo(function ChatPane({
   const closingRef        = useRef(false)
   const streamingIdRef    = useRef<string>(uid())
   const hasAssistantMsgRef = useRef<boolean>(false)
+  // Shadow turn state used during a `ready { resumed: true }` → `replay_end`
+  // window. While non-null, buffered-event handlers route their setMessages
+  // updates into `msgs` here instead of touching the visible state — then the
+  // `replay_end` frame swaps the shadow in atomically. Avoids the visible
+  // truncate-then-rebuild flash on mid-turn reconnect.
+  const replayingRef      = useRef<{ msgs: Message[] } | null>(null)
   // Per-WS counters for the mobile→server keepalive. The WS effect emits
   // `ping { id: ++clientPingNextRef }` every KEEPALIVE_INTERVAL_MS and the
   // server replies with `pong { id }` (handled in handleStreamEvent above,
@@ -994,38 +1000,64 @@ const ChatPane = memo(function ChatPane({
     const event = parseServerEvent(raw)
     if (!event) return
 
+    // Route a message-list update either to the visible state, or — while a
+    // replay window is open — into the shadow that `replay_end` will swap in.
+    const applyMsgs = (updater: (prev: Message[]) => Message[]) => {
+      if (replayingRef.current) {
+        replayingRef.current.msgs = updater(replayingRef.current.msgs)
+      } else {
+        setMessages(updater)
+      }
+    }
+
     switch (event.type) {
       case 'ready': {
         // Server greets us; status becomes 'streaming' if we joined an in-flight
         // turn (events for it will arrive next), else 'ready' for input.
         updateStatus(event.resumed ? 'streaming' : 'ready')
-        setMessages(prev => {
-          // Clear any stale `running` flags. If a WS dropped mid-turn and the
-          // server finished the turn before we reconnected, we missed those
-          // tool_results — without this the dots would keep blinking forever.
-          const hadRunning = prev.some(m => m.running)
-          let cleaned = hadRunning ? prev.map(m => m.running ? { ...m, running: false } : m) : prev
-          if (event.resumed) {
-            // The server's buffer holds the *entire* in-flight turn from its
-            // first event and is about to be replayed. If we've already rendered
-            // any of it (mid-turn WS reconnect), naively processing the replay
-            // would duplicate every text chunk and tool row. Truncate back to
-            // the last turn anchor — the user / bg_complete / bg_progress row
-            // that triggered this turn — so the replay rebuilds it cleanly.
+        if (event.resumed) {
+          // The server's buffer holds the *entire* in-flight turn from its
+          // first event and is about to be replayed. Stash a truncated copy
+          // of the visible state — back to the last turn anchor — as the
+          // shadow that the buffered events will rebuild into. The visible
+          // list stays untouched until `replay_end` swaps the shadow in, so
+          // the user never sees a truncate-then-rebuild flash. Clear any
+          // stale `running` flags while we're at it: a previous WS drop may
+          // have missed tool_results and the dots would otherwise blink on.
+          setMessages(prev => {
+            const hadRunning = prev.some(m => m.running)
+            const cleaned = hadRunning ? prev.map(m => m.running ? { ...m, running: false } : m) : prev
+            let anchor = cleaned
             for (let i = cleaned.length - 1; i >= 0; i--) {
               const role = cleaned[i].role
               if (role === 'user' || role === 'bg_complete' || role === 'bg_progress') {
-                return cleaned.slice(0, i + 1)
+                anchor = cleaned.slice(0, i + 1)
+                break
               }
             }
-          }
-          return cleaned
-        })
+            replayingRef.current = { msgs: anchor }
+            return cleaned
+          })
+        } else {
+          // Not resumed — drop any stale shadow from a previous mid-replay drop.
+          replayingRef.current = null
+        }
         // Reset per-turn streaming refs unconditionally: for resumed=false this
         // is the first turn after connect; for resumed=true the replay restarts
-        // the turn from its first event.
+        // the turn from its first event (events accumulate into the shadow).
         streamingIdRef.current = uid()
         hasAssistantMsgRef.current = false
+        break
+      }
+      case 'replay_end': {
+        // Server has finished replaying the in-flight turn's buffered events
+        // into our shadow. Swap it in as a single atomic update so the user
+        // sees no intermediate state.
+        if (replayingRef.current) {
+          const next = replayingRef.current.msgs
+          replayingRef.current = null
+          setMessages(_ => next)
+        }
         break
       }
       case 'text': {
@@ -1033,10 +1065,10 @@ const ChatPane = memo(function ChatPane({
         if (!hasAssistantMsgRef.current) {
           hasAssistantMsgRef.current = true
           const id = streamingIdRef.current
-          setMessages(prev => appendMsg(prev, { id, role: 'assistant' as const, text: chunk }))
+          applyMsgs(prev => appendMsg(prev, { id, role: 'assistant' as const, text: chunk }))
         } else {
           const id = streamingIdRef.current
-          setMessages(prev => prev.map(m => m.id === id ? { ...m, text: m.text + chunk } : m))
+          applyMsgs(prev => prev.map(m => m.id === id ? { ...m, text: m.text + chunk } : m))
         }
         break
       }
@@ -1060,7 +1092,7 @@ const ChatPane = memo(function ChatPane({
         // tool `running` only if no earlier tool is still executing; otherwise
         // it's queued and gets promoted when the active one's tool_result
         // arrives. Mirrors the server-side sequential execution.
-        setMessages(prev => {
+        applyMsgs(prev => {
           const anyRunning = prev.some(m => m.running)
           return appendMsg(prev, { id: event.tool_use_id, role: 'tool' as const, text: toolText, running: !anyRunning })
         })
@@ -1068,7 +1100,7 @@ const ChatPane = memo(function ChatPane({
       }
       case 'tool_output': {
         const toolId = event.tool_use_id
-        setMessages(prev => prev.map(m =>
+        applyMsgs(prev => prev.map(m =>
           m.id === toolId ? { ...m, output: (m.output ?? '') + event.line + '\n' } : m
         ))
         break
@@ -1076,7 +1108,7 @@ const ChatPane = memo(function ChatPane({
       case 'tool_result': {
         const toolId = event.tool_use_id
         const out = typeof event.output === 'string' ? event.output : JSON.stringify(event.output)
-        setMessages(prev => {
+        applyMsgs(prev => {
           const completedIdx = prev.findIndex(m => m.id === toolId)
           // Promote the next queued tool (earliest after the completed one,
           // not running, no output yet) to active execution. Tools run in
@@ -1102,7 +1134,7 @@ const ChatPane = memo(function ChatPane({
         log(`[chat] stream done cost_usd=${event.cost_usd}`)
         updateStatus('ready')
         const cost = event.cost_usd
-        setMessages(prev => {
+        applyMsgs(prev => {
           // Defensive: every tool_use should have been matched by a
           // tool_result before the turn ends, but a dropped frame would
           // otherwise leave the dot blinking forever.
@@ -1136,7 +1168,7 @@ const ChatPane = memo(function ChatPane({
         log(`[chat] stream interrupted cost_usd=${event.cost_usd}`)
         updateStatus('ready')
         const cost = event.cost_usd
-        setMessages(prev => {
+        applyMsgs(prev => {
           // Any tool still marked as running won't get a tool_result now.
           prev = prev.map(m => m.running ? { ...m, running: false } : m)
           let stamped = prev
@@ -1155,7 +1187,7 @@ const ChatPane = memo(function ChatPane({
       }
       case 'error':
         logE(`[chat] stream error: ${event.message}`)
-        setMessages(prev => appendMsg(prev.map(m => m.running ? { ...m, running: false } : m), { id: uid(), role: 'error' as const, text: event.message }))
+        applyMsgs(prev => appendMsg(prev.map(m => m.running ? { ...m, running: false } : m), { id: uid(), role: 'error' as const, text: event.message }))
         updateStatus('ready')
         hasAssistantMsgRef.current = false
         streamingIdRef.current = uid()
@@ -1178,7 +1210,7 @@ const ChatPane = memo(function ChatPane({
         // id is stable per task so a subsequent /history reload (which also
         // contains this row) is a no-op rather than a duplicate.
         const id = `bg_${event.task_id}`
-        setMessages(prev => prev.some(m => m.id === id)
+        applyMsgs(prev => prev.some(m => m.id === id)
           ? prev
           : appendMsg(prev, { id, role: 'bg_complete' as const, text: event.text }))
         break
@@ -1187,7 +1219,7 @@ const ChatPane = memo(function ChatPane({
         // A monitored task produced new output mid-run. Each event is distinct
         // output, so it gets its own chip. The event text matches the persisted
         // bg_progress row, so a later /history reload reconciles cleanly.
-        setMessages(prev => appendMsg(prev, { id: uid(), role: 'bg_progress' as const, text: event.text }))
+        applyMsgs(prev => appendMsg(prev, { id: uid(), role: 'bg_progress' as const, text: event.text }))
         break
       case 'ping':
         sendFrame({ type: 'pong', id: event.id })
