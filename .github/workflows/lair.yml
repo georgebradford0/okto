@@ -7,13 +7,75 @@ on:
 # pushes it to ghcr.io/georgebradford0/lair. Tags: <version> (from
 # lair/Cargo.toml) and :latest.
 #
-# The arm64 leg runs under QEMU emulation, which is slow (~30 min for the
-# Rust compile stage). The Dockerfile already has cargo-fetch retry logic to
-# handle the intermittent SSL errors that QEMU builds hit on crates.io.
+# Each platform builds natively on its own runner — amd64 on ubuntu-latest,
+# arm64 on ubuntu-24.04-arm — and the merge job stitches the two single-arch
+# digests into one multi-arch manifest. This avoids the QEMU emulation that
+# previously OOMed apt during the arm64 leg.
+
+env:
+  IMAGE: ghcr.io/georgebradford0/lair
 
 jobs:
-  build-and-push:
-    name: Build & push lair image
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      packages: write
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            slug: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            slug: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: lair/Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=lair-${{ matrix.slug }}
+          cache-to: type=gha,mode=max,scope=lair-${{ matrix.slug }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ matrix.slug }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Merge manifest
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -29,11 +91,15 @@ jobs:
           VERSION=$(grep '^version' lair/Cargo.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')
           echo "value=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Log in to ghcr.io
         uses: docker/login-action@v3
@@ -42,15 +108,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: lair/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ghcr.io/georgebradford0/lair:${{ steps.version.outputs.value }}
-            ghcr.io/georgebradford0/lair:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.IMAGE }}:${{ steps.version.outputs.value }} \
+            -t ${{ env.IMAGE }}:latest \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: docker buildx imagetools inspect ${{ env.IMAGE }}:${{ steps.version.outputs.value }}
