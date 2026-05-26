@@ -79,6 +79,16 @@ RUN apt-get update && apt-get install -y ca-certificates curl git gpg && \
 
 COPY --from=builder /build/target/release/lair /usr/local/bin/lair
 
+# Kaniko executor for building container images without a Docker daemon.
+# Extracted from the official kaniko image via multi-stage COPY; agents invoke
+# it via their bash tool with `--force` (since we're not inside the kaniko image).
+# The /kaniko directory holds the executor binary, credential helpers, and SSL
+# certs that Kaniko expects at runtime.
+COPY --from=gcr.io/kaniko-project/executor:v1.24.0 /kaniko/ /kaniko/
+# Ensure the executor is on PATH and runnable by non-root agent uids.
+RUN ln -sf /kaniko/executor /usr/local/bin/kaniko && \
+    chmod -R a+rX /kaniko
+
 # Dedicated non-root users for child agent processes. Lair (the parent)
 # keeps running as root inside the container so it can chown the bind-mounted
 # /data/agents/<name>/ dirs after creating them. Each agent gets its own uid
@@ -109,7 +119,9 @@ ENV HOME=/data \
     OKTO_AGENTS_DIR=/data/agents \
     OKTO_SKIP_SHELL_ENV=1 \
     OKTO_LAIR_BINARY=/usr/local/bin/lair \
-    NOISE_PORT=8443
+    NOISE_PORT=8443 \
+    DOCKER_CONFIG=/kaniko/.docker/ \
+    SSL_CERT_DIR=/kaniko/ssl/certs
 
 EXPOSE 8000 8443
 

@@ -74,8 +74,17 @@ okto mcp remove --name github
 ```
 One thing to note.  MCPs by default are inherited by parent to spawned child.  This will probably change but I haven't decided on a design to handle MCP inheritance in detail.  Currently the CLI can only update MCPs for local agents, this will probably change soon.
 
-## Docker-in-Docker
-Building docker images from a chat is currently not available.  This might change in the future.  I currently use Github workflows to run docker builds.
+## Building Docker Images
+The lair image includes the [Kaniko](https://github.com/GoogleContainerTools/kaniko) executor, which allows agents to build and push container images **without a Docker daemon or socket**. Agents invoke it from their bash tool:
+
+```sh
+kaniko --force \
+    --dockerfile=Dockerfile \
+    --context=dir:///path/to/workspace \
+    --destination=ghcr.io/org/image:tag
+```
+
+Kaniko runs entirely in userspace — no `--privileged` flag, no socket mount, no inner daemon. The `--force` flag is required because lair is not the official Kaniko image. Registry credentials are configured via `~/.okto/lair-env` (e.g. `GH_TOKEN` for GHCR) or a Docker config JSON at `$DOCKER_CONFIG` (set to `/kaniko/.docker/` in the image).
 
 ## Noise/SSH Keys
 To avoid the necessity of using DNS for securing a connection, the Noise Protocol is used 

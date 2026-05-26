@@ -140,6 +140,8 @@ Baked into the image (see `lair/Dockerfile`):
 | `OKTO_AGENTS_DIR` | `/data/agents` |
 | `OKTO_LAIR_BINARY` | `/usr/local/bin/lair` (used to spawn children) |
 | `OKTO_SKIP_SHELL_ENV` | Always 1; suppresses the login-shell env sourcing |
+| `DOCKER_CONFIG` | `/kaniko/.docker/` (Kaniko credential config location) |
+| `SSL_CERT_DIR` | `/kaniko/ssl/certs` (Kaniko's bundled CA certs) |
 
 Set at `docker run` time by `cli/src/service.rs`:
 

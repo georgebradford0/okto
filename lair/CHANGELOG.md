@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Kaniko executor in lair image.** The lair Docker image now includes the Kaniko (`gcr.io/kaniko-project/executor:v1.24.0`) binary and supporting files, extracted via multi-stage `COPY`. Agents can build and push container images without a Docker daemon or socket mount — invoke `kaniko --force --dockerfile=<path> --context=dir://<dir> --destination=<registry>/<image>:<tag>` from the bash tool. No `--privileged` or socket mount required.
+
 ## [0.11.5] - 2026-05-15
 
 ### Added
