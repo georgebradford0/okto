@@ -1879,6 +1879,20 @@ fn background_task_note() -> &'static str {
      `monitor_process` or `run_command_in_background`."
 }
 
+/// Container-image building note shared by every role running inside
+/// the lair container, where Kaniko is the only available builder.
+fn kaniko_note() -> &'static str {
+    "\n\n# Container image builds\n\
+     The lair container includes the Kaniko executor. When you need to build \
+     and push a Docker/OCI image, use `kaniko --force --dockerfile=<path> \
+     --context=dir://<dir> --destination=<registry>/<image>:<tag>` from your \
+     bash tool. Kaniko runs entirely in userspace — no Docker daemon or socket \
+     is available inside the container, so `docker build` will always fail. \
+     Registry credentials come from the environment (e.g. `GH_TOKEN` for GHCR) \
+     or a Docker config at `$DOCKER_CONFIG` (`/kaniko/.docker/`). Always use \
+     `--force` because lair is not the official Kaniko image."
+}
+
 pub fn build_system_prompt(repo_path: &str) -> String {
     let claude_md = match std::fs::read_to_string(format!("{}/CLAUDE.md", repo_path)) {
         Ok(s) => {
@@ -1894,11 +1908,12 @@ pub fn build_system_prompt(repo_path: &str) -> String {
     let tool_guidance    = shared_tool_guidance();
     let bg_task_note      = background_task_note();
     let spawn_note        = spawn_capability_note();
+    let kaniko            = kaniko_note();
 
     format!(
         "You are an AI assistant helping manage the git repository at {repo_path}.\
          You can inspect code, answer questions, and help coordinate work across branches.\
-         Any path preceded by '@' (e.g. @src/main.rs) is a reference to a file path in the git repository.{claude_md}{tool_guidance}{bg_task_note}{spawn_note}"
+         Any path preceded by '@' (e.g. @src/main.rs) is a reference to a file path in the git repository.{claude_md}{tool_guidance}{kaniko}{bg_task_note}{spawn_note}"
     )
 }
 
@@ -1918,12 +1933,13 @@ pub fn build_agent_system_prompt(workspace: &str) -> String {
     let tool_guidance    = shared_tool_guidance();
     let bg_task_note      = background_task_note();
     let spawn_note        = spawn_capability_note();
+    let kaniko            = kaniko_note();
 
     format!(
         "You are an AI agent running in a containerized workspace at {workspace}.\
          You have bash, file-system, and (when configured) MCP-server tools available.\
          You are not bound to any specific git repository — treat the workspace as scratch \
-         space unless the user gives you something else to work on.{purpose_block}{tool_guidance}{bg_task_note}{spawn_note}"
+         space unless the user gives you something else to work on.{purpose_block}{tool_guidance}{kaniko}{bg_task_note}{spawn_note}"
     )
 }
 
