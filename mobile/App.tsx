@@ -2452,7 +2452,7 @@ function AppInner() {
 
                 {containers.length === 0 && (
                   <View style={s.containerMenuItem}>
-                    <Text style={s.containerMenuItemStatus}>No containers</Text>
+                    <Text style={s.containerMenuItemStatus}>No agents</Text>
                   </View>
                 )}
                 {containers.map(c => {
