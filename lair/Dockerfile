@@ -69,6 +69,7 @@ RUN apt-get update && apt-get install -y ca-certificates curl git gpg && \
         > /etc/apt/sources.list.d/github-cli.list && \
     apt-get update && \
     apt-get install -y \
+        gcc \
         gh \
         jq \
         nodejs \

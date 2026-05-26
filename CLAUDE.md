@@ -143,6 +143,8 @@ Baked into the image (see `lair/Dockerfile`):
 | `DOCKER_CONFIG` | `/kaniko/.docker/` (Kaniko credential config location) |
 | `SSL_CERT_DIR` | `/kaniko/ssl/certs` (Kaniko's bundled CA certs) |
 
+Tools baked into the image (besides `lair`): `gcc`, `git`, `gh`, `jq`, `node`/`npm`, `openssh-client`, `qrencode`, `uv`/`uvx`, `kaniko`.
+
 Set at `docker run` time by `cli/src/service.rs`:
 
 | Variable | Purpose |
