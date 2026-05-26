@@ -464,6 +464,11 @@ function PulsingDot() {
   return <Animated.View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: C.accent, opacity, marginRight: 6 }} />
 }
 
+// Static dimmed dot — signals a tool is queued (will run after the current one finishes).
+function QueuedDot() {
+  return <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: C.accent, opacity: 0.35, marginRight: 6 }} />
+}
+
 const MessageBubble = memo(function MessageBubble({
   message, prevRole,
 }: {
@@ -535,6 +540,7 @@ const MessageBubble = memo(function MessageBubble({
           <View style={s.toolChip}>
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
               {message.running && <PulsingDot />}
+              {!message.running && message.output === undefined && <QueuedDot />}
               <Text style={[s.toolLine, { flex: 1 }]} selectable numberOfLines={toolExpanded ? undefined : 1} ellipsizeMode="tail">{message.text}</Text>
               <Text style={[s.toolChevron, { transform: [{ rotate: toolExpanded ? '90deg' : '0deg' }] }]}>›</Text>
             </View>
