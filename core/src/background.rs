@@ -442,6 +442,32 @@ pub fn monitor_process_tool() -> AnthropicTool {
     }
 }
 
+/// Build the AnthropicTool spec for `stop_monitor`.
+pub fn stop_monitor_tool() -> AnthropicTool {
+    AnthropicTool {
+        name: "stop_monitor".to_string(),
+        description: "Stop a running background or monitored process by its task id. \
+                      Sends SIGTERM (escalating to SIGKILL after 3s) and cancels the \
+                      monitor wake-up loop. Works for both `run_command_in_background` \
+                      and `monitor_process` tasks — the task id format (`bg-<uuid8>`) \
+                      is shared. Returns a confirmation message if the task was found \
+                      and cancelled, or an error if the task id doesn't match any \
+                      running task (already completed or never existed)."
+            .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "The task id returned by `monitor_process` or `run_command_in_background`."
+                }
+            },
+            "required": ["task_id"]
+        }),
+        display_label: Some("Stopping monitored process".into()),
+    }
+}
+
 /// The text of a monitor progress update. `label` is the watched command or
 /// the model-supplied `purpose`. Shared by the persisted `bg_progress`
 /// ApiMessage and the live `BgProgress` wire event so a `/history` reload

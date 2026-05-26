@@ -31,6 +31,7 @@ use okto_core::{
     completion_chat_event, data_dir, finalize_task, from_base32, now_secs,
     monitor_complete_message, monitor_complete_text,
     monitor_process_tool, monitor_progress_message, monitor_progress_text,
+    stop_monitor_tool,
     register_task, tasks_wire_json, TaskOutput, TaskRecord, TaskStatus,
     DEFAULT_WAKE_INTERVAL_SECS, MIN_WAKE_INTERVAL_SECS,
     get_branches_for_repo, init_mcp_pool, init_shell_env,
@@ -575,6 +576,7 @@ fn make_extra_tools() -> Vec<AnthropicTool> {
     let mut tools = vec![
         run_command_in_background_tool(),
         monitor_process_tool(),
+        stop_monitor_tool(),
         send_notification_tool(),
     ];
     if has_spawn_capability() {
@@ -672,6 +674,7 @@ fn make_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
             match name.as_str() {
                 "run_command_in_background" => exec_run_command_in_background(state, input).await,
                 "monitor_process"           => exec_monitor_process(state, input).await,
+                "stop_monitor"              => exec_stop_monitor(state, input).await,
                 "spawn_agent"               => exec_spawn_agent(input).await,
                 "terminate_agent"           => exec_terminate_agent(input).await,
                 "send_notification"         => exec_send_notification(input).await,
@@ -899,6 +902,20 @@ fn run_tracked_command(
 
         try_continue_auto(deliver_state.clone());
     });
+}
+
+async fn exec_stop_monitor(state: Arc<AppState>, input: serde_json::Value) -> String {
+    let task_id = match input.get("task_id").and_then(|v| v.as_str()).map(str::trim) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return "error: missing or empty 'task_id'".to_string(),
+    };
+    info!("[agent/stop_monitor] cancelling {task_id}");
+    let fired = core_cancel_task(&state.stream_state, &task_id);
+    if fired {
+        format!("Stopped background process {task_id}. The process will be killed and the monitor loop will stop.")
+    } else {
+        format!("No running task found with id '{task_id}'. It may have already completed or the id is wrong.")
+    }
 }
 
 async fn exec_monitor_process(state: Arc<AppState>, input: serde_json::Value) -> String {

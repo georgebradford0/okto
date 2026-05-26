@@ -32,6 +32,7 @@ pub use background::{
     cancel_task, completion_chat_event, finalize_task,
     monitor_complete_message, monitor_complete_text,
     monitor_process_tool, monitor_progress_message, monitor_progress_text,
+    stop_monitor_tool,
     register_task, run_command_in_background_tool, spawn_background_command,
     tasks_wire_json,
 };
@@ -1872,7 +1873,10 @@ fn background_task_note() -> &'static str {
      new process, or a `task_id` to attach to a background task you already started. It \
      wakes you with new output at most every `wake_interval_secs` — pick that interval to \
      suit the process. The same 'react only if warranted, otherwise acknowledge briefly' \
-     guidance applies to each wake-up."
+     guidance applies to each wake-up.\n\n\
+     You also have a stop_monitor tool to kill a running background or monitored process \
+     by its task id and cancel its wake-up loop. Pass the task id returned by \
+     `monitor_process` or `run_command_in_background`."
 }
 
 pub fn build_system_prompt(repo_path: &str) -> String {

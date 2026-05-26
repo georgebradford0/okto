@@ -35,7 +35,8 @@ use okto_core::{
     cancel_task as core_cancel_task, completion_chat_event, ensure_container_ssh_keypair, finalize_task,
     from_base32, init_mcp_pool, init_shell_env, load_or_generate_keypair, now_secs,
     monitor_complete_message, monitor_complete_text,
-    monitor_process_tool, monitor_progress_message, monitor_progress_text, open_noise_tunnel,
+    monitor_process_tool, monitor_progress_message, monitor_progress_text,
+    stop_monitor_tool, open_noise_tunnel,
     register_task, tasks_wire_json, TaskOutput, TaskRecord, TaskStatus,
     DEFAULT_WAKE_INTERVAL_SECS, MIN_WAKE_INTERVAL_SECS,
     relay as relay_client, RelaySigner,
@@ -1294,6 +1295,7 @@ okto can host any kind of agent workload, not only coding agents — don't assum
 - **`restart_all_agents`** — restart every managed *local* agent. Use after upgrading the lair binary; no effect on remote agents.
 - **`run_command_in_background(command)`** — run a shell command in the background. The user is notified when it finishes and the output is injected into this conversation autonomously, so you'll be woken to react. **Strongly prefer this over the foreground `bash` tool for any command likely to take more than ~10 seconds** — builds, test suites, package installs, large downloads, image pulls, deploys, long scripts. Holding the chat turn open while a slow command runs blocks the user from sending follow-ups; backgrounding frees the turn immediately. Only use the regular `bash` tool for fast (sub-10s) commands like `ls`, `grep`, `cat`, quick `git status`, single-file inspections. When in doubt — background it. If no follow-up action is genuinely useful when the command completes, reply with one short acknowledgement line rather than producing prose.
 - **`monitor_process(command? | task_id?, wake_interval_secs?)`** — watch a process and get woken with its output *while it runs* so you can react mid-run. Pass a `command` to start and watch a new process, or a `task_id` to attach to a background task you already started. Pick `wake_interval_secs` to suit the process. Use `run_command_in_background` instead when you only need the final result.
+- **`stop_monitor(task_id)`** — kill a running background or monitored process by its task id. Sends SIGTERM (escalating to SIGKILL after 3s) and cancels the monitor wake-up loop. Use when you need to abort a process you started with `monitor_process` or `run_command_in_background`.
 
 # General tools (shared with children)
 - `bash` — shell commands; use for git, gh, curl, one-offs.
@@ -1551,6 +1553,7 @@ fn lair_extra_tools() -> Vec<AnthropicTool> {
         restart_all_agents_tool(),
         run_command_in_background_tool(),
         monitor_process_tool(),
+        stop_monitor_tool(),
         send_notification_tool(),
     ]
 }
@@ -1572,6 +1575,7 @@ fn lair_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
                 "restart_all_agents"        => exec_restart_all_agents(state).await,
                 "run_command_in_background" => exec_run_command_in_background(state, input).await,
                 "monitor_process"           => exec_monitor_process(state, input).await,
+                "stop_monitor"              => exec_stop_monitor(state, input).await,
                 "send_notification"         => exec_send_notification(state, input).await,
                 other => format!("unknown tool: {other}"),
             }
@@ -2350,6 +2354,20 @@ fn run_tracked_command(
         }
         try_continue_auto(deliver_state.clone());
     });
+}
+
+async fn exec_stop_monitor(state: Arc<AppState>, input: serde_json::Value) -> String {
+    let task_id = match input.get("task_id").and_then(|v| v.as_str()).map(str::trim) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return "error: missing or empty 'task_id'".to_string(),
+    };
+    info!("[lair/stop_monitor] cancelling {task_id}");
+    let fired = core_cancel_task(&state.stream_state, &task_id);
+    if fired {
+        format!("Stopped background process {task_id}. The process will be killed and the monitor loop will stop.")
+    } else {
+        format!("No running task found with id '{task_id}'. It may have already completed or the id is wrong.")
+    }
 }
 
 async fn exec_monitor_process(state: Arc<AppState>, input: serde_json::Value) -> String {
