@@ -2547,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "lair"
-version = "0.15.3"
+version = "0.15.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -3170,7 +3170,7 @@ dependencies = [
 
 [[package]]
 name = "okto"
-version = "0.6.3"
+version = "0.6.5"
 dependencies = [
  "anyhow",
  "clap",

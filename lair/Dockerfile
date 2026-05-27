@@ -74,6 +74,7 @@ RUN apt-get update && apt-get install -y ca-certificates curl git gpg && \
         jq \
         nodejs \
         openssh-client \
+        openssl \
         qrencode \
     && rm -rf /var/lib/apt/lists/* && \
     curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
@@ -89,6 +90,20 @@ COPY --from=gcr.io/kaniko-project/executor:v1.24.0 /kaniko/ /kaniko/
 # Ensure the executor is on PATH and runnable by non-root agent uids.
 RUN ln -sf /kaniko/executor /usr/local/bin/kaniko && \
     chmod -R a+rX /kaniko
+
+# Kaniko ships /kaniko/ssl/certs/ as a single PEM bundle, and the image sets
+# SSL_CERT_DIR=/kaniko/ssl/certs globally (below). Go's TLS (Kaniko) reads
+# bundles from a dir fine, but OpenSSL's `capath` mode requires one cert per
+# file plus c_rehash-style hashed symlinks — without them, every Python /
+# Ruby / curl-with-openssl client in the container fails TLS verification
+# with "unable to get local issuer certificate" (e.g. mcp-proxy-for-aws
+# surfaced this as a JSON-RPC -32602 during MCP initialize). Split the
+# bundle into per-cert files and rehash so the directory works for both
+# stacks. The original ca-certificates.crt is left intact for Kaniko.
+RUN awk '/-----BEGIN CERTIFICATE-----/{n++} n{print > sprintf("/kaniko/ssl/certs/cert-%04d.pem", n)}' \
+        /kaniko/ssl/certs/ca-certificates.crt && \
+    c_rehash /kaniko/ssl/certs >/dev/null && \
+    chmod -R a+rX /kaniko/ssl/certs
 
 # Dedicated non-root users for child agent processes. Lair (the parent)
 # keeps running as root inside the container so it can chown the bind-mounted

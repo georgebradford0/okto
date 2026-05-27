@@ -6,6 +6,12 @@
 
 - **Kaniko executor in lair image.** The lair Docker image now includes the Kaniko (`gcr.io/kaniko-project/executor:v1.24.0`) binary and supporting files, extracted via multi-stage `COPY`. Agents can build and push container images without a Docker daemon or socket mount — invoke `kaniko --force --dockerfile=<path> --context=dir://<dir> --destination=<registry>/<image>:<tag>` from the bash tool. No `--privileged` or socket mount required.
 
+### Fixed
+
+- **TLS verification in non-Go MCP servers.** Kaniko's `/kaniko/ssl/certs/` ships as a single PEM bundle, and the image's global `SSL_CERT_DIR=/kaniko/ssl/certs` made every OpenSSL-based client (Python httpx, requests, Ruby `net/http`, curl-with-openssl) reject every TLS cert with `unable to get local issuer certificate` — Go's TLS reads bundles from a `capath` dir, OpenSSL's `capath` mode requires c_rehash-style hashed symlinks. Most visible breakage was `mcp-proxy-for-aws` failing the AWS MCP handshake with a JSON-RPC `-32602` during initialize. The image now splits the Kaniko bundle into per-cert files and runs `c_rehash` at build time so the directory works for both stacks.
+
+- **Lair-side `${VAR}` MCP env/header expansion fails loudly.** Previously `expand_var` silently passed the literal `"${VAR}"` through to the child MCP process when neither `config.json` nor lair's process env had the variable, which surfaced later as opaque downstream errors (e.g. boto3 signing requests with the literal text "${AWS_ACCESS_KEY_ID}"). Now `connect_stdio` / `connect_http` abort with `[mcp] '<name>' initialize failed: env|header var(s) not set in lair container: …` before spawning, which the CLI's marker scanner renders as `HANDSHAKE FAILED — …` in `okto mcp add` / `okto mcp import` output.
+
 ## [0.11.5] - 2026-05-15
 
 ### Added
