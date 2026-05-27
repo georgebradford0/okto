@@ -92,12 +92,9 @@ enum Command {
 
     /// Restart lair to update env / config
     Reload {
-        /// Specific agent names to also restart
+        /// Restart only these specific agents (defaults to every managed agent)
         #[arg(long, value_name = "NAME", num_args = 1..)]
         agents: Vec<String>,
-        /// Restart lair + every managed agent
-        #[arg(long, conflicts_with = "agents")]
-        all: bool,
         /// Upsert an env var into `~/.okto/lair-env` before restarting.
         /// Existing keys are overwritten in place; new keys are appended.
         /// Repeatable.
@@ -792,8 +789,8 @@ async fn main() -> Result<()> {
             }
         }
 
-        Command::Reload { agents: agent_targets, all, env } => {
-            info!("[cli] reload starting (all={all}, env_pairs={})", env.len());
+        Command::Reload { agents: agent_targets, env } => {
+            info!("[cli] reload starting (agent_targets={}, env_pairs={})", agent_targets.len(), env.len());
             if !env.is_empty() {
                 let new_pairs = init::parse_extra_env(&env)?;
                 let path = service::env_file_path();
@@ -813,7 +810,7 @@ async fn main() -> Result<()> {
             }
             init::restart_lair("reload").await?;
 
-            let names: Vec<String> = if all {
+            let names: Vec<String> = if agent_targets.is_empty() {
                 let path = service::lair_data_dir().join("agents.json");
                 match okto_core::Registry::load(path) {
                     Ok(r)  => r.list().iter().map(|a| a.name.clone()).collect(),
