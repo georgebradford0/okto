@@ -521,6 +521,14 @@ async fn update_lair(image_override: Option<String>) -> Result<()> {
     };
     debug!("[cli] lair update resolved image: {image}");
 
+    // Capture the version of the currently-running lair before we pull, so
+    // we can show a before/after comparison once the restart lands.
+    let old_version = if service::is_running() {
+        service::lair_binary_version().ok()
+    } else {
+        None
+    };
+
     println!("Pulling {image}...");
     service::docker_pull(&image)?;
 
@@ -533,6 +541,19 @@ async fn update_lair(image_override: Option<String>) -> Result<()> {
 
     if service::is_running() {
         init::restart_lair("lair update").await?;
+        let new_version = service::lair_binary_version().ok();
+        match (old_version.as_deref(), new_version.as_deref()) {
+            (Some(old), Some(new)) if old != new => {
+                println!("Updated: {old} → {new}");
+            }
+            (Some(_), Some(new)) => {
+                println!("Already up to date: {new}");
+            }
+            (_, Some(new)) => {
+                println!("Running: {new}");
+            }
+            _ => {}
+        }
         info!("[cli] lair update complete (container restarted on {image})");
     } else if service::read_launch().is_some() {
         info!("[cli] lair update: image pulled; lair not running, will apply on next reload");
