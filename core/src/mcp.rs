@@ -135,10 +135,14 @@ impl McpClient {
     // ── Stdio ─────────────────────────────────────────────────────────────────
 
     async fn connect_stdio(cfg: &McpServerConfig) -> Option<Self> {
-        // Expand "${VAR}" references in env values.
-        let env: HashMap<String, String> = cfg.env.iter()
-            .map(|(k, v)| (k.clone(), expand_var(v)))
-            .collect();
+        // Expand "${VAR}" references in env values. Fail loudly on a missing
+        // var rather than passing the literal "${VAR}" through to the child —
+        // that silently corrupts e.g. AWS credentials and surfaces later as
+        // opaque downstream auth errors.
+        let env = match resolve_env_or_headers(&cfg.name, &cfg.env, "env") {
+            Some(e) => e,
+            None    => return None,
+        };
 
         let mut cmd = tokio::process::Command::new(&cfg.command);
         cmd.args(&cfg.args)
@@ -179,10 +183,13 @@ impl McpClient {
     async fn connect_http(cfg: &McpServerConfig) -> Option<Self> {
         let url = cfg.url.as_deref().unwrap_or("").trim_end_matches('/').to_string();
 
-        // Expand "${VAR}" references in header values.
-        let headers: HashMap<String, String> = cfg.headers.iter()
-            .map(|(k, v)| (k.clone(), expand_var(v)))
-            .collect();
+        // Expand "${VAR}" references in header values. Same rationale as
+        // connect_stdio: silently shipping a literal "${VAR}" produces an
+        // unhelpful 401 from the remote rather than a clear local error.
+        let headers = match resolve_env_or_headers(&cfg.name, &cfg.headers, "header") {
+            Some(h) => h,
+            None    => return None,
+        };
 
         info!("[mcp] '{}' connecting via HTTP to {url}", cfg.name);
 
@@ -448,10 +455,13 @@ async fn parse_sse_response(response: reqwest::Response) -> Result<Value, String
 /// (`ANTHROPIC_API_KEY` → `config.anthropic_api_key`, etc.) so an mcp.json
 /// like `{"env": {"API_KEY": "${ANTHROPIC_API_KEY}"}}` keeps working after
 /// 0.6.2 moved secrets out of lair's process env. Anything not in that table
-/// falls back to `std::env::var(...)`, then to the literal string.
-fn expand_var(v: &str) -> String {
+/// falls back to `std::env::var(...)`. Returns `Err(var_name)` if neither
+/// source has the variable; the host-side `expand_host_env` resolver in the
+/// CLI works the same way. Callers must surface this as a connect-time error
+/// rather than letting the literal `${VAR}` reach the child process.
+fn expand_var(v: &str) -> std::result::Result<String, String> {
     if !(v.starts_with("${") && v.ends_with('}')) {
-        return v.to_string();
+        return Ok(v.to_string());
     }
     let var = &v[2..v.len() - 1];
     let cfg = crate::read_config();
@@ -467,7 +477,40 @@ fn expand_var(v: &str) -> String {
     };
     from_cfg
         .or_else(|| std::env::var(var).ok())
-        .unwrap_or_else(|| v.to_string())
+        .ok_or_else(|| var.to_string())
+}
+
+/// Expand every `"${VAR}"` value in `map`. On any unresolved var, log a
+/// connect-time failure using the same `[mcp] '<name>' initialize failed: …`
+/// shape that `do_connect` emits, so the CLI's marker scanner classifies it
+/// as `McpMarker::InitFailed` and surfaces it as `HANDSHAKE FAILED — …` in
+/// `okto mcp add` / `okto mcp import` output. `kind` is `"env"` or `"header"`
+/// — purely for the error message.
+fn resolve_env_or_headers(
+    name: &str,
+    map:  &HashMap<String, String>,
+    kind: &str,
+) -> Option<HashMap<String, String>> {
+    let mut out = HashMap::with_capacity(map.len());
+    let mut missing: Vec<String> = Vec::new();
+    for (k, v) in map {
+        match expand_var(v) {
+            Ok(resolved) => { out.insert(k.clone(), resolved); }
+            Err(var)     => missing.push(var),
+        }
+    }
+    if !missing.is_empty() {
+        missing.sort();
+        missing.dedup();
+        error!(
+            "[mcp] '{name}' initialize failed: {kind} var(s) not set in lair container: {} \
+             — set them via `okto env set KEY=VAL` (then `okto reload`), or inline literal \
+             values in mcp.json",
+            missing.join(", "),
+        );
+        return None;
+    }
+    Some(out)
 }
 
 // ── Tool parsing ──────────────────────────────────────────────────────────────
