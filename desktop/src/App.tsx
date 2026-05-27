@@ -74,7 +74,7 @@ const initialStored: PersistedState | null = (() => {
 type ChatItem =
   | { kind: 'user';        text: string }
   | { kind: 'assistant';   text: string; done: boolean }
-  | { kind: 'tool';        toolUseId: string; tool: string; display: string; outputs: string[]; result?: string }
+  | { kind: 'tool';        toolUseId: string; tool: string; display: string; outputs: string[]; result?: string; running: boolean }
   | { kind: 'cost';        cost: number; interrupted: boolean }
   | { kind: 'error';       message: string }
   | { kind: 'bg';          text: string }
@@ -700,14 +700,17 @@ function foldEvent(items: ChatItem[], ev: ServerEvent): ChatItem[] {
       }
       return [...items, { kind: 'assistant', text: ev.text, done: false }]
     }
-    case 'tool_use':
+    case 'tool_use': {
+      const anyRunning = items.some(x => x.kind === 'tool' && x.running)
       return [...items, {
         kind:      'tool',
         toolUseId: ev.tool_use_id,
         tool:      ev.tool,
         display:   ev.display ?? humanizeTool(ev.tool),
         outputs:   [],
+        running:   !anyRunning,
       }]
+    }
     case 'tool_output': {
       // Fold into the most recent matching tool chip.
       const idx = lastIndex(items, x => x.kind === 'tool' && x.toolUseId === ev.tool_use_id)
@@ -720,14 +723,31 @@ function foldEvent(items: ChatItem[], ev: ServerEvent): ChatItem[] {
     case 'tool_result': {
       const idx = lastIndex(items, x => x.kind === 'tool' && x.toolUseId === ev.tool_use_id)
       if (idx < 0) return items
-      const tool = items[idx] as Extract<ChatItem, { kind: 'tool' }>
-      const next = items.slice()
-      next[idx] = { ...tool, result: stringifyResult(ev.output) }
-      return next
+      // Promote the next queued tool (earliest after the completed one,
+      // not running, no output yet) to active execution. Tools run in
+      // emission order so the next queued slot is always after the
+      // current one in the array.
+      let nextQueuedIdx = -1
+      for (let i = idx + 1; i < items.length; i++) {
+        const it = items[i]
+        if (it.kind === 'tool' && !it.running && it.result === undefined) {
+          nextQueuedIdx = i
+          break
+        }
+      }
+      return items.map((it, i) => {
+        if (i === idx)  return { ...it, result: stringifyResult(ev.output), running: false }
+        if (i === nextQueuedIdx) return { ...it, running: true }
+        return it
+      }) as ChatItem[]
     }
     case 'done':
     case 'interrupted': {
-      const next = sealStreamingAssistant(items)
+      // Defensive: clear any leftover running flags (e.g. dropped tool_result).
+      const cleared = items.some(it => it.kind === 'tool' && it.running)
+        ? items.map(it => it.kind === 'tool' && it.running ? { ...it, running: false } : it) as ChatItem[]
+        : items
+      const next = sealStreamingAssistant(cleared)
       next.push({ kind: 'cost', cost: ev.cost_usd, interrupted: ev.type === 'interrupted' })
       return next
     }
@@ -1084,8 +1104,13 @@ function Row({ item }: { item: ChatItem }) {
     case 'tool':
       return (
         <div className="row">
-          <div className="tool-chip">
-            <span className="tool-line">▸ {item.display}</span>
+          <div className={'tool-chip' + (item.running ? ' tool-running' : (!item.result && !item.outputs.length ? ' tool-queued' : ''))}>
+            <span className="tool-line">
+              {item.running && <span className="tool-dot-pulse" />}
+              {!item.running && item.result === undefined && item.outputs.length === 0 && <span className="tool-dot-queued" />}
+              {item.running ? 'Running ' : (!item.running && item.result === undefined && item.outputs.length === 0 ? 'Pending ' : '')}
+              {item.display}
+            </span>
             {item.outputs.length > 0 && (
               <div className="tool-output">{item.outputs.join('\n')}</div>
             )}
