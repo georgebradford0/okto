@@ -150,23 +150,33 @@ const NUNITO = 'Nunito'
 const MONO   = Platform.OS === 'ios' ? 'Menlo' : 'monospace'
 
 // ── Colours ────────────────────────────────────────────────────────────────────
-// "Editorial Terminal" — warm cream paper, deep ink-navy, oceanic teal accent.
-// The palette references both marine field-research (octo / octopus) and the
-// printed page: ink on paper instead of pixels on glass.
+// Warm-paper aesthetic, tuned for a modern mobile feel: a lifted cream canvas
+// with white elevated surfaces, a refined oceanic teal accent, and a generous
+// neutral type ramp. Identity stays (cream + teal + ink), but tones are
+// softer and corners are rounded throughout the StyleSheet below.
 
 const C = {
-  bg:            '#F4EFE3',  // warm cream paper
-  surface:       '#EBE4D2',  // deeper cream surface (code blocks, raised tints)
-  border:        '#D6CDB6',  // hairline divider
-  accent:        '#0B6E73',  // deep oceanic teal — "live" / tools / accents
-  accentLight:   '#DEE9E5',  // teal-tinted cream
-  green:         '#0B6E73',  // alias of accent: "live" status
-  yellow:        '#8E6B14',  // dark goldenrod: warnings / connecting
-  red:           '#7E2926',  // oxblood: errors / destructive
-  textPrimary:   '#0E1A24',  // deep ink-navy with the faintest cool undertone
+  bg:            '#FAF7F0',  // warm cream canvas (lifted)
+  bgElevated:    '#FFFFFF',  // cards, sheets, raised surfaces
+  surface:       '#F2EDE0',  // tonal hover / chip background
+  surfaceSoft:   '#FCFAF4',  // lifted paper for inputs
+  border:        '#E8E1CF',  // hairline divider (softened)
+  borderStrong:  '#D8CFB7',  // emphasis border
+  accent:        '#0F6E73',  // refined oceanic teal — "live" / accents
+  accentStrong:  '#0A5C60',  // pressed / strong accent
+  accentLight:   '#E3EEEC',  // teal-tinted cream (active rows, chips)
+  green:         '#2F7D32',  // proper green for "done" / success
+  greenLight:    '#DBEAD9',
+  yellow:        '#B0851D',  // refined goldenrod
+  yellowLight:   '#F6ECC6',
+  red:           '#B23B38',  // modern coral-red (less oxblood)
+  redLight:      '#F4DEDC',
+  userBlue:      '#2E6BE6',  // refined send button + user bubble blue
+  textPrimary:   '#1A2333',  // deep ink-navy
   textSecondary: '#4F5763',  // body grey
-  textMuted:     '#8E8775',  // muted warm grey: placeholders / status meta
-  inputBorder:   '#D6CDB6',
+  textMuted:     '#8E8775',  // placeholders / status meta
+  textFaint:     '#B7B0A0',  // captions / hint level
+  inputBorder:   '#E8E1CF',
 }
 
 const statusColor = (st: ConnStatus): string => {
@@ -2551,118 +2561,117 @@ export default function App() {
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const s = StyleSheet.create({
-  // Setup / connection
+  // ── Setup / connection ───────────────────────────────────────────────────────
   setupSafe:     { flex: 1, backgroundColor: C.bg },
-  setupCenter:   { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 40, gap: 12 },
-  setupTitle:    { fontSize: 38, fontWeight: '800', color: C.textPrimary, letterSpacing: 9, fontFamily: NUNITO, marginTop: 18 },
-  setupSubtitle: { fontSize: 10, color: C.textSecondary, letterSpacing: 3.5, textTransform: 'uppercase', fontFamily: MONO, fontWeight: '700' },
-  setupRule:     { width: 28, height: 1, backgroundColor: C.textPrimary, marginVertical: 2, opacity: 0.4 },
-  setupTagline:  { fontSize: 13, color: C.textSecondary, textAlign: 'center', lineHeight: 21, fontFamily: ARIMO, fontStyle: 'italic', marginTop: 14, maxWidth: 280 },
+  setupCenter:   { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 40, gap: 14 },
+  setupTitle:    { fontSize: 40, fontWeight: '800', color: C.textPrimary, letterSpacing: 8, fontFamily: NUNITO, marginTop: 20, paddingLeft: 8 },
+  setupSubtitle: { fontSize: 10.5, color: C.textMuted, letterSpacing: 2.4, textTransform: 'uppercase', fontFamily: MONO, fontWeight: '600' },
+  setupRule:     { width: 36, height: 2, borderRadius: 999, backgroundColor: C.accent, marginVertical: 6, opacity: 0.7 },
+  setupTagline:  { fontSize: 14, color: C.textSecondary, textAlign: 'center', lineHeight: 22, fontFamily: ARIMO, marginTop: 14, maxWidth: 300 },
   setupDesc:     { fontSize: 14, color: C.textSecondary, textAlign: 'center', lineHeight: 22, fontFamily: ARIMO },
-  setupStatus:   { fontSize: 11, color: C.textMuted, textAlign: 'center', fontFamily: MONO, letterSpacing: 1.5, textTransform: 'uppercase' },
-  setupError:    { fontSize: 12, color: C.red, textAlign: 'center', lineHeight: 18, fontFamily: MONO, letterSpacing: 0.4 },
-  setupBtn:      { borderRadius: 0, borderWidth: 1.5, borderColor: C.textPrimary, paddingVertical: 13, paddingHorizontal: 36, marginTop: 14, backgroundColor: 'transparent' },
-  setupBtnDisabled: { opacity: 0.35 },
-  setupBtnText:  { color: C.textPrimary, fontWeight: '800', fontSize: 11, letterSpacing: 4, textTransform: 'uppercase', fontFamily: ARIMO },
-  setupOr:       { fontSize: 10, color: C.textMuted, letterSpacing: 3, textTransform: 'uppercase', fontFamily: MONO, fontWeight: '700', marginTop: 18 },
-  setupInput:    { width: '100%', maxWidth: 320, backgroundColor: '#FBF8EE', borderWidth: 1, borderColor: C.border, borderRadius: 6, paddingHorizontal: 14, paddingVertical: 12, color: C.textPrimary, fontSize: 13, fontFamily: MONO, marginTop: 4 },
+  setupStatus:   { fontSize: 11, color: C.textMuted, textAlign: 'center', fontFamily: MONO, letterSpacing: 1.4, textTransform: 'uppercase' },
+  setupError:    { fontSize: 13, color: C.red, textAlign: 'center', lineHeight: 19, fontFamily: ARIMO, backgroundColor: C.redLight, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, overflow: 'hidden' },
+  setupBtn:      { borderRadius: 14, borderWidth: 0, paddingVertical: 14, paddingHorizontal: 40, marginTop: 16, backgroundColor: C.textPrimary, shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
+  setupBtnDisabled: { opacity: 0.35, shadowOpacity: 0, elevation: 0 },
+  setupBtnText:  { color: '#FFFFFF', fontWeight: '700', fontSize: 12, letterSpacing: 1.8, textTransform: 'uppercase', fontFamily: ARIMO },
+  setupOr:       { fontSize: 10.5, color: C.textMuted, letterSpacing: 2.4, textTransform: 'uppercase', fontFamily: MONO, fontWeight: '600', marginTop: 22 },
+  setupInput:    { width: '100%', maxWidth: 340, backgroundColor: C.bgElevated, borderWidth: 1, borderColor: C.border, borderRadius: 14, paddingHorizontal: 16, paddingVertical: 14, color: C.textPrimary, fontSize: 13.5, fontFamily: MONO, marginTop: 6, shadowColor: '#0E1A24', shadowOpacity: 0.04, shadowRadius: 4, shadowOffset: { width: 0, height: 1 } },
 
-  // App icon mark
-  creatureImg:        { width: 116, height: 116, borderRadius: 26, marginBottom: 8 },
+  // ── App icon mark ────────────────────────────────────────────────────────────
+  creatureImg:        { width: 116, height: 116, borderRadius: 28, marginBottom: 10 },
 
-  // Inline transition overlays (starting / reconnecting)
+  // ── Inline transition overlays (starting / reconnecting) ─────────────────────
   startingOverlay:    { ...StyleSheet.absoluteFillObject, backgroundColor: C.bg, alignItems: 'center', justifyContent: 'center', gap: 18, paddingHorizontal: 32 },
-  startingText:       { fontSize: 11, color: C.textSecondary, fontFamily: MONO, letterSpacing: 2.5, textTransform: 'uppercase', fontWeight: '700' },
-  startingErrorText:  { fontSize: 12, fontWeight: '800', color: C.red, fontFamily: ARIMO, textAlign: 'center', letterSpacing: 3, textTransform: 'uppercase' },
-  startingErrorDetail:{ fontSize: 12, color: C.textSecondary, fontFamily: MONO, textAlign: 'center', lineHeight: 18 },
-  startingCancelBtn:  { marginTop: 10, paddingVertical: 11, paddingHorizontal: 28, borderRadius: 0, borderWidth: 1.5, borderColor: C.textPrimary },
-  startingCancelText: { fontSize: 11, color: C.textPrimary, fontFamily: ARIMO, letterSpacing: 4, textTransform: 'uppercase', fontWeight: '800' },
+  startingText:       { fontSize: 11, color: C.textSecondary, fontFamily: MONO, letterSpacing: 1.8, textTransform: 'uppercase', fontWeight: '600' },
+  startingErrorText:  { fontSize: 13, fontWeight: '700', color: C.red, fontFamily: ARIMO, textAlign: 'center', letterSpacing: 1.6, textTransform: 'uppercase' },
+  startingErrorDetail:{ fontSize: 13, color: C.textSecondary, fontFamily: ARIMO, textAlign: 'center', lineHeight: 19 },
+  startingCancelBtn:  { marginTop: 10, paddingVertical: 12, paddingHorizontal: 32, borderRadius: 12, borderWidth: 1, borderColor: C.border, backgroundColor: C.bgElevated },
+  startingCancelText: { fontSize: 12, color: C.textPrimary, fontFamily: ARIMO, letterSpacing: 1.8, textTransform: 'uppercase', fontWeight: '700' },
 
-  // QR scanner
+  // ── QR scanner ───────────────────────────────────────────────────────────────
   scannerFull:       { ...StyleSheet.absoluteFillObject, backgroundColor: '#0A0E12', zIndex: 100 },
   scannerOverlay:    { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'space-between', paddingVertical: 80 },
   scannerTopBar:     { alignItems: 'center', gap: 6, paddingHorizontal: 32 },
-  scannerIcon:       { width: 56, height: 56, borderRadius: 13, marginBottom: 6 },
-  scannerTitle:      { color: '#F4EFE3', fontSize: 12, fontWeight: '800', fontFamily: ARIMO, letterSpacing: 4, textTransform: 'uppercase' },
-  scannerSubtitle:   { color: 'rgba(244,239,227,0.55)', fontSize: 11, textAlign: 'center', lineHeight: 17, fontFamily: MONO, letterSpacing: 1, marginTop: 4 },
+  scannerIcon:       { width: 56, height: 56, borderRadius: 16, marginBottom: 6 },
+  scannerTitle:      { color: '#F4EFE3', fontSize: 13, fontWeight: '700', fontFamily: ARIMO, letterSpacing: 2.4, textTransform: 'uppercase' },
+  scannerSubtitle:   { color: 'rgba(244,239,227,0.62)', fontSize: 12, textAlign: 'center', lineHeight: 18, fontFamily: ARIMO, marginTop: 6 },
   scannerReticle:    { width: 240, height: 240 },
-  scannerCorner:     { position: 'absolute', width: 32, height: 32, borderColor: '#F4EFE3', borderWidth: 1.5 },
-  cornerTL:          { top: 0, left: 0, borderRightWidth: 0, borderBottomWidth: 0 },
-  cornerTR:          { top: 0, right: 0, borderLeftWidth: 0, borderBottomWidth: 0 },
-  cornerBL:          { bottom: 0, left: 0, borderRightWidth: 0, borderTopWidth: 0 },
-  cornerBR:          { bottom: 0, right: 0, borderLeftWidth: 0, borderTopWidth: 0 },
-  scannerCancel:     { borderWidth: 1, borderColor: 'rgba(244,239,227,0.45)', borderRadius: 0, paddingVertical: 12, paddingHorizontal: 36 },
-  scannerCancelText: { color: '#F4EFE3', fontSize: 11, fontWeight: '800', fontFamily: ARIMO, letterSpacing: 4, textTransform: 'uppercase' },
-  scannerError:      { color: '#E07057', fontSize: 13, textAlign: 'center', marginBottom: 24, fontFamily: MONO, letterSpacing: 1 },
+  scannerCorner:     { position: 'absolute', width: 32, height: 32, borderColor: '#F4EFE3', borderWidth: 2.5, borderRadius: 4 },
+  cornerTL:          { top: 0, left: 0, borderRightWidth: 0, borderBottomWidth: 0, borderTopLeftRadius: 12 },
+  cornerTR:          { top: 0, right: 0, borderLeftWidth: 0, borderBottomWidth: 0, borderTopRightRadius: 12 },
+  cornerBL:          { bottom: 0, left: 0, borderRightWidth: 0, borderTopWidth: 0, borderBottomLeftRadius: 12 },
+  cornerBR:          { bottom: 0, right: 0, borderLeftWidth: 0, borderTopWidth: 0, borderBottomRightRadius: 12 },
+  scannerCancel:     { borderWidth: 1, borderColor: 'rgba(244,239,227,0.45)', borderRadius: 999, paddingVertical: 12, paddingHorizontal: 40 },
+  scannerCancelText: { color: '#F4EFE3', fontSize: 12, fontWeight: '700', fontFamily: ARIMO, letterSpacing: 1.8, textTransform: 'uppercase' },
+  scannerError:      { color: '#FF9A8A', fontSize: 13, textAlign: 'center', marginBottom: 24, fontFamily: ARIMO, letterSpacing: 0.2 },
 
-  // Chat layout
+  // ── Chat layout ──────────────────────────────────────────────────────────────
   safe:         { flex: 1, backgroundColor: C.bg },
   paneArea:     { flex: 1 },
 
-  // Header
-  header:          { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border, backgroundColor: C.bg },
+  // ── Header ───────────────────────────────────────────────────────────────────
+  header:          { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border, backgroundColor: C.bg },
   headerLeft:      { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
-  clearBtn:        { paddingVertical: 5, paddingHorizontal: 10, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderRadius: 0 },
-  clearBtnText:    { fontSize: 10, color: C.textSecondary, fontWeight: '800', fontFamily: ARIMO, letterSpacing: 2.2, textTransform: 'uppercase' },
-  headerTitle:     { fontSize: 12, fontWeight: '800', color: C.textPrimary, fontFamily: ARIMO, letterSpacing: 2, textTransform: 'uppercase' },
-  // Status as a typographic tag — small square index, monospace label, hairline border
-  connDot:         { width: 6, height: 6, borderRadius: 0 },
-  connStatusPill:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 0, gap: 6, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border },
-  connPillLabel:   { fontSize: 10, fontWeight: '800', fontFamily: MONO, letterSpacing: 1.6, textTransform: 'uppercase' },
+  clearBtn:        { paddingVertical: 5, paddingHorizontal: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderRadius: 999, backgroundColor: C.bgElevated },
+  clearBtnText:    { fontSize: 11, color: C.textSecondary, fontWeight: '600', fontFamily: ARIMO, letterSpacing: 0.4 },
+  headerTitle:     { fontSize: 15, fontWeight: '700', color: C.textPrimary, fontFamily: ARIMO, letterSpacing: 0.2 },
+  // Status as a small pill — round dot, restrained mono label, soft pill border
+  connDot:         { width: 7, height: 7, borderRadius: 999 },
+  connStatusPill:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, gap: 7, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, backgroundColor: C.bgElevated },
+  connPillLabel:   { fontSize: 10.5, fontWeight: '700', fontFamily: MONO, letterSpacing: 1.2, textTransform: 'uppercase' },
 
-  // Chat pane
+  // ── Chat pane ────────────────────────────────────────────────────────────────
   pane:               { flex: 1, backgroundColor: C.bg },
   messageList:        { flex: 1 },
   messageListContent: { paddingVertical: 18 },
-  emptyStateWrap:     { alignItems: 'center', marginTop: 88, gap: 6 },
-  emptyStateBrand:    { fontSize: 30, color: C.textPrimary, fontWeight: '800', letterSpacing: 8, fontFamily: NUNITO, marginTop: 8 },
-  emptyStateRule:     { width: 24, height: 1, backgroundColor: C.textPrimary, opacity: 0.35, marginTop: 4 },
-  emptyStateTagline:  { fontSize: 10, color: C.textMuted, fontFamily: MONO, letterSpacing: 2.6, textTransform: 'uppercase', marginTop: 6, fontWeight: '700' },
-  reconnectBanner:    { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, zIndex: 10 },
-  reconnectText:      { fontSize: 10, fontWeight: '800', fontFamily: MONO, letterSpacing: 2, textTransform: 'uppercase' },
+  emptyStateWrap:     { alignItems: 'center', marginTop: 88, gap: 8 },
+  emptyStateBrand:    { fontSize: 32, color: C.textPrimary, fontWeight: '800', letterSpacing: 7, fontFamily: NUNITO, marginTop: 8, paddingLeft: 7 },
+  emptyStateRule:     { width: 32, height: 2, borderRadius: 999, backgroundColor: C.accent, opacity: 0.6, marginTop: 4 },
+  emptyStateTagline:  { fontSize: 11, color: C.textMuted, fontFamily: MONO, letterSpacing: 1.8, textTransform: 'uppercase', marginTop: 8, fontWeight: '600' },
+  reconnectBanner:    { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 7, borderBottomWidth: StyleSheet.hairlineWidth, zIndex: 10 },
+  reconnectText:      { fontSize: 11, fontWeight: '700', fontFamily: MONO, letterSpacing: 1.4, textTransform: 'uppercase' },
 
-  // Scroll-to-bottom — sharp-cornered tile rather than a floating circle
+  // ── Scroll-to-bottom — soft floating pill ────────────────────────────────────
   scrollBtnWrap:     { position: 'absolute', left: 0, right: 0, alignItems: 'center', pointerEvents: 'box-none' },
-  scrollBtn:         { backgroundColor: C.bg, borderRadius: 0, width: 32, height: 32, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: C.textPrimary, marginBottom: 10 },
-  scrollBtnIcon:     { fontSize: 14, color: C.textPrimary, lineHeight: 16, fontFamily: ARIMO, fontWeight: '700' },
+  scrollBtn:         { backgroundColor: C.bgElevated, borderRadius: 999, width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, marginBottom: 12, shadowColor: '#0E1A24', shadowOpacity: 0.12, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 6 },
+  scrollBtnIcon:     { fontSize: 16, color: C.textPrimary, lineHeight: 18, fontFamily: ARIMO, fontWeight: '700' },
 
-  // Messages
+  // ── Messages ─────────────────────────────────────────────────────────────────
   messageWrap:         { paddingHorizontal: 16, marginBottom: 14 },
   messageWrapRight:    { alignItems: 'flex-end' },
-  // User bubble: icon-blue, white text — ties the user voice to the app mark
-  userBubble:          { backgroundColor: '#4A90E2', borderRadius: 18, borderBottomRightRadius: 4, paddingHorizontal: 14, paddingVertical: 10, maxWidth: '82%' },
+  // User bubble — iMessage feel, refined blue with subtle glow shadow
+  userBubble:          { backgroundColor: C.userBlue, borderRadius: 22, borderBottomRightRadius: 6, paddingHorizontal: 15, paddingVertical: 10, maxWidth: '82%', shadowColor: C.userBlue, shadowOpacity: 0.22, shadowRadius: 10, shadowOffset: { width: 0, height: 3 }, elevation: 3 },
   textBlock:           { color: '#FFFFFF', fontSize: 15.5, lineHeight: 23, fontWeight: '400', fontFamily: ARIMO },
-  assistantTextBlock:  { color: '#1F2937', fontSize: 15.5, lineHeight: 24, fontWeight: '400', fontFamily: ARIMO },
-  inlineCode:          { fontFamily: MONO, fontSize: 12.5, color: C.textPrimary, backgroundColor: C.surface, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 2, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border },
-  codeBlock:           { backgroundColor: C.surface, borderRadius: 4, padding: 12, marginVertical: 6, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border },
-  codeBlockText:       { fontFamily: MONO, fontSize: 12, color: C.textPrimary, lineHeight: 18 },
-  codeBlockLang:       { fontSize: 9, color: C.textMuted, fontFamily: MONO, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1.6, fontWeight: '700' },
+  assistantTextBlock:  { color: C.textPrimary, fontSize: 15.5, lineHeight: 24, fontWeight: '400', fontFamily: ARIMO },
+  inlineCode:          { fontFamily: MONO, fontSize: 12.5, color: C.textPrimary, backgroundColor: C.surface, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border },
+  codeBlock:           { backgroundColor: C.surfaceSoft, borderRadius: 12, padding: 14, marginVertical: 8, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border },
+  codeBlockText:       { fontFamily: MONO, fontSize: 12.5, color: C.textPrimary, lineHeight: 19 },
+  codeBlockLang:       { fontSize: 10, color: C.textMuted, fontFamily: MONO, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1.2, fontWeight: '600' },
   questionMark:        { color: C.yellow, fontWeight: '700', fontSize: 15, marginBottom: 2, fontFamily: ARIMO },
-  costLabel:           { fontSize: 10, color: C.textMuted, marginTop: 6, marginLeft: 2, fontFamily: MONO, letterSpacing: 0.8 },
-  // Tool chip — terminal-style, sharp corners, monospace, accent-tinted surface
-  toolChip:            { backgroundColor: C.accentLight, borderLeftWidth: 2, borderLeftColor: C.accent, borderRadius: 0, paddingHorizontal: 12, paddingVertical: 8 },
-  toolLine:            { fontSize: 12.5, color: C.accent, fontFamily: MONO, letterSpacing: 0.3 },
+  costLabel:           { fontSize: 10.5, color: C.textFaint, marginTop: 6, marginLeft: 2, fontFamily: MONO, letterSpacing: 0.4 },
+  // Tool chip — softer card with accent stripe, less terminal
+  toolChip:            { backgroundColor: C.surfaceSoft, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderLeftWidth: 3, borderLeftColor: C.accent, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10 },
+  toolLine:            { fontSize: 13, color: C.accentStrong, fontFamily: MONO, letterSpacing: 0.2, fontWeight: '600' },
   toolChevron:         { fontSize: 14, color: C.accent, marginLeft: 6, fontWeight: '400' },
   toolOutputBlock:     { marginTop: 8, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border },
-  toolOutputText:      { fontSize: 11.5, color: C.textSecondary, fontFamily: MONO, lineHeight: 17 },
-  interruptedLine:     { fontSize: 11, lineHeight: 18, color: C.textMuted, fontFamily: MONO, letterSpacing: 2.2, textTransform: 'uppercase', fontWeight: '700' },
-  bgCompleteLine:      { fontSize: 12, lineHeight: 18, color: C.textMuted, fontFamily: MONO, letterSpacing: 0.5, fontStyle: 'italic' },
-  errorLine:           { fontSize: 12, lineHeight: 18, color: C.red, fontFamily: MONO, letterSpacing: 0.6, fontWeight: '700' },
+  toolOutputText:      { fontSize: 12, color: C.textSecondary, fontFamily: MONO, lineHeight: 18 },
+  interruptedLine:     { fontSize: 11, lineHeight: 18, color: C.textMuted, fontFamily: MONO, letterSpacing: 1.6, textTransform: 'uppercase', fontWeight: '700' },
+  bgCompleteLine:      { fontSize: 12.5, lineHeight: 19, color: C.textMuted, fontFamily: ARIMO, fontStyle: 'italic' },
+  errorLine:           { fontSize: 13, lineHeight: 19, color: C.red, fontFamily: ARIMO, fontWeight: '500', backgroundColor: C.redLight, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, overflow: 'hidden', alignSelf: 'flex-start' },
 
-  // Input bar
-  completionList:  { position: 'absolute', left: 0, right: 0, maxHeight: 180, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, backgroundColor: C.bg, zIndex: 10, elevation: 10 },
-  completionItem:  { paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
-  completionText:  { fontSize: 13, color: C.textPrimary, fontFamily: MONO },
-  inputFloat:      { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 12, paddingBottom: 10, paddingTop: 10, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, backgroundColor: C.bg },
-  inputRow:        { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
-  // Input — slightly raised paper tone with a sharper corner radius
-  input:           { flex: 1, backgroundColor: '#FBF8EE', borderWidth: 1, borderColor: C.border, borderRadius: 6, paddingHorizontal: 16, paddingVertical: 15, color: C.textPrimary, fontSize: 15.5, lineHeight: 26, minHeight: 56, maxHeight: 140, fontFamily: ARIMO },
-  // Send button is squared to match the input box; bg matches the app icon
-  sendBtn:         { width: 56, height: 56, borderRadius: 6, backgroundColor: '#4A90E2', alignItems: 'center', justifyContent: 'center', marginBottom: 0 },
-  sendBtnDisabled: { backgroundColor: C.surface, borderWidth: 1, borderColor: C.border },
+  // ── Input bar ────────────────────────────────────────────────────────────────
+  completionList:  { position: 'absolute', left: 8, right: 8, maxHeight: 180, borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, backgroundColor: C.bgElevated, zIndex: 10, elevation: 12, shadowColor: '#0E1A24', shadowOpacity: 0.12, shadowRadius: 16, shadowOffset: { width: 0, height: 6 }, overflow: 'hidden' },
+  completionItem:  { paddingHorizontal: 16, paddingVertical: 11, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
+  completionText:  { fontSize: 13.5, color: C.textPrimary, fontFamily: MONO },
+  inputFloat:      { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 12, paddingBottom: 12, paddingTop: 10, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, backgroundColor: C.bg },
+  inputRow:        { flexDirection: 'row', alignItems: 'flex-end', gap: 10 },
+  // Input — white elevated surface, soft rounded, gentle shadow
+  input:           { flex: 1, backgroundColor: C.bgElevated, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderRadius: 22, paddingHorizontal: 18, paddingVertical: 15, color: C.textPrimary, fontSize: 16, lineHeight: 22, minHeight: 56, maxHeight: 140, fontFamily: ARIMO, shadowColor: '#0E1A24', shadowOpacity: 0.04, shadowRadius: 6, shadowOffset: { width: 0, height: 2 } },
+  // Send button — blue, soft glow, rounded
+  sendBtn:         { width: 56, height: 56, borderRadius: 22, backgroundColor: C.userBlue, alignItems: 'center', justifyContent: 'center', marginBottom: 0, shadowColor: C.userBlue, shadowOpacity: 0.36, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 6 },
+  sendBtnDisabled: { backgroundColor: C.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, shadowOpacity: 0, elevation: 0 },
   sendBtnIcon:     { fontSize: 22, color: '#FFFFFF', fontWeight: '700', lineHeight: 24, fontFamily: ARIMO },
-  // Paper-plane send icon — built from two border-triangles. See PaperPlane
-  // component for the geometry.
+  // Paper-plane send icon — built from two border-triangles.
   paperPlaneWrap:  { width: 24, height: 24, alignItems: 'center', justifyContent: 'center' },
   paperPlaneTilt:  { transform: [{ rotate: '-22deg' }], marginLeft: 1 },
   paperPlaneWing:  { width: 0, height: 0, borderTopWidth: 8, borderBottomWidth: 8, borderLeftWidth: 19, borderTopColor: 'transparent', borderBottomColor: 'transparent' },
@@ -2671,64 +2680,60 @@ const s = StyleSheet.create({
   // doesn't shift between idle and streaming. An OrbitingArc sits behind
   // the stop button and circles around its perimeter.
   inputBtnSlot:       { width: 56, height: 56, marginBottom: 0, alignItems: 'center', justifyContent: 'center' },
-  // Only the top edge is colored; the others are transparent. With a circular
-  // borderRadius this renders as a ~90° arc, which appears to travel around
-  // the button's perimeter when the View itself is rotated.
   orbitArc:           { position: 'absolute', borderColor: 'transparent', borderTopColor: C.accent },
-  stopBtnInline:      { width: 50, height: 50, borderRadius: 25, backgroundColor: '#FF3B30', alignItems: 'center', justifyContent: 'center' },
+  stopBtnInline:      { width: 50, height: 50, borderRadius: 25, backgroundColor: '#E84843', alignItems: 'center', justifyContent: 'center', shadowColor: '#C8332E', shadowOpacity: 0.36, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 6 },
   stopBtnInlineIcon:  { fontSize: 18, color: '#FFFFFF', fontWeight: '700', lineHeight: 20 },
 
-  // Header right buttons
+  // ── Header right buttons ─────────────────────────────────────────────────────
   headerRight:              { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  // Tasks header button — typographic tag with a small status dot. Mirrors the
-  // monospace + hairline-border treatment used by clearBtn / connStatusPill.
-  tasksBtn:                 { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 5, paddingHorizontal: 10, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderRadius: 0 },
-  tasksBtnDot:              { width: 6, height: 6, borderRadius: 0 },
-  tasksBtnText:             { fontSize: 10, color: C.textSecondary, fontWeight: '800', fontFamily: MONO, letterSpacing: 1.6 },
+  // Tasks header button — soft pill with a round status dot
+  tasksBtn:                 { flexDirection: 'row', alignItems: 'center', gap: 7, paddingVertical: 5, paddingHorizontal: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderRadius: 999, backgroundColor: C.bgElevated },
+  tasksBtnDot:              { width: 7, height: 7, borderRadius: 999 },
+  tasksBtnText:             { fontSize: 11, color: C.textSecondary, fontWeight: '700', fontFamily: ARIMO, letterSpacing: 0.4 },
 
-  // Tasks slide-up modal
+  // ── Tasks slide-up modal ─────────────────────────────────────────────────────
   tasksBackdrop:            { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(14,26,36,0.42)', zIndex: 300 },
-  tasksSheet:               { position: 'absolute', left: 0, right: 0, bottom: 0, maxHeight: '78%', backgroundColor: C.bg, zIndex: 301, borderTopWidth: 1, borderTopColor: C.border, paddingTop: 8, shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 20, shadowOffset: { width: 0, height: -4 }, elevation: 18 },
-  tasksHandle:              { alignSelf: 'center', width: 44, height: 4, borderRadius: 2, backgroundColor: C.border, marginBottom: 8 },
-  tasksHeader:              { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
-  tasksHeaderTitle:         { fontSize: 13, fontWeight: '800', color: C.textPrimary, fontFamily: ARIMO, letterSpacing: 2.5, textTransform: 'uppercase' },
+  tasksSheet:               { position: 'absolute', left: 0, right: 0, bottom: 0, maxHeight: '78%', backgroundColor: C.bgElevated, zIndex: 301, borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingTop: 10, shadowColor: '#000', shadowOpacity: 0.22, shadowRadius: 28, shadowOffset: { width: 0, height: -8 }, elevation: 22 },
+  tasksHandle:              { alignSelf: 'center', width: 40, height: 5, borderRadius: 999, backgroundColor: C.borderStrong, marginBottom: 10, opacity: 0.55 },
+  tasksHeader:              { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
+  tasksHeaderTitle:         { fontSize: 17, fontWeight: '700', color: C.textPrimary, fontFamily: ARIMO, letterSpacing: 0 },
   tasksEmptyWrap:           { paddingVertical: 60, alignItems: 'center' },
-  tasksEmptyText:           { fontSize: 11, color: C.textMuted, fontFamily: MONO, letterSpacing: 2.4, textTransform: 'uppercase', fontWeight: '700' },
+  tasksEmptyText:           { fontSize: 13, color: C.textMuted, fontFamily: ARIMO, fontStyle: 'italic' },
 
-  // A single task row inside the modal
-  taskRow:                  { paddingHorizontal: 18, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
+  // ── A single task row inside the modal ───────────────────────────────────────
+  taskRow:                  { paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
   taskRowHeader:            { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 },
-  taskStatusTag:            { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 6, paddingVertical: 3, borderWidth: StyleSheet.hairlineWidth },
-  taskStatusDot:            { width: 5, height: 5, borderRadius: 0 },
-  taskStatusLabel:          { fontSize: 9, fontWeight: '800', fontFamily: MONO, letterSpacing: 1.6 },
-  taskTimestamp:            { fontSize: 10, color: C.textMuted, fontFamily: MONO, letterSpacing: 1, flex: 1 },
-  taskStopBtn:              { borderWidth: 1, borderColor: C.red, paddingVertical: 4, paddingHorizontal: 10, borderRadius: 0 },
-  taskStopText:             { fontSize: 10, color: C.red, fontWeight: '800', fontFamily: ARIMO, letterSpacing: 2.2, textTransform: 'uppercase' },
-  taskDescription:          { fontSize: 14, color: C.textPrimary, fontFamily: ARIMO, lineHeight: 20 },
-  taskSummary:              { fontSize: 12, color: C.textSecondary, fontFamily: MONO, lineHeight: 17, marginTop: 6 },
-  taskCost:                 { fontSize: 10, color: C.textMuted, fontFamily: MONO, marginTop: 6, letterSpacing: 0.6 },
-  // Hamburger as three deliberate bars (replaces the typographic glyph)
+  taskStatusTag:            { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 9, paddingVertical: 3, borderWidth: StyleSheet.hairlineWidth, borderRadius: 999 },
+  taskStatusDot:            { width: 6, height: 6, borderRadius: 999 },
+  taskStatusLabel:          { fontSize: 10, fontWeight: '700', fontFamily: MONO, letterSpacing: 1.2 },
+  taskTimestamp:            { fontSize: 11, color: C.textMuted, fontFamily: MONO, letterSpacing: 0.4, flex: 1 },
+  taskStopBtn:              { borderWidth: 1, borderColor: C.red, paddingVertical: 4, paddingHorizontal: 12, borderRadius: 999 },
+  taskStopText:             { fontSize: 11, color: C.red, fontWeight: '700', fontFamily: ARIMO, letterSpacing: 0.4 },
+  taskDescription:          { fontSize: 14.5, color: C.textPrimary, fontFamily: ARIMO, lineHeight: 21 },
+  taskSummary:              { fontSize: 13, color: C.textSecondary, fontFamily: ARIMO, lineHeight: 19, marginTop: 6 },
+  taskCost:                 { fontSize: 10.5, color: C.textFaint, fontFamily: MONO, marginTop: 8, letterSpacing: 0.3 },
+  // Hamburger as three deliberate bars
   hamburgerBtn:             { paddingVertical: 8, paddingHorizontal: 6, marginRight: 4 },
   hamburgerBars:            { width: 18, height: 12, justifyContent: 'space-between' },
-  hamburgerBar:             { height: 1.5, backgroundColor: C.textPrimary },
+  hamburgerBar:             { height: 2, borderRadius: 999, backgroundColor: C.textPrimary },
   hamburgerBtnText:         { fontSize: 18, color: C.textPrimary, fontFamily: ARIMO, fontWeight: '700' },
-  containerDot:             { width: 6, height: 6, borderRadius: 0 },
+  containerDot:             { width: 8, height: 8, borderRadius: 999 },
 
-  // Sidebar — editorial drawer
-  sidebarBackdrop:          { backgroundColor: 'rgba(14,26,36,0.32)', zIndex: 200 },
-  sidebar:                  { position: 'absolute', top: 0, left: 0, bottom: 0, width: 300, backgroundColor: C.bg, zIndex: 201, borderRightWidth: 1, borderRightColor: C.border, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 20, shadowOffset: { width: 4, height: 0 }, elevation: 16, flexDirection: 'column' },
-  sidebarSection:           { paddingHorizontal: 18, paddingTop: 20, paddingBottom: 8 },
-  sidebarHeader:            { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18, paddingVertical: 18, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
-  sidebarBrand:             { fontSize: 22, fontWeight: '800', color: C.textPrimary, letterSpacing: 6, fontFamily: NUNITO },
-  sidebarBrandSub:          { fontSize: 9, fontWeight: '800', color: C.textMuted, letterSpacing: 2.5, fontFamily: MONO, textTransform: 'uppercase', marginTop: 4 },
+  // ── Sidebar — drawer ─────────────────────────────────────────────────────────
+  sidebarBackdrop:          { backgroundColor: 'rgba(14,26,36,0.36)', zIndex: 200 },
+  sidebar:                  { position: 'absolute', top: 0, left: 0, bottom: 0, width: 308, backgroundColor: C.bg, zIndex: 201, borderTopRightRadius: 22, borderBottomRightRadius: 22, shadowColor: '#000', shadowOpacity: 0.20, shadowRadius: 28, shadowOffset: { width: 6, height: 0 }, elevation: 22, flexDirection: 'column', overflow: 'hidden' },
+  sidebarSection:           { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 8 },
+  sidebarHeader:            { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 20, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
+  sidebarBrand:             { fontSize: 22, fontWeight: '800', color: C.textPrimary, letterSpacing: 5, fontFamily: NUNITO, paddingLeft: 5 },
+  sidebarBrandSub:          { fontSize: 10, fontWeight: '600', color: C.textMuted, letterSpacing: 1.8, fontFamily: MONO, textTransform: 'uppercase', marginTop: 6 },
   sidebarCloseIcon:         { fontSize: 16, color: C.textSecondary, fontFamily: ARIMO, fontWeight: '300' },
-  sidebarExitBtn:           { paddingHorizontal: 18, paddingVertical: 16 },
-  settingsMenuSectionTitle: { fontSize: 10, fontWeight: '800', color: C.textMuted, textTransform: 'uppercase', letterSpacing: 2.5, fontFamily: MONO },
+  sidebarExitBtn:           { paddingHorizontal: 20, paddingVertical: 16 },
+  settingsMenuSectionTitle: { fontSize: 10.5, fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: 1.6, fontFamily: MONO },
   settingsMenuDivider:      { height: StyleSheet.hairlineWidth, backgroundColor: C.border },
-  settingsMenuLogoutText:   { fontSize: 11, color: C.red, fontFamily: ARIMO, fontWeight: '800', letterSpacing: 2.8, textTransform: 'uppercase' },
-  containerMenuItem:        { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
-  menuItemActive:           { backgroundColor: C.surface, borderLeftWidth: 3, borderLeftColor: C.accent, paddingLeft: 15 },
-  containerMenuItemName:    { fontSize: 14, fontWeight: '700', color: C.textPrimary, fontFamily: ARIMO, letterSpacing: 0.3 },
-  containerMenuItemUrl:     { fontSize: 11, color: C.textMuted, fontFamily: MONO, marginTop: 3, letterSpacing: 0.3 },
-  containerMenuItemStatus:  { fontSize: 9, color: C.textMuted, fontFamily: MONO, letterSpacing: 1.6, textTransform: 'uppercase', fontWeight: '800' },
+  settingsMenuLogoutText:   { fontSize: 13, color: C.red, fontFamily: ARIMO, fontWeight: '700', letterSpacing: 0.4 },
+  containerMenuItem:        { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
+  menuItemActive:           { backgroundColor: C.accentLight, borderLeftWidth: 3, borderLeftColor: C.accent, paddingLeft: 17 },
+  containerMenuItemName:    { fontSize: 14.5, fontWeight: '600', color: C.textPrimary, fontFamily: ARIMO, letterSpacing: 0 },
+  containerMenuItemUrl:     { fontSize: 11.5, color: C.textMuted, fontFamily: MONO, marginTop: 3, letterSpacing: 0.2 },
+  containerMenuItemStatus:  { fontSize: 10, color: C.textMuted, fontFamily: MONO, letterSpacing: 1.2, textTransform: 'uppercase', fontWeight: '700' },
 })
