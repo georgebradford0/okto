@@ -69,41 +69,20 @@ RUN apt-get update && apt-get install -y ca-certificates curl git gpg && \
         > /etc/apt/sources.list.d/github-cli.list && \
     apt-get update && \
     apt-get install -y \
+        buildah \
+        fuse-overlayfs \
         gcc \
         gh \
         jq \
         nodejs \
         openssh-client \
-        openssl \
         qrencode \
+        slirp4netns \
+        uidmap \
     && rm -rf /var/lib/apt/lists/* && \
     curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
 
 COPY --from=builder /build/target/release/lair /usr/local/bin/lair
-
-# Kaniko executor for building container images without a Docker daemon.
-# Extracted from the official kaniko image via multi-stage COPY; agents invoke
-# it via their bash tool with `--force` (since we're not inside the kaniko image).
-# The /kaniko directory holds the executor binary, credential helpers, and SSL
-# certs that Kaniko expects at runtime.
-COPY --from=gcr.io/kaniko-project/executor:v1.24.0 /kaniko/ /kaniko/
-# Ensure the executor is on PATH and runnable by non-root agent uids.
-RUN ln -sf /kaniko/executor /usr/local/bin/kaniko && \
-    chmod -R a+rX /kaniko
-
-# Kaniko ships /kaniko/ssl/certs/ as a single PEM bundle, and the image sets
-# SSL_CERT_DIR=/kaniko/ssl/certs globally (below). Go's TLS (Kaniko) reads
-# bundles from a dir fine, but OpenSSL's `capath` mode requires one cert per
-# file plus c_rehash-style hashed symlinks — without them, every Python /
-# Ruby / curl-with-openssl client in the container fails TLS verification
-# with "unable to get local issuer certificate" (e.g. mcp-proxy-for-aws
-# surfaced this as a JSON-RPC -32602 during MCP initialize). Split the
-# bundle into per-cert files and rehash so the directory works for both
-# stacks. The original ca-certificates.crt is left intact for Kaniko.
-RUN awk '/-----BEGIN CERTIFICATE-----/{n++} n{print > sprintf("/kaniko/ssl/certs/cert-%04d.pem", n)}' \
-        /kaniko/ssl/certs/ca-certificates.crt && \
-    c_rehash /kaniko/ssl/certs >/dev/null && \
-    chmod -R a+rX /kaniko/ssl/certs
 
 # Dedicated non-root users for child agent processes. Lair (the parent)
 # keeps running as root inside the container so it can chown the bind-mounted
@@ -123,6 +102,36 @@ RUN useradd -u 10001 -M -N -s /bin/bash okto-agent && \
         useradd -u $((10100 + i)) -M -N -s /bin/bash okto-agent-$i; \
     done
 
+# Rootless container-image builds via buildah. Each non-root agent uid needs
+# its own subordinate uid/gid range so buildah can map its in-container "root"
+# (uid 0 of the build) onto a real uid the kernel will accept. 65536 sub-ids
+# per user, tightly packed starting at 100000:
+#   okto-agent          → 100000..165535
+#   okto-agent-0..99    → 165536..6717439
+#
+# Per-user storage (vfs driver, configured below) lands at
+# $HOME/.local/share/containers/storage — lair sets HOME=/data/agents/<name>/
+# for each child, so storage is isolated per agent without extra mounts.
+RUN { \
+        printf 'okto-agent:100000:65536\n'; \
+        for i in $(seq 0 99); do \
+            start=$((165536 + i * 65536)); \
+            printf 'okto-agent-%d:%d:65536\n' "$i" "$start"; \
+        done; \
+    } | tee /etc/subuid > /etc/subgid
+
+# Container tooling configuration. vfs is the simplest storage driver — slow
+# and disk-heavy but works without /dev/fuse, kernel overlay, or extra docker
+# run flags. The default policy.json accepts any image source (no signature
+# verification); operators that want stricter trust can override the file at
+# runtime via a bind mount.
+RUN mkdir -p /etc/containers && \
+    printf '[storage]\ndriver = "vfs"\n' > /etc/containers/storage.conf && \
+    printf 'unqualified-search-registries = ["docker.io", "ghcr.io", "quay.io"]\n' \
+        > /etc/containers/registries.conf && \
+    printf '{"default":[{"type":"insecureAcceptAnything"}]}\n' \
+        > /etc/containers/policy.json
+
 LABEL org.opencontainers.image.source=https://github.com/georgebradford0/okto
 LABEL org.opencontainers.image.description="lair — merged lair/agent binary, runs as --role lair by default"
 
@@ -135,9 +144,7 @@ ENV HOME=/data \
     OKTO_AGENTS_DIR=/data/agents \
     OKTO_SKIP_SHELL_ENV=1 \
     OKTO_LAIR_BINARY=/usr/local/bin/lair \
-    NOISE_PORT=8443 \
-    DOCKER_CONFIG=/kaniko/.docker/ \
-    SSL_CERT_DIR=/kaniko/ssl/certs
+    NOISE_PORT=8443
 
 EXPOSE 8000 8443
 

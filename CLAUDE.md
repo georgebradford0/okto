@@ -140,10 +140,8 @@ Baked into the image (see `lair/Dockerfile`):
 | `OKTO_AGENTS_DIR` | `/data/agents` |
 | `OKTO_LAIR_BINARY` | `/usr/local/bin/lair` (used to spawn children) |
 | `OKTO_SKIP_SHELL_ENV` | Always 1; suppresses the login-shell env sourcing |
-| `DOCKER_CONFIG` | `/kaniko/.docker/` (Kaniko credential config location) |
-| `SSL_CERT_DIR` | `/kaniko/ssl/certs` (Kaniko's bundled CA certs) |
 
-Tools baked into the image (besides `lair`): `gcc`, `git`, `gh`, `jq`, `node`/`npm`, `openssh-client`, `qrencode`, `uv`/`uvx`, `kaniko`.
+Tools baked into the image (besides `lair`): `buildah`, `fuse-overlayfs`, `gcc`, `git`, `gh`, `jq`, `node`/`npm`, `openssh-client`, `qrencode`, `slirp4netns`, `uidmap`, `uv`/`uvx`. `/etc/subuid` + `/etc/subgid` are populated for every agent uid (10001, 10100..10199) so each can run `buildah` rootless; the image defaults to the `vfs` storage driver (configured via `/etc/containers/storage.conf`).
 
 Set at `docker run` time by `cli/src/service.rs`:
 

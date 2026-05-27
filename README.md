@@ -75,16 +75,20 @@ okto mcp remove --name github
 One thing to note.  MCPs by default are inherited by parent to spawned child.  This will probably change but I haven't decided on a design to handle MCP inheritance in detail.  Currently the CLI can only update MCPs for local agents, this will probably change soon.
 
 ## Building Docker Images
-The lair image includes the [Kaniko](https://github.com/GoogleContainerTools/kaniko) executor, which allows agents to build and push container images **without a Docker daemon or socket**. Agents invoke it from their bash tool:
+The lair image includes [Buildah](https://buildah.io) for daemonless Docker/OCI image builds. Agents invoke it from their bash tool:
 
 ```sh
-kaniko --force \
-    --dockerfile=Dockerfile \
-    --context=dir:///path/to/workspace \
-    --destination=ghcr.io/org/image:tag
+# 1. Authenticate once per session (GH_TOKEN comes from ~/.okto/lair-env)
+echo "$GH_TOKEN" | buildah login -u <github-user> --password-stdin ghcr.io
+
+# 2. Build
+buildah bud -t ghcr.io/org/image:tag -f Dockerfile /path/to/workspace
+
+# 3. Push
+buildah push ghcr.io/org/image:tag
 ```
 
-Kaniko runs entirely in userspace — no `--privileged` flag, no socket mount, no inner daemon. The `--force` flag is required because lair is not the official Kaniko image. Registry credentials are configured via `~/.okto/lair-env` (e.g. `GH_TOKEN` for GHCR) or a Docker config JSON at `$DOCKER_CONFIG` (set to `/kaniko/.docker/` in the image).
+No `--privileged` flag, no socket mount, no inner daemon. Lair (running as root) builds rootful; each child agent uid (10100..10199) gets its own subordinate-uid range so it can build rootless. The image is configured with the `vfs` storage driver — slow and disk-heavy, but works without `/dev/fuse` or extra `docker run` flags. Per-agent build storage lives under `$HOME/.local/share/containers/storage` (= `~/.okto/agents/<name>/.local/share/...` on the host).
 
 ## Noise/SSH Keys
 To avoid the necessity of using DNS for securing a connection, the Noise Protocol is used 
