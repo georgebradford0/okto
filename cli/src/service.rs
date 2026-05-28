@@ -370,7 +370,24 @@ pub fn start_lair(launch: &LairLaunch<'_>) -> Result<String> {
         "run", "-d",
         "--name",          LAIR_CONTAINER_NAME,
         "--restart",       "unless-stopped",
+        // Custom seccomp (clone/unshare/mount allowed unconditionally — see
+        // ensure_seccomp_profile above).
         "--security-opt",  &seccomp_arg,
+        // Docker's default AppArmor profile explicitly denies writes to
+        // /proc/*/uid_map, /proc/*/gid_map, /proc/*/setgroups — exactly the
+        // operations `newuidmap`/`newgidmap` need to populate a rootless
+        // user namespace for buildah-as-non-root. Disable AppArmor for this
+        // container; kernel namespace isolation + capability bounding still
+        // apply.
+        "--security-opt",  "apparmor=unconfined",
+        // Rootless containers-in-Docker (buildah, podman) require
+        // CAP_SYS_ADMIN to set up the inner user-namespace mount and uid
+        // mappings. Docker's default cap set strips it; add it back. Note
+        // this raises lair's (root) effective caps, but agents are still
+        // unprivileged uids with no caps in their effective set — they only
+        // benefit via the setuid `newuidmap`/`newgidmap` binaries which need
+        // the cap in the container's bounding set.
+        "--cap-add",       "SYS_ADMIN",
         "-p",              &publish_noise,
         "-p",              &publish_http,
         "-v",              &mount,

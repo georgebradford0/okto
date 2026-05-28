@@ -117,11 +117,11 @@ COPY --from=builder /build/target/release/lair /usr/local/bin/lair
 # process's actual st_gid. Create a matching-gid group per user so the two
 # stay in sync.
 RUN groupadd -g 10001 okto-agent && \
-    useradd  -u 10001 -g 10001 -M -s /bin/bash okto-agent && \
+    useradd  -u 10001 -g 10001 -m -s /bin/bash okto-agent && \
     for i in $(seq 0 99); do \
         gid=$((10100 + i)); \
         groupadd -g "$gid"            "okto-agent-$i"; \
-        useradd  -u "$gid" -g "$gid" -M -s /bin/bash "okto-agent-$i"; \
+        useradd  -u "$gid" -g "$gid" -m -s /bin/bash "okto-agent-$i"; \
     done
 
 # Rootless container-image builds via buildah. Each non-root agent uid needs
