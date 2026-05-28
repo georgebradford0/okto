@@ -4,6 +4,8 @@
 
 ### Added
 
+- **`POST /tasks/:id/cancel` HTTP endpoint** (and `/agents/:name/tasks/:id/cancel` proxy) for stopping background tasks from outside the WS. Twin of the existing `cancel_task` WS frame — same `core_cancel_task` plumbing, returns `{"id":"…","fired":bool}`. Powers the new `okto tasks stop` CLI command.
+
 - **AWS CLI v2 (`aws`) baked into the image.** Installed from AWS's official self-contained zip (no Debian package exists). Multi-arch — picks `x86_64`/`aarch64` based on `dpkg --print-architecture` at build time. Adds ~150 MB to the image. Auth via the usual env vars (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`) set via `okto env set`; or `aws configure` per session.
 
 - **`glab` CLI (GitLab) baked into the image** (Debian Trixie's 1.53.0 package from main). Mirrors `gh`'s role for GitLab — agents can use it from their bash tool. Auth via `GITLAB_TOKEN` env or `glab auth login` per session.

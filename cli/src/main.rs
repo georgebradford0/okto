@@ -4,6 +4,7 @@ mod mcp;
 mod qr;
 mod service;
 mod ssh;
+mod tasks;
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
@@ -189,6 +190,30 @@ enum Command {
     Ssh {
         #[command(subcommand)]
         action: SshAction,
+    },
+
+    /// View and stop background tasks running in lair or child agents.
+    Tasks {
+        #[command(subcommand)]
+        action: TasksAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum TasksAction {
+    /// List background tasks. Defaults to lair + every known agent.
+    List {
+        /// Restrict to this agent's tasks (otherwise aggregates across the fleet).
+        #[arg(long, value_name = "NAME")]
+        agent: Option<String>,
+    },
+    /// Stop a running background task by id.
+    Stop {
+        /// Task id (e.g. `bg-abc12345`).
+        id: String,
+        /// Target a specific agent. Omit for a lair-local task.
+        #[arg(long, value_name = "NAME")]
+        agent: Option<String>,
     },
 }
 
@@ -1064,6 +1089,10 @@ async fn main() -> Result<()> {
         }
         Command::Ssh { action } => match action {
             SshAction::Pubkey => ssh::pubkey().await?,
+        },
+        Command::Tasks { action } => match action {
+            TasksAction::List { agent }    => tasks::list(agent.as_deref()).await?,
+            TasksAction::Stop { id, agent } => tasks::stop(&id, agent.as_deref()).await?,
         },
     }
     Ok(())

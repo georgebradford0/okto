@@ -122,6 +122,8 @@ Lair exposes a small management API on `127.0.0.1:8000` for the CLI:
 - `GET    /agents/:name/logs` — last 1 MB of the child's `agent.log`.
 - `GET    /agents/:name/stream` — WebSocket proxy (mobile end).
 - `GET    /agents/:name/history`, `POST /agents/:name/interrupt`, `POST /agents/:name/clear`, `GET /agents/:name/branches` — HTTP proxies of the child's same-name endpoints.
+- `POST   /tasks/:id/cancel` — cancel a lair background task. Returns `{"id":"…","fired":bool}`.
+- `POST   /agents/:name/tasks/:id/cancel` — proxy to the child's same endpoint; used by `okto tasks stop --agent <name> <id>`.
 
 ### lair credentials (`~/.okto/config.json`)
 

@@ -849,6 +849,29 @@ async fn clear_handler(State(state): State<Arc<AppState>>) -> StatusCode {
     StatusCode::OK
 }
 
+/// HTTP twin of the `cancel_task` WS frame. POST /tasks/:id/cancel.
+/// Same semantics as the WS path — looks up `id` in the stream state's
+/// cancellation-token table and fires it, if any. Body is identical to the
+/// `cancel_task_ack` WS payload so CLI / mobile clients can share parsing.
+async fn cancel_task_handler(
+    AxumPath(id): AxumPath<String>,
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let fired = core_cancel_task(&state.stream_state, &id);
+    info!("[lair/cancel_task] id={id} fired={fired}");
+    Json(serde_json::json!({"id": id, "fired": fired}))
+}
+
+/// Proxy the cancel HTTP to a named child agent. Mirrors the other
+/// `proxy_agent_*` handlers — forwards to the child's own
+/// `POST /tasks/:id/cancel`.
+async fn proxy_agent_cancel_task(
+    AxumPath((name, id)): AxumPath<(String, String)>,
+    State(state):         State<Arc<AppState>>,
+) -> Response {
+    proxy_agent_http(&state, &name, reqwest::Method::POST, &format!("/tasks/{id}/cancel")).await
+}
+
 /// Re-spawn a stopped agent by name. Re-uses its existing data_dir/workspace.
 async fn start_agent_by_name(state: &AppState, name: &str) -> Result<(), String> {
     info!("[lair/start_agent] starting agent='{name}'");
@@ -3163,6 +3186,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             .route("/stream",                  get(stream_handler))
             .route("/interrupt",               post(interrupt_handler))
             .route("/clear",                   post(clear_handler))
+            .route("/tasks/:id/cancel",        post(cancel_task_handler))
             .route("/internal/notify",         post(internal_notify_handler))
             .route("/internal/notify-task",    post(internal_notify_task_handler))
             .route("/agents",                  get(cli_list_agents))
@@ -3174,6 +3198,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             .route("/agents/:name/clear",      post(proxy_agent_clear))
             .route("/agents/:name/branches",   get(proxy_agent_branches))
             .route("/agents/:name/completions", get(proxy_agent_completions))
+            .route("/agents/:name/tasks/:id/cancel", post(proxy_agent_cancel_task))
             .merge(protected)
             .merge(agent_protected)
             .with_state(state)

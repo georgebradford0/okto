@@ -17,7 +17,7 @@ use tracing::{debug, error, info, warn};
 use axum::{
     extract::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
-        Query, State,
+        Path as AxumPath, Query, State,
     },
     http::{Method, StatusCode},
     response::{IntoResponse, Response},
@@ -118,6 +118,18 @@ async fn interrupt_handler(State(state): State<Arc<AppState>>) -> StatusCode {
     state.cancel.lock().unwrap().cancel();
     state.turn_gate.lock().unwrap().interrupt_requested = true;
     StatusCode::OK
+}
+
+/// HTTP twin of the agent's `cancel_task` WS frame. POST /tasks/:id/cancel.
+/// Same semantics as the WS path. Lair proxies `POST /agents/:name/tasks/:id/cancel`
+/// here so operators can stop a child agent's background task from `okto tasks stop`.
+async fn cancel_task_handler(
+    AxumPath(id): AxumPath<String>,
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let fired = core_cancel_task(&state.stream_state, &id);
+    info!("[agent/cancel_task] id={id} fired={fired}");
+    Json(serde_json::json!({"id": id, "fired": fired}))
 }
 
 async fn history_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
@@ -1241,6 +1253,7 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/stream",      get(stream_handler))
         .route("/interrupt",   post(interrupt_handler))
         .route("/clear",       post(clear_handler))
+        .route("/tasks/:id/cancel", post(cancel_task_handler))
         .route("/branches",    get(get_branches_handler))
         .route("/completions", get(get_completions_handler))
         .route("/config",      get(get_config_handler).put(update_config_handler))
