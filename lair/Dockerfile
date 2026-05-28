@@ -74,6 +74,7 @@ RUN apt-get update && apt-get install -y ca-certificates curl git gpg && \
         gcc \
         gh \
         jq \
+        libcap2-bin \
         nodejs \
         openssh-client \
         qrencode \
