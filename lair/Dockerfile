@@ -13,7 +13,10 @@
 #     tokio's Command default, no extra plumbing required.
 #
 # ── Stage 1: Builder ──────────────────────────────────────────────────────────
-FROM rust:1.88-slim AS builder
+# Trixie-based so the dynamically-linked libssl 3.x matches the runtime stage
+# below. Mismatching the base distros across stages produces a binary that
+# loads in the builder but segfaults or fails to find a SONAME at runtime.
+FROM rust:1.88-slim-trixie AS builder
 
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
@@ -56,7 +59,14 @@ COPY lair/src    lair/src
 RUN cargo build --release -p lair
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
-FROM debian:bookworm-slim
+# Trixie (Debian 13, stable since mid-2025) is required for buildah ≥ 1.30 in
+# the main repo — bookworm ships buildah 1.28.2 which has a hard-coded early
+# `unshare(CLONE_NEWUSER)` in `containers/storage/pkg/unshare`'s init path
+# that runs before flag parsing, so `--isolation chroot` is examined too late
+# and Docker's default seccomp profile (which blocks the syscall for non-root)
+# fails every build with "Operation not permitted". Fixed upstream in
+# containers/storage#1573, first released in buildah 1.30 (~Apr 2023).
+FROM debian:trixie-slim
 
 # Tools lair's bash / git / mcp paths shell out to. `gh` and `node` are pulled
 # in because most MCP servers in the wild are npx- or `gh`-driven; `uv`

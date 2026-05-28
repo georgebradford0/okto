@@ -12,6 +12,8 @@
 
 ### Fixed
 
+- **Base image bumped to `debian:trixie-slim` for buildah ≥ 1.39.** Bookworm shipped buildah 1.28.2, which has a hard-coded early `unshare(CLONE_NEWUSER)` in `containers/storage/pkg/unshare`'s init path — it runs before flag parsing, so `--isolation chroot` is examined too late, and Docker's default seccomp profile blocks the syscall for non-root callers (every agent build died with `Operation not permitted` regardless of `BUILDAH_ISOLATION=chroot` and the CAP_SYS_CHROOT we shipped in 0.16.2). Fixed upstream in containers/storage#1573, first released in buildah 1.30. Trixie (Debian 13, stable since mid-2025) ships buildah 1.39+ which respects `--isolation chroot` from the start. The builder stage also moves to `rust:1.88-slim-trixie` so the dynamically-linked libssl matches the runtime stage.
+
 - **`buildah` works for non-root child agents (CAP_SYS_CHROOT granted as a file capability).** Out of the box, non-root agents had no working buildah isolation mode: `chroot` requires `CAP_SYS_CHROOT` which they don't have, and `rootless` requires `unshare(CLONE_NEWUSER)` which most container hosts (incl. stock Docker on Linux) deny with `Operation not permitted`. The image now runs `setcap cap_sys_chroot+ep /usr/bin/buildah` so the buildah binary executes with chroot capability regardless of the calling uid. Both lair (root) and agents (non-root) should now use `--isolation chroot`. The `buildah_note` system prompt and `docs/buildah.md` were updated accordingly.
 
 - **Fixed misplaced `rootless_storage_path` in `/etc/containers/storage.conf`.** Was under `[storage.options]` (where it produced a benign `Failed to decode the keys` warning at every buildah invocation), now correctly under `[storage]`.
