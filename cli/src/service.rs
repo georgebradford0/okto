@@ -68,12 +68,20 @@ pub fn seccomp_profile_path() -> PathBuf { config_dir().join("seccomp.json") }
 /// overwrite an existing file.
 const SECCOMP_PROFILE: &str = include_str!("../seccomp.json");
 
-/// Write the bundled seccomp profile to `seccomp_profile_path()` if it
-/// doesn't already exist. Called from `start_lair` so every code path that
-/// (re)starts lair populates the file before `docker run` references it.
+/// Write the bundled seccomp profile to `seccomp_profile_path()` if it's
+/// missing or differs from the currently-bundled version. Called from
+/// `start_lair` so every code path that (re)starts lair refreshes the file
+/// before `docker run` references it. Always-overwrite (vs write-if-missing)
+/// is deliberate: the profile is bundled with the CLI binary and meant to
+/// track CLI versions — operators who want to customize should either fork
+/// the CLI or set up an external `seccomp.json` and override the path.
 pub fn ensure_seccomp_profile() -> Result<PathBuf> {
     let path = seccomp_profile_path();
-    if !path.exists() {
+    let needs_write = match fs::read_to_string(&path) {
+        Ok(current) => current != SECCOMP_PROFILE,
+        Err(_)      => true,
+    };
+    if needs_write {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).ok();
         }
