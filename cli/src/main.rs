@@ -526,6 +526,36 @@ async fn update_lair(image_override: Option<String>) -> Result<()> {
         None
     };
 
+    // Snapshot which *local* agents are currently Running so we can respawn
+    // them on the new image after the container restart. Local agents are
+    // processes inside the lair container — they die when the container is
+    // recreated and are otherwise left as Stopped in the registry until
+    // someone manually starts them. Remote agents are skipped: they run in
+    // their own containers on other hosts and are unaffected by a local
+    // restart (lair just re-opens its outbound Noise tunnel to them on
+    // demand). Read the registry from disk directly rather than going via
+    // the mgmt API, mirroring `agents::list`.
+    let local_agents_to_restart: Vec<String> = if service::is_running() {
+        let registry_path = service::lair_data_dir().join("agents.json");
+        match okto_core::Registry::load(registry_path) {
+            Ok(reg) => reg.list().iter()
+                .filter(|a| !a.is_remote() && a.status == okto_core::AgentStatus::Running)
+                .map(|a| a.name.clone())
+                .collect(),
+            Err(e) => {
+                warn!("[cli] could not read agent registry for restart snapshot: {e}");
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    debug!(
+        "[cli] lair update will respawn {} local agent(s) after restart: {:?}",
+        local_agents_to_restart.len(),
+        local_agents_to_restart,
+    );
+
     println!("Pulling {image}...");
     service::docker_pull(&image)?;
 
@@ -552,6 +582,24 @@ async fn update_lair(image_override: Option<String>) -> Result<()> {
             _ => {}
         }
         info!("[cli] lair update complete (container restarted on {image})");
+
+        // Respawn local agents that were Running before the restart. Per-
+        // agent failures are reported but don't fail the whole update — the
+        // user can retry individual agents with `okto agents start <name>`.
+        // `init::restart_lair` already polls /health before returning, so
+        // the mgmt API is ready to accept these POSTs.
+        if !local_agents_to_restart.is_empty() {
+            println!(
+                "Restarting {} local agent(s) on new image...",
+                local_agents_to_restart.len(),
+            );
+            for name in &local_agents_to_restart {
+                if let Err(e) = agents::start(name).await {
+                    error!("[cli] failed to restart agent '{name}' after update: {e}");
+                    println!("  Failed to restart '{name}': {e} (run `okto agents start {name}` to retry)");
+                }
+            }
+        }
     } else if service::read_launch().is_some() {
         info!("[cli] lair update: image pulled; lair not running, will apply on next reload");
         println!("lair is not running; new image will be used on next `okto reload`.");
