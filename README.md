@@ -50,7 +50,7 @@ or after initialization with
 okto env set GH_TOKEN=<token>
 okto reload
 ```
-The Github (or Gitlab) MCP can always be added to `lair` instead. It will be propagated to child agents by default.  The caveat for this is that there is no dedicated tools list in the LLM prompt for Github, so usually the model has to be directed by the user to use `gh` but significantly shortens the prompt prefix length.  The system prompt references `gh` and explains that the model has access to it.  If you decide to go with the MCP, the inline `GH_TOKEN` to `init` is not needed and the env var should added in the MCP setup.
+The Github (or Gitlab) MCP can always be added to `lair` instead. It will be propagated to child agents by default.  The caveat for this is that there is no dedicated tools list in the LLM prompt for Github, so usually the model has to be directed by the user to use `gh` but shortens the prompt prefix length.  The system prompt references `gh` and explains that the model has access to it.  If you decide to go with the MCP, the inline `GH_TOKEN` to `init` is not needed and the env var should added in the MCP setup.
 
 ## MCP Support
 MCP servers can be seeded at init time by passing an MCP JSON file:
