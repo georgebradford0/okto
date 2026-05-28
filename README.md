@@ -82,7 +82,12 @@ Lair (running as root) builds rootful; each child agent uid (10100..10199) gets 
 Though `lair` does have root access within the container, any builds from there should also use `buildah`.
 
 ## Noise/SSH Keys
-To avoid the necessity of using DNS for securing a connection, the Noise Protocol is used // TODO 
+Every lair container holds two independent keypairs, each with a distinct purpose:
+
+- **Noise keypair (X25519)** — the transport identity. Mobile↔lair and lair↔remote-agent traffic is wrapped in a `Noise_XX_25519_ChaChaPoly_SHA256` tunnel; the pubkey is what the QR code embeds, and what mobile pins as the *expected* responder static. This is how DNS / TLS PKI is avoided entirely.
+- **SSH keypair (Ed25519)** — the operator backchannel. Lair uses it to SSH into freshly-provisioned remote VMs during bootstrap, and every local child agent's `~/.ssh/` is seeded from the same keypair so the whole container shares one external identity for `gh`, `git`, GPU-pod SSH, etc. Register it on external services once with `okto ssh pubkey`.
+
+Both keys are container-scoped — a remote lair on another host generates its own pair at startup; only pubkeys ever cross between containers. For the full picture (handshake mechanics, bootstrap flow, rotation), see [docs/keypairs.md](docs/keypairs.md).
 
 ## Local vs Remote Agents
 Agents can be deployed and managed from the main chat or using the CLI. Local agents are deployed in the *same container* as `lair` but with their own data directory.  Once an agent is deployed and ready to communicate it will be available in the mobile sidebar with a separate chat.
