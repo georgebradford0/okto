@@ -934,6 +934,10 @@ const ChatPane = memo(function ChatPane({
     return cached ? withPrevRoles(cached as Message[]) : []
   })
   const [status,         setStatus]         = useState<ConnStatus>('connecting')
+  // Ref mirror of `status` so handleStreamEvent (a useCallback that doesn't
+  // depend on `status`) can read the current value without closure staleness.
+  // Kept in lockstep by updateStatus below.
+  const statusRef = useRef<ConnStatus>('connecting')
   const [input,          setInput]          = useState(initialDraft ?? '')
   const draftKey = `draft:${baseUrl}`
   const [completions,    setCompletions]    = useState<string[]>([])
@@ -993,6 +997,7 @@ const ChatPane = memo(function ChatPane({
   }, [closeWsRef])
 
   const updateStatus = useCallback((s: ConnStatus) => {
+    statusRef.current = s
     setStatus(s)
     onStatusChange(s)
   }, [onStatusChange])
@@ -1024,6 +1029,20 @@ const ChatPane = memo(function ChatPane({
       } else {
         setMessages(updater)
       }
+    }
+
+    // Defensive: text/tool_use events arrive only when the model is actively
+    // producing output. For a user-initiated turn, `sendMessage` already
+    // flipped status to 'streaming' before the user_message frame went out.
+    // But the server also auto-injects follow-up turns we never asked for —
+    // e.g. after a `bg_complete`, the model continues with text/tool_use
+    // events with no preceding client trigger. Without this defensive flip,
+    // status stays 'ready' and the Send button doesn't get replaced by the
+    // stop/spinner for the duration of that turn. Skipped during replay —
+    // the `ready { resumed: true }` handler manages status for that path.
+    if (!replayingRef.current && statusRef.current !== 'streaming' &&
+        (event.type === 'text' || event.type === 'tool_use')) {
+      updateStatus('streaming')
     }
 
     switch (event.type) {
