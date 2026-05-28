@@ -4,6 +4,8 @@
 
 ### Added
 
+- **AWS CLI v2 (`aws`) baked into the image.** Installed from AWS's official self-contained zip (no Debian package exists). Multi-arch — picks `x86_64`/`aarch64` based on `dpkg --print-architecture` at build time. Adds ~150 MB to the image. Auth via the usual env vars (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`) set via `okto env set`; or `aws configure` per session.
+
 - **`glab` CLI (GitLab) baked into the image** (Debian Trixie's 1.53.0 package from main). Mirrors `gh`'s role for GitLab — agents can use it from their bash tool. Auth via `GITLAB_TOKEN` env or `glab auth login` per session.
 
 - **Buildah for daemonless container image builds.** The lair image ships [Buildah](https://buildah.io) plus `uidmap`, `slirp4netns`, and `fuse-overlayfs`. Lair (root) builds rootful; each child agent uid (10001 + 10100..10199) has a 65536-wide subordinate-uid range in `/etc/subuid` + `/etc/subgid` so it can build rootless. The image defaults to the `vfs` storage driver (configured via `/etc/containers/storage.conf`) — slow and disk-heavy, but works inside any Docker container without `/dev/fuse`, special caps, or extra `docker run` flags. `/etc/containers/registries.conf` pre-configures docker.io, ghcr.io, quay.io as unqualified-search registries; `/etc/containers/policy.json` defaults to `insecureAcceptAnything` so any image source is accepted. Per-agent build storage lives under `$HOME/.local/share/containers/storage`. System-prompt note updated for both lair and agents — typical flow is `buildah login … && buildah bud -t … && buildah push …`.

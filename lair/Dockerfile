@@ -91,8 +91,22 @@ RUN apt-get update && apt-get install -y ca-certificates curl git gpg && \
         qrencode \
         slirp4netns \
         uidmap \
+        unzip \
     && rm -rf /var/lib/apt/lists/* && \
     curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
+
+# AWS CLI v2 — official installer from AWS. No Debian package exists; the
+# zip is self-contained and adds ~150 MB installed. Arch-name translation:
+# Debian uses amd64/arm64, AWS uses x86_64/aarch64 in the download URL.
+RUN case "$(dpkg --print-architecture)" in \
+        amd64) AWS_ARCH=x86_64 ;; \
+        arm64) AWS_ARCH=aarch64 ;; \
+        *) echo "unsupported arch for awscli: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}.zip" -o /tmp/awscli.zip && \
+    unzip -q /tmp/awscli.zip -d /tmp && \
+    /tmp/aws/install --install-dir /usr/local/aws-cli --bin-dir /usr/local/bin && \
+    rm -rf /tmp/awscli.zip /tmp/aws
 
 COPY --from=builder /build/target/release/lair /usr/local/bin/lair
 
