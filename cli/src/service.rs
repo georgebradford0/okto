@@ -56,6 +56,34 @@ pub fn env_file_path() -> PathBuf { config_dir().join("lair-env") }
 /// the most recent `okto init`.
 pub fn launch_config_path() -> PathBuf { config_dir().join("lair-launch.json") }
 
+/// Bundled seccomp profile path. Written on first `start_lair` so docker run
+/// can pass `--security-opt seccomp=<path>` against it.
+pub fn seccomp_profile_path() -> PathBuf { config_dir().join("seccomp.json") }
+
+/// Docker's default seccomp profile with a single rule added at the top that
+/// allows `unshare` / `setns` / `clone3` / `clone` unconditionally (Docker's
+/// default gates them on `CAP_SYS_ADMIN`, which our non-root agent uids don't
+/// have — so `unshare(CLONE_NEWUSER)` returns EPERM and rootless container
+/// builders fail at startup). Operator-editable once written; the CLI won't
+/// overwrite an existing file.
+const SECCOMP_PROFILE: &str = include_str!("../seccomp.json");
+
+/// Write the bundled seccomp profile to `seccomp_profile_path()` if it
+/// doesn't already exist. Called from `start_lair` so every code path that
+/// (re)starts lair populates the file before `docker run` references it.
+pub fn ensure_seccomp_profile() -> Result<PathBuf> {
+    let path = seccomp_profile_path();
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        fs::write(&path, SECCOMP_PROFILE)
+            .with_context(|| format!("write seccomp profile {}", path.display()))?;
+        info!("[service] wrote bundled seccomp profile to {}", path.display());
+    }
+    Ok(path)
+}
+
 /// Persistent management API token (`X-Okto-Token` header value). Generated
 /// on first run, chmod 0600, passed to the lair container via
 /// `docker -e LAIR_MGMT_TOKEN=<value>`. Children never see it — lair's
@@ -308,6 +336,17 @@ pub fn start_lair(launch: &LairLaunch<'_>) -> Result<String> {
     // `/proc/1/environ` is also inaccessible.
     let mgmt_token = ensure_mgmt_token()?;
 
+    // Custom seccomp profile so rootless container builders inside lair
+    // (buildah running as non-root agent uids) can call
+    // `unshare(CLONE_NEWUSER)`. Docker's default profile gates that syscall
+    // behind CAP_SYS_ADMIN, which agents don't have — making every rootless
+    // image build fail with "Operation not permitted" before buildah's flag
+    // parsing runs. The bundled profile is Docker's default with the
+    // namespace-creation syscalls allowed unconditionally; everything else
+    // stays filtered.
+    let seccomp_path = ensure_seccomp_profile()?;
+    let seccomp_arg = format!("seccomp={}", seccomp_path.display());
+
     let noise_port = launch.noise_port.to_string();
     let http_port  = launch.http_port.to_string();
     let publish_noise = format!("{noise_port}:8443");
@@ -321,20 +360,21 @@ pub fn start_lair(launch: &LairLaunch<'_>) -> Result<String> {
 
     let args: Vec<&str> = vec![
         "run", "-d",
-        "--name",       LAIR_CONTAINER_NAME,
-        "--restart",    "unless-stopped",
-        "-p",           &publish_noise,
-        "-p",           &publish_http,
-        "-v",           &mount,
-        "--env-file",   &env_file_arg,
+        "--name",          LAIR_CONTAINER_NAME,
+        "--restart",       "unless-stopped",
+        "--security-opt",  &seccomp_arg,
+        "-p",              &publish_noise,
+        "-p",              &publish_http,
+        "-v",              &mount,
+        "--env-file",      &env_file_arg,
         // Tell lair which port to advertise in the QR code. NOISE_PORT inside
         // the container is hardcoded to 8443 (the EXPOSE'd port); PUBLIC_PORT
         // is what the mobile client should connect to from outside.
-        "-e",           &public_port,
+        "-e",              &public_port,
         // Token for the CLI ↔ lair management API. Set last so we can be
         // sure it overrides any LAIR_MGMT_TOKEN that snuck into the env
         // file (the parser of which doesn't reject it as a managed key).
-        "-e",           &mgmt_env,
+        "-e",              &mgmt_env,
         launch.image,
     ];
 
