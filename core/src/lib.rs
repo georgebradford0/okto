@@ -132,6 +132,10 @@ pub struct Config {
     /// Max number of transitive descendants any single agent is allowed to
     /// have at once. Prevents fork-bomb-style runaway growth. `None` → default 5.
     pub agent_spawn_max_descendants: Option<usize>,
+    /// Free-form text appended verbatim to lair's built-in system prompt.
+    /// Re-read on every turn, so edits take effect without restarting the
+    /// container.
+    pub system_prompt_append: Option<String>,
 }
 
 /// Resolved spawn-cap pair (depth, descendants). Reads `Config`; supplies

@@ -135,7 +135,6 @@ enum TurnTrigger { User(String), Auto }
 struct AppState {
     messages:      Arc<Mutex<Vec<ApiMessage>>>,
     last_cost_usd: Mutex<Option<f64>>,
-    system:        String,
     /// Watch channel published by the agent poller. Each /stream WS subscribes
     /// and re-sends an `agents` event whenever the list changes.
     agents_tx:     watch::Sender<Vec<AgentWire>>,
@@ -483,7 +482,7 @@ fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
             .cloned()
             .collect();
         let snapshot_len = messages.len();
-        let system    = state.system.clone();
+        let system    = build_system_prompt();
         let msgs_arc  = state.messages.clone();
         let state_arc = Arc::clone(&state);
 
@@ -1417,6 +1416,18 @@ async fn proxy_to_child(mobile_ws: WebSocket, record: AgentRecord, lair_priv: Ve
 // ── System prompt ─────────────────────────────────────────────────────────────
 
 fn build_system_prompt() -> String {
+    let base = base_system_prompt();
+    match okto_core::read_config()
+        .system_prompt_append
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        Some(extra) => format!("{base}\n\n# Operator appendix\n{extra}"),
+        None        => base.to_string(),
+    }
+}
+
+fn base_system_prompt() -> &'static str {
     r#"# Identity & context
 You are okto -- the helpful but mysterious octopus.
 
@@ -1504,7 +1515,6 @@ okto can host any kind of agent workload, not only coding agents — don't assum
 - Confirm before `terminate_agent` or `restart_all_agents` unless the user just told you to.
 - If a request would put a secret into plaintext config (`startup_script`, `startup_prompt`, env), flag it and offer a safer alternative.
 - Trust your judgment on small choices; only ask when ambiguity would actually change the outcome."#
-        .to_string()
 }
 
 // ── Tools ─────────────────────────────────────────────────────────────────────
@@ -3079,7 +3089,6 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
         let state = Arc::new(AppState {
             messages:      Arc::new(Mutex::new(messages)),
             last_cost_usd: Mutex::new(None),
-            system:        build_system_prompt(),
             agents_tx,
             agents_rx,
             poll_trigger:  poll_trigger.clone(),

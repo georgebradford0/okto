@@ -17,6 +17,24 @@ fn mask(s: &str) -> String {
     format!("{}...{}", &s[..4], &s[s.len()-4..])
 }
 
+/// Resolve a `TEXT | @PATH` value. A leading `@` means "read the rest of the
+/// string as a file path"; anything else is taken verbatim. An empty result
+/// is mapped to `None`, which the caller treats as "clear this field".
+fn resolve_text_or_at_path(raw: &str) -> Result<Option<String>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let text = if let Some(path) = trimmed.strip_prefix('@') {
+        std::fs::read_to_string(path)
+            .with_context(|| format!("read {path}"))?
+    } else {
+        raw.to_string()
+    };
+    let text = text.trim().to_string();
+    Ok((!text.is_empty()).then_some(text))
+}
+
 fn validate_resolved_config(cfg: &Config) -> Result<(), String> {
     let anthropic = cfg.anthropic_api_key.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let openai    = cfg.openai_api_key   .as_deref().map(str::trim).filter(|s| !s.is_empty());
@@ -76,6 +94,14 @@ enum Command {
         /// Path to an mcp.json file to seed lair's MCP tool list
         #[arg(long)]
         mcp_config: Option<std::path::PathBuf>,
+
+        /// Free-form text appended to lair's built-in system prompt.
+        /// Use `@<path>` to read from a file. Stored verbatim in
+        /// `~/.okto/config.json` as `system_prompt_append` and re-read on
+        /// every turn, so subsequent edits to the file take effect without
+        /// restarting the container.
+        #[arg(long, value_name = "TEXT|@PATH")]
+        system_prompt_append: Option<String>,
     },
 
     /// Manage child agents
@@ -186,6 +212,10 @@ enum ConfigAction {
         anthropic_api_key: Option<String>,
         #[arg(long)]
         openai_api_key: Option<String>,
+        /// Replace `system_prompt_append` in `~/.okto/config.json`. Use
+        /// `@<path>` to read from a file, or an empty string ("") to clear it.
+        #[arg(long, value_name = "TEXT|@PATH")]
+        system_prompt_append: Option<String>,
     },
 }
 
@@ -706,9 +736,16 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Command::Init { env, noise_port, http_port, image, mcp_config } => {
+        Command::Init { env, noise_port, http_port, image, mcp_config, system_prompt_append } => {
             info!("[cli] init starting (noise_port={noise_port}, http_port={http_port})");
             let extra_env = init::parse_extra_env(&env)?;
+
+            // Resolve `--system-prompt-append` up front so a bad `@path`
+            // fails before we mutate anything on disk.
+            let prompt_append = match system_prompt_append.as_deref() {
+                Some(raw) => Some(resolve_text_or_at_path(raw)?),
+                None      => None,
+            };
 
             let config_path = okto_core::config_path();
             let config_exists = config_path.exists();
@@ -731,12 +768,18 @@ async fn main() -> Result<()> {
                     "{} exists — reusing it. (Edit via `okto config set …` or `okto destroy` to start over.)",
                     config_path.display(),
                 );
-                let cfg = okto_core::read_config();
+                let mut cfg = okto_core::read_config();
                 if let Err(e) = validate_resolved_config(&cfg) {
                     error!("[init] existing config {} is invalid: {e}", config_path.display());
                     eprintln!("error: existing {} is invalid: {e}", config_path.display());
                     eprintln!("Edit it directly or run `okto config set ...` and re-run `okto init`.");
                     std::process::exit(1);
+                }
+                if let Some(new_append) = prompt_append.clone() {
+                    debug!("[init] updating system_prompt_append on existing config");
+                    cfg.system_prompt_append = new_append;
+                    okto_core::write_config(&cfg);
+                    println!("Updated system_prompt_append in {}.", config_path.display());
                 }
             } else {
                 println!("{} not found — let's configure okto.\n", config_path.display());
@@ -755,6 +798,7 @@ async fn main() -> Result<()> {
                     openai_api_key:    to_opt(openai),
                     api_url:           to_opt(api_url),
                     model:             Some(to_opt(model).unwrap_or_else(|| "claude-sonnet-4-6".to_string())),
+                    system_prompt_append: prompt_append.clone().unwrap_or(None),
                     ..Default::default()
                 };
 
@@ -918,12 +962,20 @@ async fn main() -> Result<()> {
             match action {
                 ConfigAction::Show => {
                     let cfg = okto_core::read_config();
-                    println!("anthropic_api_key: {}", cfg.anthropic_api_key.as_deref().map(mask).unwrap_or_else(|| "(not set)".into()));
-                    println!("openai_api_key:    {}", cfg.openai_api_key.as_deref().map(mask).unwrap_or_else(|| "(not set)".into()));
-                    println!("model:             {}", cfg.model.as_deref().unwrap_or("(default)"));
-                    println!("api_url:           {}", cfg.api_url.as_deref().unwrap_or("(Anthropic)"));
+                    println!("anthropic_api_key:    {}", cfg.anthropic_api_key.as_deref().map(mask).unwrap_or_else(|| "(not set)".into()));
+                    println!("openai_api_key:       {}", cfg.openai_api_key.as_deref().map(mask).unwrap_or_else(|| "(not set)".into()));
+                    println!("model:                {}", cfg.model.as_deref().unwrap_or("(default)"));
+                    println!("api_url:              {}", cfg.api_url.as_deref().unwrap_or("(Anthropic)"));
+                    match cfg.system_prompt_append.as_deref() {
+                        Some(text) => {
+                            let preview: String = text.chars().take(80).collect();
+                            let suffix = if text.chars().count() > 80 { "…" } else { "" };
+                            println!("system_prompt_append: {preview}{suffix}");
+                        }
+                        None => println!("system_prompt_append: (not set)"),
+                    }
                 }
-                ConfigAction::Set { model, api_url, anthropic_api_key, openai_api_key } => {
+                ConfigAction::Set { model, api_url, anthropic_api_key, openai_api_key, system_prompt_append } => {
                     let mut cfg = okto_core::read_config();
                     if anthropic_api_key.is_some() {
                         debug!("[cli] config set: updating anthropic_api_key");
@@ -940,6 +992,10 @@ async fn main() -> Result<()> {
                     if api_url.is_some() {
                         debug!("[cli] config set: updating api_url");
                         cfg.api_url = api_url;
+                    }
+                    if let Some(raw) = system_prompt_append {
+                        debug!("[cli] config set: updating system_prompt_append");
+                        cfg.system_prompt_append = resolve_text_or_at_path(&raw)?;
                     }
                     okto_core::write_config(&cfg);
                     info!("[cli] config updated at {}", okto_core::config_path().display());

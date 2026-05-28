@@ -54,8 +54,44 @@ The Github/Gitlab MCPs can be added but unfortunately it the token is still requ
 
 In general I'm on the fence about MCPs.  It's hard to find a situation where just referencing the availabilty of a command line client along with adding env vars to container isn't better than setting up an MCP for it instead.  
 
-## Startup Scripts
-// TODO
+## Startup Scripts & System Prompt
+
+There are three operator-facing knobs for shaping what `lair` (and the agents it spawns) does at boot or on every turn:
+
+### `STARTUP_SCRIPT` (lair)
+A bash snippet run inside the lair container *before* the management API binds. Use it for one-time setup that needs root inside the container — installing extra apt packages, pre-cloning a shared repo into `/data`, configuring `git`, baking caches, etc.
+
+It's just an env var on the container, so set it through `okto env`:
+```sh
+okto env set STARTUP_SCRIPT="$(cat my-bootstrap.sh)"
+okto reload
+```
+The script runs every time the container starts; keep it idempotent.
+
+### `startup_script` / `startup_prompt` (per child agent)
+When you (or the model) creates a child agent — either via the mobile chat's `create_agent` tool or `POST /agents` on lair's management API — you can pass two optional fields:
+
+- **`startup_script`** — bash that runs in the child's workspace before its HTTP server comes up. Good for `npm install`, `cargo build`, language-specific tool setup, or extra git config. Runs as the non-root agent uid.
+- **`startup_prompt`** — sent as the child's first *user* message once it's healthy, triggering a full agentic turn. Use it to hand the agent its initial task ("clone X, run the tests, summarize what's failing").
+
+Never put secrets in either field — provider credentials are propagated through env automatically.
+
+### `--system-prompt-append` (lair's system prompt)
+Lair's built-in system prompt is hardcoded into the binary, but you can append free-form text to it without rebuilding. Use this for site-specific guidance the model should always see — house style, deployment conventions, project-specific commands, etc.
+
+Set it at init time:
+```sh
+okto init --system-prompt-append "Prefer pnpm over npm. Production deploys go through ArgoCD."
+# or load from a file:
+okto init --system-prompt-append @./lair-prompt.md
+```
+Or update it later:
+```sh
+okto config set --system-prompt-append @./lair-prompt.md
+okto config set --system-prompt-append ""   # clears the override
+```
+
+The value is stored as `system_prompt_append` in `~/.okto/config.json` and re-read on every turn, so edits take effect immediately — no `okto reload` required. The append only affects lair's own prompt; child agents have their own (a CLAUDE.md in the cloned repo for repo-bound agents, or `AGENT_PURPOSE` for general-purpose ones).
 
 ## MCP Support
 MCP servers can be seeded at init time by passing an MCP JSON file:
