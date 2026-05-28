@@ -138,14 +138,24 @@ RUN mkdir -p /etc/containers && \
         'driver = "vfs"' \
         'runroot = "/run/containers/storage"' \
         'graphroot = "/var/lib/containers/storage"' \
-        '' \
-        '[storage.options]' \
         'rootless_storage_path = "$HOME/.local/share/containers/storage"' \
         > /etc/containers/storage.conf && \
     printf 'unqualified-search-registries = ["docker.io", "ghcr.io", "quay.io"]\n' \
         > /etc/containers/registries.conf && \
     printf '{"default":[{"type":"insecureAcceptAnything"}]}\n' \
         > /etc/containers/policy.json
+
+# Grant CAP_SYS_CHROOT as a file capability on the buildah binary so non-root
+# agent uids (10100..10199) can use `--isolation chroot` for their builds.
+# The kernel/seccomp/apparmor stack on most container hosts denies
+# unshare(CLONE_NEWUSER), so the default `--isolation rootless` path fails for
+# agents with "Operation not permitted". Without CAP_SYS_CHROOT, agents have
+# no working isolation mode (oci/runc fails for similar reasons inside
+# unprivileged containers). With it, both lair (root) and agents (non-root)
+# can use `--isolation chroot` and the build succeeds. Modest security
+# expansion — chroot alone is low-risk and the cap is scoped to the buildah
+# binary, not granted to the agent process generally.
+RUN setcap cap_sys_chroot+ep /usr/bin/buildah
 
 LABEL org.opencontainers.image.source=https://github.com/georgebradford0/okto
 LABEL org.opencontainers.image.description="lair — merged lair/agent binary, runs as --role lair by default"

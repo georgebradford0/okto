@@ -120,24 +120,28 @@ Buildah uses one of three isolation strategies for `RUN` steps:
 
 | Mode | Requires | Use when |
 |---|---|---|
-| `oci` (default) | Working runc/crun + capabilities the container has | Usually works inside the lair container without flags |
-| `chroot` | `CAP_SYS_CHROOT` (root only) | Lair (root) when `oci` fails; never works for child agents |
-| `rootless` | Subordinate uid/gid entries (already populated for every agent uid) | Child agents — the only mode they have permissions for besides `oci` |
+| `oci` (default) | Working runc/crun + capabilities the container has | Often fails inside an unprivileged Docker container; usually not what you want |
+| `chroot` | `CAP_SYS_CHROOT` (granted as a file cap on `/usr/bin/buildah` in the lair image since 0.16.2, so works for both root and non-root) | **Default for everything.** Works for lair (root) and child agents (uids 10100..10199) alike, no extra `docker run` flags. |
+| `rootless` | `unshare(CLONE_NEWUSER)` allowed by the kernel + seccomp/apparmor of the host | Rarely available — most container hosts deny the syscall and you'll see `Operation not permitted`. Avoid in this environment. |
 
-Pick automatically based on the running uid:
+**Use `--isolation chroot` for every build:**
 
 ```sh
-ISO="$([ "$(id -u)" = "0" ] && echo chroot || echo rootless)"
-buildah bud --isolation "$ISO" -t … -f Dockerfile .
+buildah bud --isolation chroot -t … -f Dockerfile .
 ```
 
-Lair runs as root, so this resolves to `chroot` for lair builds and
-`rootless` for agent builds — both supported, neither requires extra
-flags or `docker run` cap changes.
+The `CAP_SYS_CHROOT` file capability on the buildah binary means non-root
+agents can chroot during a build even though they couldn't otherwise.
+The cap is scoped to that binary — agents don't get the capability
+generally, only when they exec buildah.
 
-The lair image bakes `/etc/subuid` + `/etc/subgid` entries for every
+The lair image *also* populates `/etc/subuid` + `/etc/subgid` for every
 agent uid (okto-agent @ 10001, okto-agent-0..99 @ 10100..10199) with
-65536 sub-ids each. Rootless mode "just works" with no extra setup.
+65536 sub-ids each, so `--isolation rootless` is configured correctly
+on the buildah side. But that's mostly belt-and-braces — the host's
+security stack will almost always still deny the underlying
+`unshare(CLONE_NEWUSER)` syscall and rootless mode will fail. Don't
+rely on it; use chroot.
 
 ---
 
@@ -311,7 +315,8 @@ buildah rmi --all       # nuke everything — next build re-pulls base images
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `chroot: operation not permitted` | `--isolation chroot` as a non-root agent | Use `--isolation rootless` instead (or auto-pick based on uid) |
+| `chroot: operation not permitted` | Pre-0.16.2 image without the buildah file cap, OR running buildah outside the lair container | Update to lair ≥ 0.16.2 (image grants `cap_sys_chroot+ep` on `/usr/bin/buildah`) |
+| `Error during unshare(CLONE_NEWUSER): Operation not permitted` | Tried `--isolation rootless` and the host's seccomp/apparmor denies the syscall | Switch to `--isolation chroot` — that's the supported mode in this image |
 | `error creating build container: writing blob: storing blob to file: no space left` | vfs eating disk | Periodically `buildah rmi --prune`, or `--root /tmp/...` for ephemeral builds |
 | `unable to get local issuer certificate` during base-image pull | Was an issue with the old Kaniko-based image; should be gone in lair 0.16+ | If it reappears, check `SSL_CERT_DIR` isn't set in env (it shouldn't be) |
 | `level=error msg="Error pulling image..."` 401 | Not logged into the registry | `buildah login` first; check `$REGISTRY_AUTH_FILE` |
@@ -346,11 +351,10 @@ export REGISTRY_AUTH_FILE="$AUTH_FILE"
 GH_USER="${GH_USER:-$(echo "$IMAGE" | awk -F/ '{print $2}')}"
 echo "$GH_TOKEN" | buildah login -u "$GH_USER" --password-stdin ghcr.io
 
-# Root = chroot (faster, no userns); non-root = rootless (only mode permitted)
-ISOLATION="$([ "$(id -u)" = "0" ] && echo chroot || echo rootless)"
-
+# chroot works for both root and non-root in the lair image (file cap on the
+# binary). rootless is unreliable because most container hosts deny unshare.
 buildah bud \
-    --isolation "$ISOLATION" \
+    --isolation chroot \
     --layers \
     --pull \
     -t "$IMAGE:$TAG" \

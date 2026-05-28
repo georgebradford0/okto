@@ -1887,14 +1887,17 @@ fn buildah_note() -> &'static str {
      builds — no Docker daemon, no socket mount. Use it from your bash tool:\n\
      1. Log into the target registry once per shell session, e.g. for GHCR:\n   \
         `echo \"$GH_TOKEN\" | buildah login -u <github-user> --password-stdin ghcr.io`\n\
-     2. Build from a Dockerfile:\n   \
-        `buildah bud -t ghcr.io/<owner>/<image>:<tag> -f <Dockerfile> <context-dir>`\n\
+     2. Build from a Dockerfile, passing `--isolation chroot` (works for both \
+     lair-as-root and non-root agents — the buildah binary has CAP_SYS_CHROOT \
+     granted as a file capability so chroot isolation works regardless of uid):\n   \
+        `buildah bud --isolation chroot -t ghcr.io/<owner>/<image>:<tag> -f <Dockerfile> <context-dir>`\n\
      3. Push:\n   \
         `buildah push ghcr.io/<owner>/<image>:<tag>`\n\n\
      The image is configured with the `vfs` storage driver (slow but works \
-     without /dev/fuse). If a build fails on the OCI runtime step, retry with \
-     `--isolation chroot` (lair, root) or `--isolation rootless` (agents). \
-     `docker build` will always fail — no daemon is available."
+     without /dev/fuse). Avoid `--isolation rootless`: most container hosts \
+     deny `unshare(CLONE_NEWUSER)` for non-root processes, which makes \
+     rootless mode fail with \"Operation not permitted\". `docker build` will \
+     always fail — no daemon is available."
 }
 
 pub fn build_system_prompt(repo_path: &str) -> String {
