@@ -41,7 +41,7 @@ To tear down everything except the config, run
 okto destroy
 ```
 ## Github 
-The project was originally built to manage coding-based projects on Github.  For this reason the `gh` command line client is installed by default on `lair` and all agents.  To use it you'll have to pass in GH_TOKEN as an environment variable, which can be done at init with
+The project was originally built to manage coding-based projects on Github.  For this reason the `gh`/`glab` command line clients are installed by default on `lair` and all agents.  To use it you'll have to pass in `GH_TOKEN`/`GITLAB_TOKEN` as an environment variable, which can be done at init with
 ```
 okto init -e GH_TOKEN=<token>
 ```
@@ -50,7 +50,12 @@ or after initialization with
 okto env set GH_TOKEN=<token>
 okto reload
 ```
-The Github (or Gitlab) MCP can always be added to `lair` instead. It will be propagated to child agents by default.  The caveat for this is that there is no dedicated tools list in the LLM prompt for Github, so usually the model has to be directed by the user to use `gh` but shortens the prompt prefix length.  The system prompt references `gh` and explains that the model has access to it.  If you decide to go with the MCP, the inline `GH_TOKEN` to `init` is not needed and the env var should added in the MCP setup.
+The Github/Gitlab MCPs can be added but unfortunately it the token is still required, since `git` command line client is used for managing repo in agent workspaces.  The reason for this design choice is part of a larger problem regarding MCP isolation from bash calls. It might be possible to get bash scripts to interact with MCP servers but it would be extremely brittle, especially since many time the models are generating the bash scripts and they are trained to write bash scripts for command line clients and not fetching from some MCP server.  Given this it's better to just use the command line client and append reference to the system prompt for `lair`.   
+
+In general I'm on the fence about MCPs.  It's hard to find a situation where just referencing the availabilty of a command line client along with adding env vars to container isn't better than setting up an MCP for it instead.  
+
+## Startup Scripts
+// TODO
 
 ## MCP Support
 MCP servers can be seeded at init time by passing an MCP JSON file:
@@ -72,7 +77,7 @@ okto mcp add --agent lair-myrepo --name linear --command npx \
 okto mcp list
 okto mcp remove --name github
 ```
-One thing to note.  MCPs by default are inherited by parent to spawned child.  This will probably change but I haven't decided on a design to handle MCP inheritance in detail.  Currently the CLI can only update MCPs for local agents, this will probably change soon.
+One thing to note.  MCPs by default are inherited by parents to spawned children.  This will probably change but I haven't decided on a design to handle MCP inheritance in detail.  Currently the CLI can only update MCPs for local agents, this will probably change soon.
 
 ## Building Docker Images
 Since child agents do not have root access the image includes [Buildah](https://buildah.io) for daemonless Docker/OCI image builds. Agents invoke it from their bash tool:
