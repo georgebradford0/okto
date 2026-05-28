@@ -12,6 +12,8 @@
 
 ### Fixed
 
+- **`buildah` no longer errors with "runroot must be set" out of the box.** The 0.16.0 image wrote a half-populated `/etc/containers/storage.conf` containing only `driver = "vfs"`. Buildah treats a partially-specified config as worse than no config and refuses to start rather than falling back to its built-in defaults — every `buildah …` invocation that didn't explicitly pass `--root`/`--runroot` flags died at config parse. The file now sets `runroot`, `graphroot`, and (under `[storage.options]`) `rootless_storage_path = "$HOME/.local/share/containers/storage"` so the rootless path still lands under each agent's per-uid HOME.
+
 - **Lair-side `${VAR}` MCP env/header expansion fails loudly.** Previously `expand_var` silently passed the literal `"${VAR}"` through to the child MCP process when neither `config.json` nor lair's process env had the variable, which surfaced later as opaque downstream errors (e.g. boto3 signing requests with the literal text "${AWS_ACCESS_KEY_ID}"). Now `connect_stdio` / `connect_http` abort with `[mcp] '<name>' initialize failed: env|header var(s) not set in lair container: …` before spawning, which the CLI's marker scanner renders as `HANDSHAKE FAILED — …` in `okto mcp add` / `okto mcp import` output.
 
 ## [0.11.5] - 2026-05-15

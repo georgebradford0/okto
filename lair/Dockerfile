@@ -125,8 +125,23 @@ RUN { \
 # run flags. The default policy.json accepts any image source (no signature
 # verification); operators that want stricter trust can override the file at
 # runtime via a bind mount.
+#
+# storage.conf MUST set both `runroot` and `graphroot` explicitly — buildah
+# refuses to start when storage.conf exists but is partially populated (it
+# considers a half-spec'd config worse than no config and won't fall back to
+# its built-in defaults). The rootless path uses $HOME substitution so each
+# agent's storage lands under /data/agents/<name>/, preserving per-agent
+# isolation without an extra mount.
 RUN mkdir -p /etc/containers && \
-    printf '[storage]\ndriver = "vfs"\n' > /etc/containers/storage.conf && \
+    printf '%s\n' \
+        '[storage]' \
+        'driver = "vfs"' \
+        'runroot = "/run/containers/storage"' \
+        'graphroot = "/var/lib/containers/storage"' \
+        '' \
+        '[storage.options]' \
+        'rootless_storage_path = "$HOME/.local/share/containers/storage"' \
+        > /etc/containers/storage.conf && \
     printf 'unqualified-search-registries = ["docker.io", "ghcr.io", "quay.io"]\n' \
         > /etc/containers/registries.conf && \
     printf '{"default":[{"type":"insecureAcceptAnything"}]}\n' \
