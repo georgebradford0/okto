@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { parseQrPayload, formatQrPayload, type QrPayload } from './qr'
 import {
@@ -1091,6 +1091,99 @@ function StatusPill({ status }: { status: ConnStatus }) {
   )
 }
 
+// ── Markdown rendering ────────────────────────────────────────────────────────
+// Minimal renderer mirroring mobile/App.tsx::renderText for the bits the model
+// actually emits in chat: fenced code blocks (```ts ... ```), inline code
+// (`foo`), **bold**, *italic*, ~~strike~~. Not a general-purpose markdown
+// implementation — headings/lists/blockquotes are out of scope here.
+
+const INLINE_MD = /\*\*(.+?)\*\*|__(.+?)__|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|~~(.+?)~~|`([^`]+)`/gs
+
+function renderInlineSpans(text: string, baseKey: number): ReactNode[] {
+  const out: ReactNode[] = []
+  let last = 0, m: RegExpExecArray | null, i = 0
+  INLINE_MD.lastIndex = 0
+  while ((m = INLINE_MD.exec(text)) !== null) {
+    if (m.index > last) out.push(<Fragment key={`${baseKey}-${i++}`}>{text.slice(last, m.index)}</Fragment>)
+    const k = `${baseKey}-${i++}`
+    if      (m[1] != null) out.push(<strong key={k}>{m[1]}</strong>)
+    else if (m[2] != null) out.push(<strong key={k}>{m[2]}</strong>)
+    else if (m[3] != null) out.push(<em key={k}>{m[3]}</em>)
+    else if (m[4] != null) out.push(<s key={k}>{m[4]}</s>)
+    else if (m[5] != null) out.push(<code key={k}>{m[5]}</code>)
+    last = m.index + m[0].length
+  }
+  if (last < text.length) out.push(<Fragment key={`${baseKey}-${i++}`}>{text.slice(last)}</Fragment>)
+  return out
+}
+
+function MarkdownText({ text }: { text: string }) {
+  if (!text) return null
+  // Split on fenced code blocks first; preserve them as opaque tokens so the
+  // inline regex never sees their backticks.
+  const segments = text.split(/(```[\s\S]*?```)/g)
+  const out: ReactNode[] = []
+  let k = 0
+  for (const seg of segments) {
+    if (!seg) continue
+    if (seg.startsWith('```') && seg.endsWith('```') && seg.length >= 6) {
+      // Strip optional ```lang\n prefix.
+      let lang = ''
+      const body = seg.slice(3, -3).replace(/^([a-zA-Z0-9_+-]+)\n/, (_, l) => { lang = l; return '' })
+      out.push(
+        <pre key={`md-${k++}`} className="code-block">
+          {lang && <span className="code-block-lang">{lang}</span>}
+          <code>{body}</code>
+        </pre>
+      )
+    } else {
+      out.push(<Fragment key={`md-${k++}`}>{renderInlineSpans(seg, k)}</Fragment>)
+    }
+  }
+  return <>{out}</>
+}
+
+// ── Row ──────────────────────────────────────────────────────────────────────
+
+function ToolRow({ item }: { item: Extract<ChatItem, { kind: 'tool' }> }) {
+  // Output hidden by default; user clicks the chip to expand. Local state per
+  // chip — the message-list key is the toolUseId (stable across re-renders),
+  // so collapsed/expanded persists for the chip's lifetime.
+  const [expanded, setExpanded] = useState(false)
+  const hasOutputs = item.outputs.length > 0
+  const hasResult  = item.result !== undefined && !hasOutputs
+  const hasBody    = hasOutputs || hasResult
+  const prefix     = item.running
+    ? 'Running '
+    : (!item.running && item.result === undefined && item.outputs.length === 0 ? 'Pending ' : '')
+  return (
+    <div className="row">
+      <div className={'tool-chip' + (item.running ? ' tool-running' : (!item.result && !item.outputs.length ? ' tool-queued' : ''))}>
+        <button
+          type="button"
+          className="tool-line"
+          onClick={() => { if (hasBody) setExpanded(e => !e) }}
+          disabled={!hasBody}
+          aria-expanded={hasBody ? expanded : undefined}
+        >
+          {item.running && <span className="tool-dot-pulse" />}
+          {!item.running && item.result === undefined && item.outputs.length === 0 && <span className="tool-dot-queued" />}
+          <span className="tool-line-text">{prefix}{item.display}</span>
+          {hasBody && (
+            <span className={'tool-chevron' + (expanded ? ' tool-chevron-open' : '')} aria-hidden="true">▸</span>
+          )}
+        </button>
+        {expanded && hasOutputs && (
+          <div className="tool-output">{item.outputs.join('\n')}</div>
+        )}
+        {expanded && hasResult && (
+          <div className="tool-result">{truncate(item.result!, 800)}</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function Row({ item }: { item: ChatItem }) {
   switch (item.kind) {
     case 'user':
@@ -1100,26 +1193,9 @@ function Row({ item }: { item: ChatItem }) {
         </div>
       )
     case 'assistant':
-      return <div className="row"><div className="assistant-text">{item.text}</div></div>
+      return <div className="row"><div className="assistant-text"><MarkdownText text={item.text} /></div></div>
     case 'tool':
-      return (
-        <div className="row">
-          <div className={'tool-chip' + (item.running ? ' tool-running' : (!item.result && !item.outputs.length ? ' tool-queued' : ''))}>
-            <span className="tool-line">
-              {item.running && <span className="tool-dot-pulse" />}
-              {!item.running && item.result === undefined && item.outputs.length === 0 && <span className="tool-dot-queued" />}
-              {item.running ? 'Running ' : (!item.running && item.result === undefined && item.outputs.length === 0 ? 'Pending ' : '')}
-              {item.display}
-            </span>
-            {item.outputs.length > 0 && (
-              <div className="tool-output">{item.outputs.join('\n')}</div>
-            )}
-            {item.result !== undefined && item.outputs.length === 0 && (
-              <div className="tool-result">{truncate(item.result, 800)}</div>
-            )}
-          </div>
-        </div>
-      )
+      return <ToolRow item={item} />
     case 'cost':
       return (
         <div className="row">

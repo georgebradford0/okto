@@ -942,6 +942,44 @@ textarea { resize: none; }
   padding: 1px 5px;
 }
 
+/* Fenced code block — `pre` gets its own whitespace handling so long lines
+   scroll horizontally instead of wrapping mid-token. */
+.assistant-text pre.code-block {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  margin: 8px 0;
+  overflow-x: auto;
+  white-space: pre;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+
+/* Strip the inline-code chip styling when `<code>` is inside a fenced block —
+   the surrounding `<pre>` already provides background/border. */
+.assistant-text pre.code-block code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+.assistant-text pre.code-block .code-block-lang {
+  display: block;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+  margin-bottom: 8px;
+  font-family: var(--mono);
+}
+
 /* Tool chip — gentler, card-like */
 
 .tool-chip {
@@ -965,6 +1003,45 @@ textarea { resize: none; }
   display: flex;
   align-items: center;
   gap: 6px;
+  /* The chip is clickable to expand its body, so .tool-line is a real
+     <button> — strip the UA defaults so it visually matches the original
+     <span>. */
+  background: none;
+  border: none;
+  padding: 0;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.tool-line:disabled {
+  cursor: default;
+}
+
+.tool-line-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-chevron {
+  margin-left: 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  display: inline-block;
+  transition: transform 0.15s ease;
+  transform: rotate(0deg);
+}
+
+.tool-chevron-open {
+  transform: rotate(90deg);
 }
 
 .tool-dot-pulse {
