@@ -83,6 +83,7 @@ RUN apt-get update && apt-get install -y ca-certificates curl git gpg && \
         fuse-overlayfs \
         gcc \
         gh \
+        glab \
         jq \
         libcap2-bin \
         nodejs \
