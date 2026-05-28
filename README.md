@@ -1,5 +1,5 @@
 # okto
-`okto` is a mobile agent management system that runs a fleet of local and remote LLM agents. It was originally designed for coding but can be used to deploy LLM agents for any task.  It supports the Anthropic and any OpenAI-compatible API.  It uses the Noise Protocol to setup an encrypted connection between mobile and server without the need for DNS.
+`okto` is a mobile agent management system that runs a fleet of local and remote LLM agents. Using the Noise Protocol it allows users to setup an encrypted connection between iOS/Android and chat server without the need for DNS.  Works with Anthropic and/or OpenAI-compatible APIs.
 
 This code is experimental and will change frequently between version updates.
 
@@ -21,7 +21,7 @@ It will prompt for:
 - **Anthropic API key** — press Enter to skip.
 - **OpenAI API key** — press Enter to skip. At least one of the two keys is required.
 - **API URL** — Enter for the Anthropic default; otherwise the full chat-completions URL (e.g. `https://api.deepinfra.com/v1/openai/chat/completions`).
-- **Model** — e.g. `claude-sonnet-4-6`.
+- **Model** — Enter for default of `claude-sonnet-4-6`.
 
 `init` will then:
 
@@ -75,26 +75,28 @@ okto mcp remove --name github
 One thing to note.  MCPs by default are inherited by parent to spawned child.  This will probably change but I haven't decided on a design to handle MCP inheritance in detail.  Currently the CLI can only update MCPs for local agents, this will probably change soon.
 
 ## Building Docker Images
-The lair image includes [Buildah](https://buildah.io) for daemonless Docker/OCI image builds. Agents invoke it from their bash tool:
+Since child agents do not have root access the image includes [Buildah](https://buildah.io) for daemonless Docker/OCI image builds. Agents invoke it from their bash tool:
 
-```sh
-# 1. Authenticate once per session (GH_TOKEN comes from ~/.okto/lair-env)
-echo "$GH_TOKEN" | buildah login -u <github-user> --password-stdin ghcr.io
+Lair (running as root) builds rootful; each child agent uid (10100..10199) gets its own subordinate-uid range so it can build rootless. The image is configured with the `vfs` storage driver — slow and disk-heavy, but works without `/dev/fuse` or extra `docker run` flags. Per-agent build storage lives under `$HOME/.local/share/containers/storage` (= `~/.okto/agents/<name>/.local/share/...` on the host).
 
-# 2. Build
-buildah bud -t ghcr.io/org/image:tag -f Dockerfile /path/to/workspace
-
-# 3. Push
-buildah push ghcr.io/org/image:tag
-```
-
-No `--privileged` flag, no socket mount, no inner daemon. Lair (running as root) builds rootful; each child agent uid (10100..10199) gets its own subordinate-uid range so it can build rootless. The image is configured with the `vfs` storage driver — slow and disk-heavy, but works without `/dev/fuse` or extra `docker run` flags. Per-agent build storage lives under `$HOME/.local/share/containers/storage` (= `~/.okto/agents/<name>/.local/share/...` on the host).
+Though `lair` does have root access within the container, any builds from there should also use `buildah`.
 
 ## Noise/SSH Keys
-To avoid the necessity of using DNS for securing a connection, the Noise Protocol is used 
+To avoid the necessity of using DNS for securing a connection, the Noise Protocol is used // TODO 
 
 ## Local vs Remote Agents
-Agents can be deployed and managed from the main chat or using the CLI. Local agents are deployed in the *same container* as `lair` but with their own data dir.  This is so `lair` does not have docker.sock access and is completely contained on the host.  Once an agent is deployed and ready to communicate it will be available in the mobile sidebar with a separate chat.
+Agents can be deployed and managed from the main chat or using the CLI. Local agents are deployed in the *same container* as `lair` but with their own data directory.  Once an agent is deployed and ready to communicate it will be available in the mobile sidebar with a separate chat.
 
-For remote agents an MCP for AWS/Azure/GCP is necessary (any provider is fine assuming they have an MCP, which they probably do).  Assuming the MCP exists, you can simply ask the main chat to create a remote agent on whatever instance type (eg for AWS a t3.micro) is preferred.  It will provision said instance with the appropiate `userdata` using builtin tools to continue setup once the instance comes online, connect through SSH and complete registration of the remote agent.  As per the local case, remote agents also run in a docker container without sock access and any agents added will be in the same container.  A list of builtin tools is [here](docs/builtin-tools.md).
+For remote agents an MCP for AWS/Azure/GCP is necessary (any provider is fine assuming they have an MCP, which they probably do).  Assuming the MCP exists, you can simply ask the main chat to create a remote agent on whatever instance type (eg for AWS a t3.micro) is preferred.  It will provision said instance with the appropiate `userdata` using builtin tools to continue setup once the instance comes online, connect through SSH and complete registration of the remote agent.  Whatever cloud provider must user VM-based instances with typical `cloud-init` setup so SSH can be achieved.  The next section goes over dealing with typical GPU provider setups.  
+
+As per the local case, remote agents also run in an unpriveleged docker container and any agents added will be in the same container. 
+
+## GPU Instances (RunPod, Lambda, Prime Intellect etc)
+Many GPU providers do not use VM-based systems for managing compute but instead use containers.  This makes it very difficult to setup a `lair` container on the GPU instance.  For this reason, agents should typically not be created in instances on typical GPU cloud providers.  Each GPU platform will likely have an MCP which can be used for provisioning compute (with API key) but not connecting to the instance itself.  To allow agents to connect just add SSH pubkey created in `lair` to your preferred GPU platform.  The pubkey can be found by using CLI command
+```
+okto ssh pubkey
+```
+SSH keys are generated on a per-container basis, so be aware that any remote agents created will not have the same keys as the main `lair` container. 
+
+This only refers to smaller GPU cloud services.  All the hyperscalers use VMs and include `cloud-init`, so deploying remote agents from `lair` on remote instances follows the normal process per above.  
 
