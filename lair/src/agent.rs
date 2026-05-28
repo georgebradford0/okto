@@ -811,6 +811,38 @@ async fn forward_notify_to_lair(category: &str, title: &str, body: &str) {
     }
 }
 
+/// Forward the raw outcome of a finished background task to lair, which runs
+/// a one-shot LLM call to synthesise a user-friendly title/body before
+/// signing and dispatching the push. Best-effort with a generous timeout to
+/// cover the model call lair will make. Failures are swallowed.
+async fn forward_task_notify_to_lair(category: &str, command: &str, status: &str, output: &str) {
+    let Some(base) = std::env::var("LAIR_INTERNAL_URL").ok().filter(|s| !s.is_empty()) else {
+        warn!("[agent/notify-task] LAIR_INTERNAL_URL unset — cannot forward push");
+        return;
+    };
+    let agent = std::env::var("AGENT_NAME").ok().filter(|s| !s.is_empty());
+    let url = format!("{base}/internal/notify-task");
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+    {
+        Ok(c)  => c,
+        Err(e) => { warn!("[agent/notify-task] build http client failed: {e}"); return; }
+    };
+    let payload = serde_json::json!({
+        "agent":    agent,
+        "category": category,
+        "command":  command,
+        "status":   status,
+        "output":   output,
+    });
+    match client.post(&url).json(&payload).send().await {
+        Ok(r) if r.status().is_success() => debug!("[agent/notify-task] forwarded outcome to lair ({})", r.status()),
+        Ok(r)  => warn!("[agent/notify-task] lair {url} returned {}", r.status()),
+        Err(e) => warn!("[agent/notify-task] POST {url} failed: {e}"),
+    }
+}
+
 /// `send_notification` tool — a child agent holds no relay signing key, so it
 /// forwards the push to lair, which signs and relays it on the agent's behalf.
 async fn exec_send_notification(input: serde_json::Value) -> String {
@@ -897,11 +929,13 @@ fn run_tracked_command(
         }
 
         // Push notification. Children have no relay key, so lair signs and
-        // forwards on our behalf — see `forward_notify_to_lair`.
-        let title = format!("Background command {}", outcome.status);
-        let body  = outcome.summary.chars().take(120).collect::<String>();
+        // forwards on our behalf — and runs a one-shot LLM call to turn the
+        // raw outcome into a useful title/body. See `forward_task_notify_to_lair`.
+        let command = outcome.command.clone();
+        let status  = outcome.status.to_string();
+        let output  = outcome.summary.clone();
         tokio::spawn(async move {
-            forward_notify_to_lair("task_complete", &title, &body).await;
+            forward_task_notify_to_lair("task_complete", &command, &status, &output).await;
         });
 
         try_continue_auto(deliver_state.clone());
@@ -978,11 +1012,13 @@ fn run_monitored_command(
         finalize_task(&deliver_state.stream_state, &data_dir(), &outcome);
         buffer_and_fanout(&deliver_state.stream_state, tasks_wire_json(&deliver_state.stream_state));
         // Push notification. Children have no relay key, so lair signs and
-        // forwards on our behalf — see `forward_notify_to_lair`.
-        let title = format!("Monitored process {}", outcome.status);
-        let body  = outcome.summary.chars().take(120).collect::<String>();
+        // forwards on our behalf — and runs a one-shot LLM call to turn the
+        // raw outcome into a useful title/body. See `forward_task_notify_to_lair`.
+        let command = outcome.command.clone();
+        let status  = outcome.status.to_string();
+        let output  = outcome.summary.clone();
         tokio::spawn(async move {
-            forward_notify_to_lair("task_complete", &title, &body).await;
+            forward_task_notify_to_lair("task_complete", &command, &status, &output).await;
         });
         done.notify_one();
     });

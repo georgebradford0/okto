@@ -285,6 +285,160 @@ async fn internal_notify_handler(
     StatusCode::ACCEPTED
 }
 
+/// Raw background-task outcome forwarded by child agents (and used in-process
+/// by lair's own task completion paths). Lair runs a one-shot LLM call to
+/// turn the command + tail output into a user-friendly title/body before
+/// signing and dispatching to the relay.
+#[derive(serde::Deserialize)]
+struct InternalNotifyTaskBody {
+    /// Optional agent-name prefix added by the child caller so the operator
+    /// can tell which agent fired the push. Lair's own caller leaves this
+    /// empty.
+    #[serde(default)] agent:    Option<String>,
+    category: String,
+    command:  String,
+    status:   String,
+    /// Tail of combined stdout/stderr. Lair caps further before sending to
+    /// the model.
+    output:   String,
+}
+
+/// Container-internal push relay for background-task completions. Same wall
+/// of trust as `/internal/notify` — unauthenticated, container-loopback only.
+/// Always returns immediately; the LLM call + relay POST happen in a detached
+/// task and any failure falls back to the simple format.
+async fn internal_notify_task_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body):   Json<InternalNotifyTaskBody>,
+) -> StatusCode {
+    if state.relay_url.is_empty() {
+        return StatusCode::OK;
+    }
+    tokio::spawn(async move {
+        notify_task_complete(
+            state, body.category, body.agent,
+            body.command, body.status, body.output,
+        ).await;
+    });
+    StatusCode::ACCEPTED
+}
+
+/// Cap on the tail of task output sent to the model. ~3 KB is plenty for the
+/// model to pluck the most useful line out without inflating tokens for
+/// chatty commands.
+const NOTIFY_OUTPUT_TAIL: usize = 3000;
+
+const TASK_NOTIFY_SYSTEM: &str = "You write short push notifications for a \
+    developer's mobile app. The user just ran a long background command on \
+    their dev container; tell them concisely what happened and the most \
+    useful detail from the output.";
+
+/// Fallback push when no LLM is configured or the call fails. Matches the
+/// pre-LLM behaviour so a misconfigured lair still notifies the operator.
+fn fallback_task_push(status: &str, output: &str) -> (String, String) {
+    let title = format!("Background command {status}");
+    let body: String = output.chars().rev().take(120).collect::<Vec<_>>()
+        .into_iter().rev().collect();
+    (title, body)
+}
+
+/// Tail of `s` up to `max` chars.
+fn tail_chars(s: &str, max: usize) -> String {
+    let n = s.chars().count();
+    if n <= max { s.to_string() }
+    else { s.chars().skip(n - max).collect() }
+}
+
+/// One-shot LLM call to synthesise a `(title, body)` for a background-task
+/// push. Returns `None` on any failure so the caller can fall back to the
+/// pre-LLM format.
+async fn synthesize_task_notification(
+    command: &str,
+    status:  &str,
+    output:  &str,
+) -> Option<(String, String)> {
+    let api_key = resolve_api_key()?;
+    let model   = resolve_model();
+    let tail    = tail_chars(output, NOTIFY_OUTPUT_TAIL);
+    let prompt = format!(
+        "The user ran this background command on their dev container, and \
+         it just finished.\n\n\
+         Command:\n{command}\n\n\
+         Status: {status}  (one of: done | error | cancelled)\n\n\
+         Output (tail, may be truncated):\n{tail}\n\n\
+         Reply with a single JSON object, no markdown fences, no commentary:\n\
+         {{\"title\": \"...\", \"body\": \"...\"}}\n\n\
+         - title: ≤50 chars, says what command finished and the status.\n\
+         - body:  ≤140 chars, the single most useful detail from the output \
+         (an error line, a count, a final result). Plain text, no markdown.",
+    );
+    let messages = vec![ApiMessage {
+        role:    "user".to_string(),
+        content: vec![ContentBlock::Text { text: prompt }],
+    }];
+
+    let call = send_message(
+        messages, TASK_NOTIFY_SYSTEM, &model, &api_key, "/",
+        None, CancellationToken::new(), &[], None,
+    );
+    let result = match tokio::time::timeout(Duration::from_secs(30), call).await {
+        Ok(r)  => r,
+        Err(_) => { warn!("[lair/notify-task] LLM call timed out"); return None; }
+    };
+    let (text, _cost, _msgs) = match result {
+        Ok(t)       => t,
+        Err((e, _)) => { warn!("[lair/notify-task] LLM call failed: {e}"); return None; }
+    };
+
+    let trimmed = text.trim();
+    // Strip a ```json ... ``` or ``` ... ``` fence if the model added one
+    // despite being told not to.
+    let stripped = trimmed
+        .strip_prefix("```json").or_else(|| trimmed.strip_prefix("```"))
+        .map(|s| s.trim_start_matches('\n').trim_end_matches("```").trim())
+        .unwrap_or(trimmed);
+    // Some models still wrap with prose; grab the first {...} block.
+    let json_slice = match (stripped.find('{'), stripped.rfind('}')) {
+        (Some(i), Some(j)) if j > i => &stripped[i..=j],
+        _ => return None,
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(json_slice) {
+        Ok(v)  => v,
+        Err(e) => { warn!("[lair/notify-task] could not parse JSON: {e}"); return None; }
+    };
+    let title = parsed.get("title").and_then(|v| v.as_str()).map(str::trim).unwrap_or("").to_string();
+    let body  = parsed.get("body" ).and_then(|v| v.as_str()).map(str::trim).unwrap_or("").to_string();
+    if body.is_empty() { return None; }
+    Some((title, body))
+}
+
+/// LLM-synthesise a push for a finished background task and dispatch it to
+/// the relay. Best-effort: on no relay, no API key, LLM error, or parse
+/// failure, falls back to the pre-LLM `"Background command <status>"` /
+/// truncated-summary format.
+async fn notify_task_complete(
+    state:    Arc<AppState>,
+    category: String,
+    agent:    Option<String>,
+    command:  String,
+    status:   String,
+    output:   String,
+) {
+    if state.relay_url.is_empty() { return; }
+    let (mut title, body) = synthesize_task_notification(&command, &status, &output)
+        .await
+        .unwrap_or_else(|| fallback_task_push(&status, &output));
+    if let Some(name) = agent.as_deref().filter(|s| !s.is_empty()) {
+        title = if title.is_empty() { name.to_string() } else { format!("{name} · {title}") };
+    }
+    let title_opt = (!title.is_empty()).then_some(title.as_str());
+    relay_client::notify(
+        &state.relay_url, &state.relay_signer,
+        &category, title_opt, Some(&body),
+    ).await;
+    info!("[lair/notify-task] dispatched push for status={status}");
+}
+
 async fn history_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let cost = *state.last_cost_usd.lock().unwrap();
     let msgs = messages_to_history(&state.messages.lock().unwrap(), cost);
@@ -2347,13 +2501,16 @@ fn run_tracked_command(
         if let Some(json) = chat_event_to_wire_json(&event) {
             buffer_and_fanout(&deliver_state.stream_state, json.to_string());
         }
-        let signer = deliver_state.relay_signer.clone();
-        let url    = deliver_state.relay_url.clone();
-        if !url.is_empty() {
-            let title = format!("Background command {}", outcome.status);
-            let body  = outcome.summary.chars().take(120).collect::<String>();
+        if !deliver_state.relay_url.is_empty() {
+            let notify_state = deliver_state.clone();
+            let command  = outcome.command.clone();
+            let status   = outcome.status.to_string();
+            let output   = outcome.summary.clone();
             tokio::spawn(async move {
-                relay_client::notify(&url, &signer, "task_complete", Some(&title), Some(&body)).await;
+                notify_task_complete(
+                    notify_state, "task_complete".to_string(), None,
+                    command, status, output,
+                ).await;
             });
         }
         try_continue_auto(deliver_state.clone());
@@ -2429,13 +2586,16 @@ fn run_monitored_command(
     spawn_background_command(params, cancel, output, move |outcome| {
         finalize_task(&deliver_state.stream_state, &data_dir(), &outcome);
         buffer_and_fanout(&deliver_state.stream_state, tasks_wire_json(&deliver_state.stream_state));
-        let signer = deliver_state.relay_signer.clone();
-        let url    = deliver_state.relay_url.clone();
-        if !url.is_empty() {
-            let title = format!("Monitored process {}", outcome.status);
-            let body  = outcome.summary.chars().take(120).collect::<String>();
+        if !deliver_state.relay_url.is_empty() {
+            let notify_state = deliver_state.clone();
+            let command  = outcome.command.clone();
+            let status   = outcome.status.to_string();
+            let output   = outcome.summary.clone();
             tokio::spawn(async move {
-                relay_client::notify(&url, &signer, "task_complete", Some(&title), Some(&body)).await;
+                notify_task_complete(
+                    notify_state, "task_complete".to_string(), None,
+                    command, status, output,
+                ).await;
             });
         }
         done.notify_one();
@@ -2995,6 +3155,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             .route("/interrupt",               post(interrupt_handler))
             .route("/clear",                   post(clear_handler))
             .route("/internal/notify",         post(internal_notify_handler))
+            .route("/internal/notify-task",    post(internal_notify_task_handler))
             .route("/agents",                  get(cli_list_agents))
             .route("/agents/:name/logs",       get(cli_agent_logs))
             .route("/agents/:name/stream",     get(proxy_agent_stream_handler))
