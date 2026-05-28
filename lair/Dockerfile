@@ -108,9 +108,20 @@ COPY --from=builder /build/target/release/lair /usr/local/bin/lair
 #
 # uid 10001 / user `okto-agent` is kept around as the legacy fallback for
 # the rare case where the supervisor can't assign a per-agent uid slot.
-RUN useradd -u 10001 -M -N -s /bin/bash okto-agent && \
+# Per-agent primary group must have a gid matching the user's uid — lair's
+# agent_proc.rs::uid_for_port returns `(uid, uid)` and `cmd.uid().gid()`
+# sets the process's effective gid to that value. If /etc/passwd records a
+# *different* primary gid (e.g. 100/users via `useradd -N`), `newgidmap`
+# refuses the rootless-buildah uid-mapping setup with "Target process is
+# owned by a different user" because it cross-checks pw_gid against the
+# process's actual st_gid. Create a matching-gid group per user so the two
+# stay in sync.
+RUN groupadd -g 10001 okto-agent && \
+    useradd  -u 10001 -g 10001 -M -s /bin/bash okto-agent && \
     for i in $(seq 0 99); do \
-        useradd -u $((10100 + i)) -M -N -s /bin/bash okto-agent-$i; \
+        gid=$((10100 + i)); \
+        groupadd -g "$gid"            "okto-agent-$i"; \
+        useradd  -u "$gid" -g "$gid" -M -s /bin/bash "okto-agent-$i"; \
     done
 
 # Rootless container-image builds via buildah. Each non-root agent uid needs
