@@ -668,6 +668,13 @@ function App() {
           streaming={connStatus === 'streaming'}
           stopSent={stopSent}
           model={model}
+          completionsBase={
+            status.kind === 'connected'
+              ? activeAgent === LAIR_ID
+                ? `http://127.0.0.1:${status.tunnelPort}`
+                : `http://127.0.0.1:${status.tunnelPort}/agents/${encodeURIComponent(activeAgent)}`
+              : null
+          }
         />
       </div>
 
@@ -1218,8 +1225,22 @@ function truncate(s: string, n: number): string {
   return `${s.slice(0, n)}\n…[${s.length - n} more chars]`
 }
 
+// Mirrors mobile's parseAtQuery (mobile/App.tsx) so an `@`-prefixed token at the
+// tail of the draft drives the file-completion popup. Returning null suppresses
+// the popup (no `@`, or the user typed a space after it).
+function parseAtQuery(text: string): { atIndex: number; dirPart: string; filePart: string } | null {
+  const atIndex = text.lastIndexOf('@')
+  if (atIndex === -1) return null
+  const query = text.slice(atIndex + 1)
+  if (query.includes(' ') || query.includes('\n')) return null
+  const lastSlash = query.lastIndexOf('/')
+  return lastSlash === -1
+    ? { atIndex, dirPart: '', filePart: query }
+    : { atIndex, dirPart: query.slice(0, lastSlash + 1), filePart: query.slice(lastSlash + 1) }
+}
+
 function InputBar({
-  draft, setDraft, onSend, onInterrupt, streaming, stopSent, model,
+  draft, setDraft, onSend, onInterrupt, streaming, stopSent, model, completionsBase,
 }: {
   draft: string
   setDraft: (s: string) => void
@@ -1228,8 +1249,11 @@ function InputBar({
   streaming: boolean
   stopSent: boolean
   model: string
+  completionsBase: string | null
 }) {
   const taRef = useRef<HTMLTextAreaElement>(null)
+  const [completions,   setCompletions]   = useState<string[]>([])
+  const [selectedIdx,   setSelectedIdx]   = useState(0)
 
   // Auto-grow textarea.
   useEffect(() => {
@@ -1239,7 +1263,61 @@ function InputBar({
     ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`
   }, [draft])
 
+  // Debounced fetch of @-completions — mirrors mobile's effect in
+  // mobile/App.tsx. The endpoint is /completions on lair and
+  // /agents/<name>/completions on a child (proxied by lair).
+  useEffect(() => {
+    if (!completionsBase) { setCompletions([]); return }
+    const parsed = parseAtQuery(draft)
+    if (!parsed) { setCompletions([]); return }
+    let cancelled = false
+    const timer = setTimeout(() => {
+      fetch(`${completionsBase}/completions?dir_part=${encodeURIComponent(parsed.dirPart)}&file_part=${encodeURIComponent(parsed.filePart)}`)
+        .then(r => r.json())
+        .then((data: string[]) => { if (!cancelled) { setCompletions(data); setSelectedIdx(0) } })
+        .catch(() => { if (!cancelled) setCompletions([]) })
+    }, 200)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [draft, completionsBase])
+
+  const applyCompletion = (completion: string) => {
+    const parsed = parseAtQuery(draft)
+    if (!parsed) return
+    const newText = draft.slice(0, parsed.atIndex + 1) + completion
+    if (completion.endsWith('/')) {
+      // Directory — keep the popup open, let the user keep drilling in.
+      setDraft(newText)
+    } else {
+      setDraft(newText + ' ')
+      setCompletions([])
+    }
+    // Refocus so typing continues uninterrupted.
+    requestAnimationFrame(() => taRef.current?.focus())
+  }
+
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (completions.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSelectedIdx(i => (i + 1) % completions.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSelectedIdx(i => (i - 1 + completions.length) % completions.length)
+        return
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        e.preventDefault()
+        applyCompletion(completions[selectedIdx] ?? completions[0])
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setCompletions([])
+        return
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       onSend()
@@ -1248,6 +1326,20 @@ function InputBar({
 
   return (
     <div className="input-bar">
+      {completions.length > 0 && (
+        <div className="completion-list">
+          {completions.map((c, i) => (
+            <div
+              key={c}
+              className={`completion-item ${i === selectedIdx ? 'selected' : ''}`}
+              onMouseDown={(e) => { e.preventDefault(); applyCompletion(c) }}
+              onMouseEnter={() => setSelectedIdx(i)}
+            >
+              {c}
+            </div>
+          ))}
+        </div>
+      )}
       <div className="input-row">
         <textarea
           ref={taRef}
