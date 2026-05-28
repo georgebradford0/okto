@@ -79,7 +79,7 @@ Since child agents do not have root access the image includes [Buildah](https://
 
 Lair (running as root) builds rootful; each child agent uid (10100..10199) gets its own subordinate-uid range so it can build rootless. The image is configured with the `vfs` storage driver — slow and disk-heavy, but works without `/dev/fuse` or extra `docker run` flags. Per-agent build storage lives under `$HOME/.local/share/containers/storage` (= `~/.okto/agents/<name>/.local/share/...` on the host).
 
-Though `lair` does have root access within the container, any builds from there should also use `buildah`.
+Though `lair` does have root access within the container, any builds from there should also use `buildah`.  In general, if possible docker builds should be handled by external CI setup like Github Actions.  
 
 ## Noise/SSH Keys
 Every lair container holds two independent keypairs, each with a distinct purpose:
