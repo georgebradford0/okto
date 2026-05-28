@@ -696,7 +696,7 @@ async fn main() -> Result<()> {
                 let anthropic = init::prompt("Anthropic API key (Enter to skip):       ")?;
                 let openai    = init::prompt("OpenAI API key (Enter to skip):          ")?;
                 let api_url   = init::prompt("API URL (Enter for Anthropic default):   ")?;
-                let model     = init::prompt("Model (e.g. claude-sonnet-4-6):          ")?;
+                let model     = init::prompt("Model (Enter for claude-sonnet-4-6):     ")?;
 
                 let to_opt = |s: String| {
                     let s = s.trim().to_string();
@@ -706,7 +706,7 @@ async fn main() -> Result<()> {
                     anthropic_api_key: to_opt(anthropic),
                     openai_api_key:    to_opt(openai),
                     api_url:           to_opt(api_url),
-                    model:             to_opt(model),
+                    model:             Some(to_opt(model).unwrap_or_else(|| "claude-sonnet-4-6".to_string())),
                     ..Default::default()
                 };
 
