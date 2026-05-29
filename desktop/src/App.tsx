@@ -1756,9 +1756,6 @@ function ToolRow({ item }: { item: Message }) {
   // collapsed/expanded persists for the chip's lifetime.
   const [expanded, setExpanded] = useState(false)
   const hasOutput = item.output != null && item.output.length > 0
-  const prefix    = item.running
-    ? 'Running '
-    : (!item.running && item.output === undefined ? 'Pending ' : '')
   return (
     <div className="row">
       <div className={'tool-chip' + (item.running ? ' tool-running' : (!hasOutput ? ' tool-queued' : ''))}>
@@ -1771,7 +1768,7 @@ function ToolRow({ item }: { item: Message }) {
         >
           {item.running && <span className="tool-dot-pulse" />}
           {!item.running && item.output === undefined && <span className="tool-dot-queued" />}
-          <span className="tool-line-text">{prefix}{item.text}</span>
+          <span className="tool-line-text">{item.text}</span>
           {hasOutput && (
             <span className={'tool-chevron' + (expanded ? ' tool-chevron-open' : '')} aria-hidden="true">▸</span>
           )}
