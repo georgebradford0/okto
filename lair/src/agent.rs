@@ -3,8 +3,9 @@
 //! own Noise tunnel into this server on demand.
 
 use std::{
+    collections::HashMap,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
     },
@@ -51,12 +52,12 @@ use tower_http::cors::{Any, CorsLayer};
 
 // ── Session persistence ───────────────────────────────────────────────────────
 
-fn save_messages(messages: &[ApiMessage]) {
-    okto_core::save_messages(&data_dir(), messages, "agent");
+fn save_messages(dir: &Path, messages: &[ApiMessage]) {
+    okto_core::save_messages(dir, messages, "agent");
 }
 
-fn load_messages() -> Vec<ApiMessage> {
-    okto_core::load_messages(&data_dir(), "agent")
+fn load_messages(dir: &Path) -> Vec<ApiMessage> {
+    okto_core::load_messages(dir, "agent")
 }
 
 /// Unified turn-gate: all decisions about who gets the next conversation turn
@@ -99,7 +100,25 @@ const MAX_AUTO_DEPTH: u32 = 3;
 
 // ── App state ─────────────────────────────────────────────────────────────────
 
+/// One chat session: a conversation bound to a single working directory. The
+/// agent's main workspace is the default session (`id == ""`); each git
+/// worktree gets its own session keyed by worktree id. All per-conversation
+/// state (history, cwd, stream fanout, turn gate, cancel token, persistence
+/// dir) lives here so one agent process can host several concurrently. The
+/// `mcp_pool` is a cheap clone of the process-wide pool — connections are
+/// shared, not duplicated per session.
 struct AppState {
+    /// Worktree id this session is bound to; `""` for the main workspace.
+    id:            String,
+    /// Branch checked out in this session's worktree. `None` for the main
+    /// workspace (whatever branch the clone is on). Consumed by the worktree
+    /// lifecycle in the next phase.
+    #[allow(dead_code)]
+    branch:        Option<String>,
+    /// Directory this session persists its `session/messages.json` +
+    /// `session/tasks.json` under. Main workspace = the agent's `data_dir()`;
+    /// worktrees nest under `data_dir()/worktrees/<id>`.
+    data_dir:      PathBuf,
     messages:      Arc<Mutex<Vec<ApiMessage>>>,
     last_cost_usd: Mutex<Option<f64>>,
     system:        String,
@@ -110,14 +129,60 @@ struct AppState {
     mcp_pool:      McpPool,
 }
 
+/// Process-level holder: every chat session this agent serves. The default
+/// session (`""`) is the main workspace; git worktrees add more. HTTP handlers
+/// resolve a session from here — the default one, or a `:worktree` path param —
+/// and operate on it. Worktree lifecycle (add/list/remove) mutates `sessions`.
+struct Agent {
+    sessions:  Mutex<HashMap<String, Arc<AppState>>>,
+    /// Process-wide MCP pool, cloned into each session created at runtime
+    /// (worktree sessions, next phase).
+    #[allow(dead_code)]
+    mcp_pool:  McpPool,
+    /// The agent's own dir (`/data/agents/<name>`): parent of `workspace/`,
+    /// `worktrees/`, and `data/`. Used to lay out worktree dirs.
+    #[allow(dead_code)]
+    agent_dir: PathBuf,
+    /// The main git clone (`<agent_dir>/workspace`) whose `.git` every worktree
+    /// attaches to.
+    #[allow(dead_code)]
+    workspace: PathBuf,
+}
+
+impl Agent {
+    /// The main-workspace session. Always present for the life of the process.
+    fn default_session(&self) -> Arc<AppState> {
+        self.sessions.lock().unwrap().get("")
+            .cloned()
+            .expect("default session is inserted at startup and never removed")
+    }
+
+    /// Look up a session by worktree id (`""` = main). `None` if no such
+    /// worktree session exists. Used by the worktree-scoped routes next phase.
+    #[allow(dead_code)]
+    fn session(&self, id: &str) -> Option<Arc<AppState>> {
+        self.sessions.lock().unwrap().get(id).cloned()
+    }
+}
+
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 async fn health_handler() -> impl IntoResponse { (StatusCode::OK, "ok") }
 
-async fn interrupt_handler(State(state): State<Arc<AppState>>) -> StatusCode {
-    state.cancel.lock().unwrap().cancel();
-    state.turn_gate.lock().unwrap().interrupt_requested = true;
+fn interrupt_session(s: &Arc<AppState>) -> StatusCode {
+    s.cancel.lock().unwrap().cancel();
+    s.turn_gate.lock().unwrap().interrupt_requested = true;
     StatusCode::OK
+}
+
+async fn interrupt_handler(State(agent): State<Arc<Agent>>) -> StatusCode {
+    interrupt_session(&agent.default_session())
+}
+
+fn cancel_task_session(s: &Arc<AppState>, id: &str) -> Json<serde_json::Value> {
+    let fired = core_cancel_task(&s.stream_state, id);
+    info!("[agent/cancel_task] id={id} fired={fired}");
+    Json(serde_json::json!({"id": id, "fired": fired}))
 }
 
 /// HTTP twin of the agent's `cancel_task` WS frame. POST /tasks/:id/cancel.
@@ -125,24 +190,27 @@ async fn interrupt_handler(State(state): State<Arc<AppState>>) -> StatusCode {
 /// here so operators can stop a child agent's background task from `okto tasks stop`.
 async fn cancel_task_handler(
     AxumPath(id): AxumPath<String>,
-    State(state): State<Arc<AppState>>,
+    State(agent): State<Arc<Agent>>,
 ) -> Json<serde_json::Value> {
-    let fired = core_cancel_task(&state.stream_state, &id);
-    info!("[agent/cancel_task] id={id} fired={fired}");
-    Json(serde_json::json!({"id": id, "fired": fired}))
+    cancel_task_session(&agent.default_session(), &id)
 }
 
-async fn history_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let cost = *state.last_cost_usd.lock().unwrap();
-    let msgs = messages_to_history(&state.messages.lock().unwrap(), cost);
+fn history_session(s: &Arc<AppState>) -> Json<serde_json::Value> {
+    let cost = *s.last_cost_usd.lock().unwrap();
+    let msgs = messages_to_history(&s.messages.lock().unwrap(), cost);
     Json(serde_json::json!({ "messages": msgs }))
+}
+
+async fn history_handler(State(agent): State<Arc<Agent>>) -> Json<serde_json::Value> {
+    history_session(&agent.default_session())
 }
 
 async fn stream_handler(
     ws:           WebSocketUpgrade,
-    State(state): State<Arc<AppState>>,
+    State(agent): State<Arc<Agent>>,
 ) -> Response {
-    ws.on_upgrade(move |socket| handle_stream(socket, state))
+    let s = agent.default_session();
+    ws.on_upgrade(move |socket| handle_stream(socket, s))
 }
 
 enum TurnTrigger { User(String), Auto }
@@ -160,7 +228,7 @@ fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
                         role:    "error".to_string(),
                         content: vec![ContentBlock::Text { text: errmsg.clone() }],
                     });
-                    save_messages(&msgs);
+                    save_messages(&state.data_dir, &msgs);
                 }
                 let json = serde_json::json!({"type":"error","message": errmsg}).to_string();
                 buffer_and_fanout(&state.stream_state, json);
@@ -182,7 +250,7 @@ fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
                 role:    "user".to_string(),
                 content: vec![ContentBlock::Text { text: text.clone() }],
             });
-            save_messages(&msgs);
+            save_messages(&state.data_dir, &msgs);
         }
 
         let messages: Vec<ApiMessage> = state.messages.lock().unwrap().iter()
@@ -215,13 +283,13 @@ fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
                             content: vec![ContentBlock::Text { text: "interrupted".to_string() }],
                         });
                         *msgs_arc.lock().unwrap() = updated.clone();
-                        save_messages(&updated);
+                        save_messages(&state_arc.data_dir, &updated);
                         *state_arc.last_cost_usd.lock().unwrap() = Some(cost_usd);
                         done_tx.send(ChatEvent::Interrupted { cost_usd }).await.ok();
                     } else {
                         info!("[agent/stream] turn finished, cost=${cost_usd:.4}");
                         *msgs_arc.lock().unwrap() = updated.clone();
-                        save_messages(&updated);
+                        save_messages(&state_arc.data_dir, &updated);
                         *state_arc.last_cost_usd.lock().unwrap() = Some(cost_usd);
                         done_tx.send(ChatEvent::Result {
                             cost_usd, turns: 0, session_id: String::new(), result: None,
@@ -235,7 +303,7 @@ fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
                         content: vec![ContentBlock::Text { text: e.clone() }],
                     });
                     *msgs_arc.lock().unwrap() = partial.clone();
-                    save_messages(&partial);
+                    save_messages(&state_arc.data_dir, &partial);
                     done_tx.send(ChatEvent::Error { message: e }).await.ok();
                 }
             }
@@ -301,7 +369,7 @@ fn finalize_turn(state: Arc<AppState>) {
             });
         }
         msgs.extend(injections);
-        save_messages(&msgs);
+        save_messages(&state.data_dir, &msgs);
     }
 
     if let Some(text) = user_msg {
@@ -368,7 +436,7 @@ fn try_continue_auto(state: Arc<AppState>) {
     {
         let mut msgs = state.messages.lock().unwrap();
         msgs.extend(drained);
-        save_messages(&msgs);
+        save_messages(&state.data_dir, &msgs);
     }
     info!("[agent/stream] auto-turn triggered by queued background injection");
     spawn_turn(state, TurnTrigger::Auto);
@@ -526,26 +594,27 @@ async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
     }
 }
 
-async fn clear_handler(State(state): State<Arc<AppState>>) -> StatusCode {
-    info!("[agent/clear] clearing conversation history");
-    let mut msgs = state.messages.lock().unwrap();
+fn clear_session(s: &Arc<AppState>) -> StatusCode {
+    info!("[agent/clear] clearing conversation history (session='{}')", s.id);
+    let mut msgs = s.messages.lock().unwrap();
     msgs.clear();
-    save_messages(&msgs);
+    save_messages(&s.data_dir, &msgs);
     StatusCode::OK
+}
+
+async fn clear_handler(State(agent): State<Arc<Agent>>) -> StatusCode {
+    clear_session(&agent.default_session())
 }
 
 #[derive(Deserialize)]
 struct CompletionQuery { dir_part: Option<String>, file_part: Option<String> }
 
-async fn get_completions_handler(
-    State(state): State<Arc<AppState>>,
-    Query(p):     Query<CompletionQuery>,
-) -> Json<Vec<String>> {
+fn completions_session(s: &Arc<AppState>, p: CompletionQuery) -> Json<Vec<String>> {
     let dir_part  = p.dir_part.unwrap_or_default();
     let file_part = p.file_part.unwrap_or_default();
     let mut seen    = std::collections::HashSet::new();
     let mut results = Vec::new();
-    let search_dir  = PathBuf::from(&state.cwd).join(&dir_part);
+    let search_dir  = PathBuf::from(&s.cwd).join(&dir_part);
     if let Ok(entries) = fs::read_dir(&search_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
@@ -560,17 +629,30 @@ async fn get_completions_handler(
     Json(results)
 }
 
-async fn get_branches_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    if !PathBuf::from(&state.cwd).join(".git").is_dir() {
+async fn get_completions_handler(
+    State(agent): State<Arc<Agent>>,
+    Query(p):     Query<CompletionQuery>,
+) -> Json<Vec<String>> {
+    completions_session(&agent.default_session(), p)
+}
+
+fn branches_session(s: &Arc<AppState>) -> Response {
+    // A worktree's `.git` is a file (gitdir pointer), the main clone's is a
+    // dir — accept either so branch listing works in both.
+    if !PathBuf::from(&s.cwd).join(".git").exists() {
         return Json(Vec::<okto_core::Branch>::new()).into_response();
     }
-    match get_branches_for_repo(&state.cwd) {
+    match get_branches_for_repo(&s.cwd) {
         Ok(b)  => Json(b).into_response(),
         Err(e) => {
-            warn!("[agent/branches] failed to list branches for {}: {e}", state.cwd);
+            warn!("[agent/branches] failed to list branches for {}: {e}", s.cwd);
             (StatusCode::INTERNAL_SERVER_ERROR, e).into_response()
         }
     }
+}
+
+async fn get_branches_handler(State(agent): State<Arc<Agent>>) -> impl IntoResponse {
+    branches_session(&agent.default_session())
 }
 
 async fn get_config_handler() -> Json<Config> { Json(read_config()) }
@@ -882,7 +964,7 @@ async fn exec_run_command_in_background(state: Arc<AppState>, input: serde_json:
     info!("[agent/run_command_in_background] spawning {task_id} ({} chars)", command.len());
 
     let cancel = CancellationToken::new();
-    let output = register_task(&state.stream_state, &data_dir(), TaskRecord {
+    let output = register_task(&state.stream_state, &state.data_dir, TaskRecord {
         task_id:      task_id.clone(),
         command:      command.clone(),
         status:       TaskStatus::Running,
@@ -915,7 +997,7 @@ fn run_tracked_command(
     };
     let deliver_state = state.clone();
     spawn_background_command(params, cancel, output, move |outcome| {
-        finalize_task(&deliver_state.stream_state, &data_dir(), &outcome);
+        finalize_task(&deliver_state.stream_state, &deliver_state.data_dir, &outcome);
         buffer_and_fanout(&deliver_state.stream_state, tasks_wire_json(&deliver_state.stream_state));
 
         let injection = format!(
@@ -982,7 +1064,7 @@ async fn exec_monitor_process(state: Arc<AppState>, input: serde_json::Value) ->
     let task_id = format!("bg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
     info!("[agent/monitor_process] spawning {task_id} ({} chars) interval={interval}s", command.len());
     let cancel = CancellationToken::new();
-    let output = register_task(&state.stream_state, &data_dir(), TaskRecord {
+    let output = register_task(&state.stream_state, &state.data_dir, TaskRecord {
         task_id:      task_id.clone(),
         command:      command.clone(),
         status:       TaskStatus::Running,
@@ -1021,7 +1103,7 @@ fn run_monitored_command(
     };
     let deliver_state = state.clone();
     spawn_background_command(params, cancel, output, move |outcome| {
-        finalize_task(&deliver_state.stream_state, &data_dir(), &outcome);
+        finalize_task(&deliver_state.stream_state, &deliver_state.data_dir, &outcome);
         buffer_and_fanout(&deliver_state.stream_state, tasks_wire_json(&deliver_state.stream_state));
         // Push notification. Children have no relay key, so lair signs and
         // forwards on our behalf — and runs a one-shot LLM call to turn the
@@ -1218,7 +1300,7 @@ pub async fn run() -> anyhow::Result<()> {
     } else {
         build_agent_system_prompt(&cwd)
     };
-    let messages  = load_messages();
+    let messages  = load_messages(&data_dir());
     info!(
         "[agent] loaded {} message(s) from history, cwd={cwd} (repo={})",
         messages.len(),
@@ -1227,7 +1309,16 @@ pub async fn run() -> anyhow::Result<()> {
 
     let mcp_pool = init_mcp_pool().await;
 
-    let state = Arc::new(AppState {
+    // The agent's own dir (`/data/agents/<name>`) is the parent of
+    // `workspace/`; worktree dirs and per-worktree session data nest under it.
+    let agent_dir = workspace.parent().map(PathBuf::from).unwrap_or_else(data_dir);
+
+    // The main-workspace session (id ""). Persists under the agent's own
+    // `data_dir()`; worktree sessions get their own subdirs.
+    let default_session = Arc::new(AppState {
+        id:            String::new(),
+        branch:        None,
+        data_dir:      data_dir(),
         messages:      Arc::new(Mutex::new(messages)),
         last_cost_usd: Mutex::new(None),
         system,
@@ -1239,7 +1330,14 @@ pub async fn run() -> anyhow::Result<()> {
         }),
         turn_gate:    Mutex::new(TurnGate::new()),
         cancel:        Mutex::new(CancellationToken::new()),
+        mcp_pool:      mcp_pool.clone(),
+    });
+
+    let agent = Arc::new(Agent {
+        sessions:  Mutex::new(HashMap::from([(String::new(), default_session)])),
         mcp_pool,
+        agent_dir,
+        workspace: workspace.clone(),
     });
 
     let cors = CorsLayer::new()
@@ -1257,7 +1355,7 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/branches",    get(get_branches_handler))
         .route("/completions", get(get_completions_handler))
         .route("/config",      get(get_config_handler).put(update_config_handler))
-        .with_state(state.clone())
+        .with_state(agent.clone())
         .layer(cors);
 
     let addr = format!("127.0.0.1:{port}");
@@ -1266,11 +1364,11 @@ pub async fn run() -> anyhow::Result<()> {
             error!("[agent] failed to bind agent HTTP port {addr}: {e}");
             anyhow::anyhow!("failed to bind agent HTTP port {addr}: {e}")
         })?;
-    info!("[agent] HTTP listening on {addr} (cwd: {})", state.cwd);
+    info!("[agent] HTTP listening on {addr} (cwd: {})", agent.default_session().cwd);
 
     if let Ok(prompt) = std::env::var("STARTUP_PROMPT") {
         if !prompt.is_empty() {
-            let state_sp   = Arc::clone(&state);
+            let state_sp   = agent.default_session();
             let api_key_sp = resolve_api_key().unwrap_or_default();
             let model_sp   = resolve_model();
             tokio::spawn(async move {
@@ -1287,7 +1385,7 @@ pub async fn run() -> anyhow::Result<()> {
                         role:    "user".to_string(),
                         content: vec![ContentBlock::Text { text: prompt.clone() }],
                     });
-                    save_messages(&msgs);
+                    save_messages(&state_sp.data_dir, &msgs);
                 }
                 let messages: Vec<ApiMessage> = state_sp.messages.lock().unwrap().iter()
                     .filter(|m| m.role != "interrupted" && m.role != "error")
@@ -1308,7 +1406,7 @@ pub async fn run() -> anyhow::Result<()> {
                 ).await {
                     Ok((_, cost_usd, updated)) => {
                         *state_sp.messages.lock().unwrap() = updated.clone();
-                        save_messages(&updated);
+                        save_messages(&state_sp.data_dir, &updated);
                         *state_sp.last_cost_usd.lock().unwrap() = Some(cost_usd);
                         info!("[agent] STARTUP_PROMPT complete cost=${cost_usd:.4}");
                     }
@@ -1318,7 +1416,7 @@ pub async fn run() -> anyhow::Result<()> {
                             content: vec![ContentBlock::Text { text: e.clone() }],
                         });
                         *state_sp.messages.lock().unwrap() = partial.clone();
-                        save_messages(&partial);
+                        save_messages(&state_sp.data_dir, &partial);
                         error!("[agent] STARTUP_PROMPT error: {e}");
                     }
                 }
