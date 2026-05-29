@@ -2157,14 +2157,22 @@ function AppInner() {
 
   // Fetch each agent's worktrees whenever the agent list (or tunnel) changes,
   // so the sidebar nesting tracks worktrees created here or on another client.
+  // Also prune stale entries for agents no longer in `containers`.
   useEffect(() => {
     if (tunnelPort == null) return
+    const names = new Set(containers.map(c => c.name))
+    setWorktrees(prev => {
+      const stale = Object.keys(prev).filter(k => !names.has(k))
+      return stale.length ? Object.fromEntries(Object.entries(prev).filter(([k]) => names.has(k))) : prev
+    })
+    const ac = new AbortController()
     for (const c of containers) {
-      fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(c.name)}/worktrees`)
+      fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(c.name)}/worktrees`, { signal: ac.signal })
         .then(r => r.ok ? r.json() : Promise.reject(new Error('http')))
         .then((wts: WorktreeMeta[]) => setWorktrees(prev => ({ ...prev, [c.name]: wts })))
         .catch(() => { /* transient; next push retries */ })
     }
+    return () => ac.abort()
   }, [containers, tunnelPort])
 
   const createWorktree = useCallback((agentName: string, branch: string) => {
@@ -2190,7 +2198,11 @@ function AppInner() {
     setWorktrees(prev => ({ ...prev, [agentName]: (prev[agentName] ?? []).filter(w => w.id !== wt.id) }))
     if (activeWorktreeRef.current?.id === wt.id) closeChildRef.current()
     fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(agentName)}/worktrees/${encodeURIComponent(wt.id)}`,
-      { method: 'DELETE' }).catch(() => {})
+      { method: 'DELETE' })
+      .then(() => fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(agentName)}/worktrees`))
+      .then(r => r.ok ? r.json() : Promise.reject(new Error('http')))
+      .then((wts: WorktreeMeta[]) => setWorktrees(prev => ({ ...prev, [agentName]: wts })))
+      .catch(() => {})
   }, [tunnelPort])
 
   const handleQrScanned = useCallback((raw: string) => {
