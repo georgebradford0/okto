@@ -632,7 +632,8 @@ textarea { resize: none; }
 /* Buttons in the header row — Clear, Tasks */
 
 .clear-btn,
-.tasks-btn {
+.tasks-btn,
+.update-btn {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -653,7 +654,8 @@ textarea { resize: none; }
 }
 
 .clear-btn:not(:disabled):hover,
-.tasks-btn:hover {
+.tasks-btn:hover,
+.update-btn:not(:disabled):hover {
   border-color: var(--border-strong);
   color: var(--text-primary);
   background: var(--surface-soft);
@@ -661,14 +663,30 @@ textarea { resize: none; }
 }
 
 .clear-btn:not(:disabled):active,
-.tasks-btn:active {
+.tasks-btn:active,
+.update-btn:not(:disabled):active {
   transform: translateY(0);
 }
 
-.clear-btn:disabled {
+.clear-btn:disabled,
+.update-btn:disabled {
   opacity: 0.4;
   cursor: default;
   box-shadow: none;
+}
+
+/* When an update is ready, the button takes the accent treatment to draw
+   the eye — same palette as the active tasks pill. */
+.update-btn-available {
+  color: var(--accent);
+  border-color: rgba(15, 110, 115, 0.34);
+  background: var(--accent-soft);
+}
+
+.update-btn-available:not(:disabled):hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .tasks-btn-active {

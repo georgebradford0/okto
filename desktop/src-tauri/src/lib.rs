@@ -67,6 +67,8 @@ fn noise_active_port(state: State<'_, AppState>) -> Option<u16> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState {
             active_port: Mutex::new(None),
         })

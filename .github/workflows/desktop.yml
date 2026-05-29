@@ -23,6 +23,15 @@ on:
 #   APP_STORE_CONNECT_API_KEY_ID        — key ID
 #   APP_STORE_CONNECT_API_KEY_ISSUER_ID — issuer ID
 #   APP_STORE_CONNECT_API_KEY_CONTENT   — base64 of the AuthKey_XXXX.p8
+#
+# Auto-updater signing (NOT an Apple cert — a tauri minisign key):
+#   TAURI_SIGNING_PRIVATE_KEY  — the private key from `tauri signer generate`
+#                                 (generated password-less). The matching
+#                                 public key is committed in tauri.conf.json.
+#
+# After a successful run this workflow publishes two releases: the versioned
+# `desktop-v<version>` (DMG + .app.tar.gz + .sig) and a rolling `desktop-latest`
+# (latest.json manifest) that the in-app updater polls.
 
 jobs:
   build:
@@ -72,6 +81,13 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
           APPLE_API_KEY_PATH: ${{ runner.temp }}/notary_api_key.p8
+          # Auto-updater signing: with these set, tauri produces the
+          # `.app.tar.gz` + `.sig` updater artifacts alongside the DMG
+          # (createUpdaterArtifacts is enabled in tauri.conf.json). The key was
+          # generated with `tauri signer generate` (no password); the matching
+          # public key is committed in tauri.conf.json's plugins.updater.pubkey.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npm run tauri:build -- --target universal-apple-darwin
 
       - name: Create GitHub release
@@ -79,9 +95,62 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          DMG=$(find target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' | head -1)
-          echo "Releasing $DMG"
-          gh release create "desktop-v${{ steps.version.outputs.value }}" \
-            --title "Okto Desktop v${{ steps.version.outputs.value }}" \
+          VERSION="${{ steps.version.outputs.value }}"
+          BUNDLE=target/universal-apple-darwin/release/bundle
+          DMG=$(find "$BUNDLE/dmg" -name '*.dmg' | head -1)
+          # Updater payload + its detached minisign signature.
+          TARGZ=$(find "$BUNDLE/macos" -name '*.app.tar.gz' | head -1)
+          SIG=$(find "$BUNDLE/macos" -name '*.app.tar.gz.sig' | head -1)
+          echo "DMG=$DMG"
+          echo "TARGZ=$TARGZ"
+          echo "SIG=$SIG"
+          # Versioned release holds the DMG (human download) + the updater
+          # archive and its signature (machine download).
+          gh release create "desktop-v${VERSION}" \
+            --title "Okto Desktop v${VERSION}" \
             --notes "Universal macOS build (Intel + Apple Silicon), signed and notarized." \
-            "$DMG"
+            "$DMG" "$TARGZ" "$SIG"
+
+      - name: Publish auto-update manifest
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.value }}"
+          BUNDLE=target/universal-apple-darwin/release/bundle
+          TARGZ=$(find "$BUNDLE/macos" -name '*.app.tar.gz' | head -1)
+          SIG=$(find "$BUNDLE/macos" -name '*.app.tar.gz.sig' | head -1)
+          ASSET=$(basename "$TARGZ")
+          SIGNATURE=$(cat "$SIG")
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/desktop-v${VERSION}/${ASSET}"
+          PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          # The universal binary runs natively on both arches, so both platform
+          # keys point at the same archive. Tauri picks the key matching the
+          # host arch and verifies the signature against the embedded pubkey.
+          jq -n \
+            --arg version "$VERSION" \
+            --arg pub_date "$PUB_DATE" \
+            --arg sig "$SIGNATURE" \
+            --arg url "$URL" \
+            '{
+              version: $version,
+              notes: "See the desktop CHANGELOG for details.",
+              pub_date: $pub_date,
+              platforms: {
+                "darwin-aarch64": { signature: $sig, url: $url },
+                "darwin-x86_64":  { signature: $sig, url: $url }
+              }
+            }' > latest.json
+          cat latest.json
+          # `desktop-latest` is a stable holder release for the manifest. Its
+          # URL is what tauri.conf.json's updater endpoint points at — fixed
+          # across versions, unlike GitHub's repo-wide /releases/latest pointer
+          # (which this multi-series repo shares with cli-v*/relay-v* tags).
+          # Marked --prerelease so it never becomes the repo's "Latest release".
+          gh release delete desktop-latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create desktop-latest \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Desktop auto-update manifest" \
+            --notes "Rolling pointer to the newest desktop release for the in-app updater. Do not delete." \
+            latest.json

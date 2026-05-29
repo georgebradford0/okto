@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { check, type Update } from '@tauri-apps/plugin-updater'
+import { relaunch } from '@tauri-apps/plugin-process'
 import { parseQrPayload, formatQrPayload, type QrPayload } from './qr'
 import {
   encodeClientFrame, parseServerEvent,
@@ -240,6 +242,68 @@ function App() {
 
   // Visibility for the Background Tasks modal.
   const [showTasksModal,    setShowTasksModal]    = useState(false)
+
+  // ── Auto-update ────────────────────────────────────────────────────────────
+  //
+  // Tauri's updater plugin checks the `desktop-latest` GitHub release's
+  // latest.json (configured in tauri.conf.json) against this build's version.
+  // We check once on launch (quiet) and expose a manual "Check for updates"
+  // button. `updateRef` holds the live Update handle so the button's install
+  // click can download + apply it; `updateState` drives the button label.
+  const updateRef = useRef<Update | null>(null)
+  const [updateState, setUpdateState] = useState<
+    | { kind: 'idle' }
+    | { kind: 'checking' }
+    | { kind: 'available'; version: string }
+    | { kind: 'uptodate' }
+    | { kind: 'downloading' }
+    | { kind: 'error'; message: string }
+  >({ kind: 'idle' })
+
+  const checkForUpdates = async (manual: boolean) => {
+    // Don't interrupt an in-flight download with a fresh check.
+    if (updateState.kind === 'downloading') return
+    if (manual) setUpdateState({ kind: 'checking' })
+    try {
+      const u = await check()
+      if (u) {
+        updateRef.current = u
+        setUpdateState({ kind: 'available', version: u.version })
+      } else {
+        updateRef.current = null
+        // Stay quiet on the silent launch check; only confirm "up to date"
+        // when the user explicitly asked.
+        if (manual) setUpdateState({ kind: 'uptodate' })
+        else setUpdateState({ kind: 'idle' })
+      }
+    } catch (e) {
+      // The updater throws if it can't reach the endpoint or the manifest is
+      // missing (e.g. before the first desktop-latest release exists). Surface
+      // it only on a manual check so launch stays silent.
+      if (manual) setUpdateState({ kind: 'error', message: String(e) })
+      else setUpdateState({ kind: 'idle' })
+    }
+  }
+
+  const installUpdate = async () => {
+    const u = updateRef.current
+    if (!u) return
+    setUpdateState({ kind: 'downloading' })
+    try {
+      await u.downloadAndInstall()
+      // Relaunch into the freshly-installed version. The process exits here.
+      await relaunch()
+    } catch (e) {
+      setUpdateState({ kind: 'error', message: String(e) })
+    }
+  }
+
+  // Quiet check once on launch. Runs regardless of connection state so the
+  // prompt can appear even on the connect screen.
+  useEffect(() => {
+    void checkForUpdates(false)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // User-draggable sidebar width (persisted, clamped to MIN..MAX).
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
@@ -1273,6 +1337,11 @@ function App() {
             Clear
           </button>
           <TasksButton tasks={tasks} onClick={() => setShowTasksModal(v => !v)} />
+          <UpdateButton
+            state={updateState}
+            onCheck={() => checkForUpdates(true)}
+            onInstall={installUpdate}
+          />
         </div>
 
         <div className="chat" ref={chatRef}>
@@ -1545,6 +1614,59 @@ function TasksButton({ tasks, onClick }: { tasks: TaskRecord[]; onClick: () => v
     >
       <span className={`tasks-btn-dot ${running > 0 ? 'tasks-btn-dot-live' : ''}`} />
       {running > 0 ? `Tasks · ${running}` : 'Tasks'}
+    </button>
+  )
+}
+
+type UpdateState =
+  | { kind: 'idle' }
+  | { kind: 'checking' }
+  | { kind: 'available'; version: string }
+  | { kind: 'uptodate' }
+  | { kind: 'downloading' }
+  | { kind: 'error'; message: string }
+
+/** Toolbar control for app updates. When an update is available it becomes a
+ *  prominent "Update to vX.Y.Z" install button; otherwise it's a quiet
+ *  "Check for updates" button that reports its result inline. */
+function UpdateButton({
+  state, onCheck, onInstall,
+}: {
+  state:     UpdateState
+  onCheck:   () => void
+  onInstall: () => void
+}) {
+  if (state.kind === 'available') {
+    return (
+      <button
+        className="update-btn update-btn-available"
+        onClick={onInstall}
+        title={`Download and install v${state.version}, then restart`}
+      >
+        ↓ Update to v{state.version}
+      </button>
+    )
+  }
+  if (state.kind === 'downloading') {
+    return (
+      <button className="update-btn" disabled title="Downloading update…">
+        Updating…
+      </button>
+    )
+  }
+  const label =
+    state.kind === 'checking' ? 'Checking…'
+    : state.kind === 'uptodate' ? 'Up to date'
+    : state.kind === 'error' ? 'Update failed'
+    : 'Check for updates'
+  return (
+    <button
+      className="update-btn"
+      onClick={onCheck}
+      disabled={state.kind === 'checking'}
+      title={state.kind === 'error' ? state.message : 'Check for a newer version'}
+    >
+      {label}
     </button>
   )
 }
