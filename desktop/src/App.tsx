@@ -1101,24 +1101,25 @@ function App() {
         agents={agents}
         activeAgent={activeAgent}
         onSelect={selectAgent}
-        onDisconnect={disconnect}
       />
       <div className="main">
         <div className="main-head">
-          <span className="main-title">{activeLabel}</span>
-          <div className="main-head-right">
-            <StatusPill status={connStatus} />
-            <button
-              className="clear-btn"
-              onClick={clearChat}
-              disabled={connStatus !== 'ready' || items.length === 0}
-              title="Clear chat history"
-            >
-              Clear
-            </button>
-            <span className="main-head-spacer" />
-            <TasksButton tasks={tasks} onClick={() => setShowTasksModal(v => !v)} />
-          </div>
+          <button
+            className="btn-ghost danger disconnect-btn"
+            onClick={disconnect}
+          >
+            Disconnect
+          </button>
+          <StatusPill status={connStatus} />
+          <button
+            className="clear-btn"
+            onClick={clearChat}
+            disabled={connStatus !== 'ready' || items.length === 0}
+            title="Clear chat history"
+          >
+            Clear
+          </button>
+          <TasksButton tasks={tasks} onClick={() => setShowTasksModal(v => !v)} />
         </div>
 
         <div className="chat" ref={chatRef}>
@@ -1234,12 +1235,11 @@ function ConnectScreen({
 }
 
 function Sidebar({
-  agents, activeAgent, onSelect, onDisconnect,
+  agents, activeAgent, onSelect,
 }: {
   agents: AgentInfo[]
   activeAgent: string
   onSelect: (id: string) => void
-  onDisconnect: () => void
 }) {
   return (
     <aside className="sidebar">
@@ -1277,12 +1277,6 @@ function Sidebar({
       </div>
 
       <div className="sidebar-spacer" />
-
-      <div className="sidebar-foot">
-        <button className="btn-ghost danger" onClick={onDisconnect}>
-          Disconnect
-        </button>
-      </div>
     </aside>
   )
 }

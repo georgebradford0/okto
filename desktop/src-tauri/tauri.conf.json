@@ -15,7 +15,9 @@
         "title": "Okto",
         "width": 1280,
         "height": 800,
-        "maximized": true
+        "maximized": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "security": {
