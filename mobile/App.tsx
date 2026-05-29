@@ -1341,9 +1341,18 @@ const ChatPane = memo(function ChatPane({
           }
           let common = 0
           while (common < cur.length && common < msgs.length && eq(cur[common], msgs[common])) common++
-          // Server history is a prefix of what we already have — identical,
-          // or we're live-ahead via the stream. Nothing to apply.
-          if (common === msgs.length) return cur
+          if (common === msgs.length) {
+            // Identical to what we already have — nothing to apply.
+            if (common === cur.length) return cur
+            // Server history is a strict prefix of ours. Either a turn is
+            // streaming/replaying and its rows aren't persisted to /history
+            // yet (keep them — we're live-ahead), or the conversation was
+            // cleared/truncated on the server, e.g. from another client
+            // (adopt the server's shorter history). /history is authoritative
+            // when idle, so truncate the stale tail.
+            if (statusRef.current === 'streaming' || replayingRef.current) return cur
+            return cur.slice(0, common)
+          }
           const suffix = msgs.slice(common)
           // Single new row — append directly; no need to engage the ticker.
           if (suffix.length === 1) {
