@@ -302,16 +302,19 @@ textarea { resize: none; }
 .sidebar {
   display: flex;
   flex-direction: column;
-  margin: 14px;
+  /* Only the right edge floats (gutter to main); top/left/bottom hug the
+     window edges so the native traffic-light buttons sit inside the sidebar
+     (titleBarStyle: Overlay) and the panel runs the full window height. */
+  margin: 0 14px 0 0;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: var(--r-lg);
+  border-radius: 0;
   box-shadow: var(--shadow-sm);
   min-height: 0;
   overflow-y: auto;
-  /* Top padding clears the native traffic-light buttons that overlay the
-     window's top-left corner (titleBarStyle: Overlay). */
-  padding-top: 22px;
+  /* Clear the traffic-light buttons; the empty strip doubles as the window
+     drag region. */
+  padding-top: 26px;
 }
 
 .sidebar-head {
