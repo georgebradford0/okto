@@ -1336,6 +1336,124 @@ async fn proxy_agent_completions(
     proxy_agent_http(&state, &name, reqwest::Method::GET, &sub).await
 }
 
+// ── Worktree proxies ────────────────────────────────────────────────────────
+//
+// Forward `/agents/:name/worktrees…` to the child agent's same-path endpoints.
+// Worktrees aren't registry rows — they live inside the agent process — so
+// these are pure pass-throughs (like history/clear/branches), keyed only by
+// the agent name.
+
+/// Like `proxy_agent_http` but forwards a JSON body (for POST /worktrees).
+async fn proxy_agent_http_body(
+    state:  &Arc<AppState>,
+    name:   &str,
+    method: reqwest::Method,
+    sub:    &str,
+    body:   Option<serde_json::Value>,
+) -> Response {
+    let record = match lookup_record(state, name).await {
+        Ok(r)  => r,
+        Err(r) => return r,
+    };
+    let base = match child_http_base(&record, state.lair_priv.clone()).await {
+        Ok(u)  => u,
+        Err(e) => {
+            warn!("[lair/proxy] cannot resolve base URL for agent='{name}': {e}");
+            return (StatusCode::BAD_GATEWAY, e).into_response();
+        }
+    };
+    forward_http(method, &format!("{base}{sub}"), body).await
+}
+
+async fn proxy_agent_worktrees_list(
+    AxumPath(name): AxumPath<String>,
+    State(state):   State<Arc<AppState>>,
+) -> Response {
+    proxy_agent_http(&state, &name, reqwest::Method::GET, "/worktrees").await
+}
+
+async fn proxy_agent_worktrees_create(
+    AxumPath(name): AxumPath<String>,
+    State(state):   State<Arc<AppState>>,
+    Json(body):     Json<serde_json::Value>,
+) -> Response {
+    proxy_agent_http_body(&state, &name, reqwest::Method::POST, "/worktrees", Some(body)).await
+}
+
+async fn proxy_agent_worktree_delete(
+    AxumPath((name, wt)): AxumPath<(String, String)>,
+    State(state):         State<Arc<AppState>>,
+) -> Response {
+    proxy_agent_http(&state, &name, reqwest::Method::DELETE, &format!("/worktrees/{wt}")).await
+}
+
+async fn proxy_agent_wt_history(
+    AxumPath((name, wt)): AxumPath<(String, String)>,
+    State(state):         State<Arc<AppState>>,
+) -> Response {
+    proxy_agent_http(&state, &name, reqwest::Method::GET, &format!("/worktrees/{wt}/history")).await
+}
+
+async fn proxy_agent_wt_interrupt(
+    AxumPath((name, wt)): AxumPath<(String, String)>,
+    State(state):         State<Arc<AppState>>,
+) -> Response {
+    proxy_agent_http(&state, &name, reqwest::Method::POST, &format!("/worktrees/{wt}/interrupt")).await
+}
+
+async fn proxy_agent_wt_clear(
+    AxumPath((name, wt)): AxumPath<(String, String)>,
+    State(state):         State<Arc<AppState>>,
+) -> Response {
+    proxy_agent_http(&state, &name, reqwest::Method::POST, &format!("/worktrees/{wt}/clear")).await
+}
+
+async fn proxy_agent_wt_branches(
+    AxumPath((name, wt)): AxumPath<(String, String)>,
+    State(state):         State<Arc<AppState>>,
+) -> Response {
+    proxy_agent_http(&state, &name, reqwest::Method::GET, &format!("/worktrees/{wt}/branches")).await
+}
+
+async fn proxy_agent_wt_completions(
+    AxumPath((name, wt)): AxumPath<(String, String)>,
+    RawQuery(query):      RawQuery,
+    State(state):         State<Arc<AppState>>,
+) -> Response {
+    let sub = match query {
+        Some(q) if !q.is_empty() => format!("/worktrees/{wt}/completions?{q}"),
+        _                        => format!("/worktrees/{wt}/completions"),
+    };
+    proxy_agent_http(&state, &name, reqwest::Method::GET, &sub).await
+}
+
+async fn proxy_agent_wt_cancel_task(
+    AxumPath((name, wt, id)): AxumPath<(String, String, String)>,
+    State(state):             State<Arc<AppState>>,
+) -> Response {
+    proxy_agent_http(&state, &name, reqwest::Method::POST, &format!("/worktrees/{wt}/tasks/{id}/cancel")).await
+}
+
+async fn proxy_agent_wt_stream_handler(
+    AxumPath((name, wt)): AxumPath<(String, String)>,
+    ws:                   WebSocketUpgrade,
+    State(state):         State<Arc<AppState>>,
+) -> Response {
+    let record = {
+        let reg = state.registry.lock().unwrap();
+        match reg.get(&name) {
+            Some(r) => r.clone(),
+            None    => {
+                warn!("[lair/proxy] worktree stream request for unknown agent='{name}'");
+                return (StatusCode::NOT_FOUND, format!("agent '{name}' not found")).into_response();
+            }
+        }
+    };
+    let lair_priv = state.lair_priv.clone();
+    let ws_path = format!("/worktrees/{wt}/stream");
+    ws.on_upgrade(move |client_ws| proxy_to_child(client_ws, record, lair_priv, ws_path))
+}
+
 async fn proxy_agent_stream_handler(
     AxumPath(name): AxumPath<String>,
     ws:             WebSocketUpgrade,
@@ -1352,14 +1470,14 @@ async fn proxy_agent_stream_handler(
         }
     };
     let lair_priv = state.lair_priv.clone();
-    ws.on_upgrade(move |client_ws| proxy_to_child(client_ws, record, lair_priv))
+    ws.on_upgrade(move |client_ws| proxy_to_child(client_ws, record, lair_priv, "/stream".to_string()))
 }
 
 /// Open the localhost URL lair should connect to in order to reach a child
 /// agent's `/stream`. For local agents that's just `ws://127.0.0.1:<port>`.
 /// For remote agents we spin up an outbound Noise tunnel first, returning a
 /// loopback URL that tunnels into the remote VM's encrypted Noise port.
-async fn resolve_child_ws_url(record: &AgentRecord, lair_priv: Vec<u8>) -> Result<String, String> {
+async fn resolve_child_ws_url(record: &AgentRecord, lair_priv: Vec<u8>, ws_path: &str) -> Result<String, String> {
     if let Some(host) = &record.host {
         let pubkey_b32 = record.pubkey.as_deref().unwrap_or_default();
         if pubkey_b32.is_empty() {
@@ -1378,17 +1496,17 @@ async fn resolve_child_ws_url(record: &AgentRecord, lair_priv: Vec<u8>) -> Resul
             expected_pubkey,
             lair_priv,
         ).await.map_err(|e| format!("open noise tunnel to {host}:{}: {e}", record.port))?;
-        Ok(format!("ws://127.0.0.1:{local_port}/stream"))
+        Ok(format!("ws://127.0.0.1:{local_port}{ws_path}"))
     } else {
-        Ok(format!("ws://127.0.0.1:{}/stream", record.port))
+        Ok(format!("ws://127.0.0.1:{}{ws_path}", record.port))
     }
 }
 
-async fn proxy_to_child(mobile_ws: WebSocket, record: AgentRecord, lair_priv: Vec<u8>) {
+async fn proxy_to_child(mobile_ws: WebSocket, record: AgentRecord, lair_priv: Vec<u8>, ws_path: String) {
     use tokio_tungstenite::tungstenite::Message as TMessage;
 
     let name = record.name.clone();
-    let url = match resolve_child_ws_url(&record, lair_priv).await {
+    let url = match resolve_child_ws_url(&record, lair_priv, &ws_path).await {
         Ok(u)  => u,
         Err(e) => {
             warn!("[proxy] {name}: {e}");
@@ -1947,9 +2065,6 @@ async fn exec_create_agent_for_parent(
                 provider:       None,
                 metadata:       serde_json::Value::Null,
                 parent:         parent.clone(),
-                worktree_of:     None,
-                repo_slug:       None,
-                worktree_branch: None,
             };
             let add_result = state.registry.lock().unwrap().add(record);
             if let Err(e) = add_result {
@@ -2259,9 +2374,6 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
             provider:       provider.clone(),
             metadata:       metadata.clone(),
             parent:         None,
-            worktree_of:     None,
-            repo_slug:       None,
-            worktree_branch: None,
         };
         if let Err(e) = state.registry.lock().unwrap().set(pending) {
             return format!("error inserting pending registry row: {e:#}");
@@ -2350,9 +2462,6 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
         provider,
         metadata,
         parent:         None,
-        worktree_of:     None,
-        repo_slug:       None,
-        worktree_branch: None,
     };
     if let Err(e) = state.registry.lock().unwrap().set(record) {
         error!("[lair/register_remote_agent] finalising registry row for '{name}' failed: {e:#}");
@@ -3208,6 +3317,17 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             .route("/agents/:name/branches",   get(proxy_agent_branches))
             .route("/agents/:name/completions", get(proxy_agent_completions))
             .route("/agents/:name/tasks/:id/cancel", post(proxy_agent_cancel_task))
+            // Worktree proxies — forward to the child's /worktrees… endpoints.
+            .route("/agents/:name/worktrees",
+                   get(proxy_agent_worktrees_list).post(proxy_agent_worktrees_create))
+            .route("/agents/:name/worktrees/:wt",             delete(proxy_agent_worktree_delete))
+            .route("/agents/:name/worktrees/:wt/stream",      get(proxy_agent_wt_stream_handler))
+            .route("/agents/:name/worktrees/:wt/history",     get(proxy_agent_wt_history))
+            .route("/agents/:name/worktrees/:wt/interrupt",   post(proxy_agent_wt_interrupt))
+            .route("/agents/:name/worktrees/:wt/clear",       post(proxy_agent_wt_clear))
+            .route("/agents/:name/worktrees/:wt/branches",    get(proxy_agent_wt_branches))
+            .route("/agents/:name/worktrees/:wt/completions", get(proxy_agent_wt_completions))
+            .route("/agents/:name/worktrees/:wt/tasks/:id/cancel", post(proxy_agent_wt_cancel_task))
             .merge(protected)
             .merge(agent_protected)
             .with_state(state)
