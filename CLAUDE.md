@@ -12,7 +12,15 @@ Do **not** commit debug/diagnostic logging (`println!`, `console.log`, etc. adde
 
 Linux only — x86_64 and aarch64. macOS and Windows are out of scope for the runtime host. The `okto` CLI is built per-Linux-arch and published via the `cli.yml` GitHub Actions workflow; the lair runtime ships exclusively as a multi-arch Docker image (`ghcr.io/georgebradford0/lair`).
 
-Image releases are cut **locally**, by hand, after each `lair/Cargo.toml` version bump:
+Image releases are cut by the **`lair.yml`** GitHub Actions workflow (manual dispatch) after each `lair/Cargo.toml` version bump:
+
+```sh
+gh workflow run lair.yml --ref main
+```
+
+`lair.yml` builds each arch **natively** — `linux/amd64` on `ubuntu-latest`, `linux/arm64` on `ubuntu-24.04-arm` — pushes both by digest, then a merge job stitches them into one multi-arch manifest tagged `:<version>` (read from `lair/Cargo.toml`) and `:latest`. Native arm64 runners replace the old QEMU-emulated build that OOMed apt during the arm64 leg.
+
+Building locally is still possible as a fallback (needs `docker login ghcr.io` first):
 
 ```sh
 docker buildx build \
@@ -23,8 +31,6 @@ docker buildx build \
   -t ghcr.io/georgebradford0/lair:latest \
   --push .
 ```
-
-There is no CI workflow for the lair image — the arm64 leg under QEMU takes long enough that pushing from a developer machine is the supported path. Make sure `docker login ghcr.io` has been run beforehand.
 
 ## Binaries & deployment
 
@@ -41,8 +47,8 @@ Build:
 # CLI — Linux host binaries, published by .github/workflows/cli.yml.
 cargo build --release -p okto
 
-# Lair image — multi-arch, pushed to ghcr by hand after each version bump.
-# See the "Platform" section above for the full `docker buildx` invocation.
+# Lair image — multi-arch, built + pushed to ghcr by the lair.yml workflow
+# (gh workflow run lair.yml) after each version bump. See "Platform" above.
 ```
 
 The CLI binaries end up at `target/release/okto`; CI publishes them per-target as Release assets attached to `cli-v<version>`. The lair image is tagged `ghcr.io/georgebradford0/lair:<version>` and `:latest`.
@@ -187,7 +193,9 @@ Inheritance is a snapshot at create time — subsequent edits to lair's `mcp.jso
 |----------|--------------|
 | `cli.yml` | Builds the `okto` CLI per-target and uploads as Release assets. |
 | `relay.yml` | Builds `okto-relay` per-Linux-arch and uploads as assets on `relay-v<version>` (read from `relay/Cargo.toml`). |
+| `lair.yml` | Builds the multi-arch lair Docker image (native amd64 + arm64 runners) and pushes `ghcr.io/georgebradford0/lair:<version>` + `:latest` (version from `lair/Cargo.toml`). |
+| `desktop.yml` | Builds the Tauri desktop app as a Universal macOS DMG, signs + notarizes, attaches to the `desktop-v<version>` release. |
 | `android.yml` | Builds AAB via fastlane, uploads to Google Play. |
 | `ios.yml` | Builds on macOS runner, optionally uploads to TestFlight. |
 
-The lair image is **not** built by CI — see the "Platform" section above for the local `docker buildx` invocation that builds + pushes it to ghcr.
+The lair image **is** built by CI now (`lair.yml`); a local `docker buildx` build (see the "Platform" section) remains a fallback.
