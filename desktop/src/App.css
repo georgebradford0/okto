@@ -471,6 +471,55 @@ textarea { resize: none; }
   font-style: italic;
 }
 
+/* Trailing slot (col 3): holds the status pill or a hover action. */
+.agent-trailing {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 18px;
+}
+
+/* ＋ / ✕ affordances — faint until the row is hovered/active so they don't
+   clutter the list. */
+.agent-action {
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-muted);
+  opacity: 0;
+  padding: 2px 4px;
+  border-radius: var(--r-sm);
+  transition: opacity var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
+              background var(--t-fast) var(--ease);
+}
+.agent-row:hover .agent-action,
+.agent-row.active .agent-action { opacity: 0.7; }
+.agent-action:hover { opacity: 1; background: rgba(0, 0, 0, 0.05); color: var(--text-primary); }
+.agent-action.danger:hover { color: var(--danger, #b3261e); background: rgba(179, 38, 30, 0.08); }
+
+/* Worktree rows: indented under their agent, with a small leading glyph. */
+.worktree-row { padding-left: 26px; }
+.worktree-glyph { color: var(--text-faint); font-weight: 600; }
+.worktree-row .agent-name { font-weight: 500; color: var(--text-secondary); }
+
+/* Inline "new branch" input shown when adding a worktree. */
+.worktree-create {
+  list-style: none;
+  padding: 2px 12px 6px 26px;
+}
+.worktree-branch-input {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 6px 8px;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  outline: none;
+}
+.worktree-branch-input:focus { border-color: var(--accent-glow); }
+
 .btn-ghost {
   background: transparent;
   border: 1px solid var(--border);

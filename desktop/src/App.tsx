@@ -3,13 +3,39 @@ import { invoke } from '@tauri-apps/api/core'
 import { parseQrPayload, formatQrPayload, type QrPayload } from './qr'
 import {
   encodeClientFrame, parseServerEvent,
-  type AgentInfo, type ServerEvent, type TaskRecord,
+  type AgentInfo, type ServerEvent, type TaskRecord, type WorktreeMeta,
 } from './wire'
 import './App.css'
 
 // The pseudo-id we use for lair itself in the sidebar list. Children's ids are
 // their names (per AgentInfo.id); 'lair' is reserved so it can never collide.
 const LAIR_ID = 'lair'
+
+// A chat is keyed by a string: LAIR_ID for the parent, an agent name for a
+// child, or `<agent>::<worktreeId>` for one of a child agent's git worktrees.
+// `::` can't appear in an agent name or worktree id (both are slugs), so it's a
+// safe delimiter. The same key threads through every per-agent state map.
+const WT_SEP = '::'
+
+interface ParsedKey { agent: string; wt: string | null }
+function parseAgentKey(key: string): ParsedKey {
+  const i = key.indexOf(WT_SEP)
+  if (i < 0) return { agent: key, wt: null }
+  return { agent: key.slice(0, i), wt: key.slice(i + WT_SEP.length) }
+}
+function worktreeKey(agent: string, wt: string): string {
+  return `${agent}${WT_SEP}${wt}`
+}
+/** Proxy sub-path prefix for a chat key. `''` for the lair root, `/agents/<n>`
+ *  for a child, `/agents/<n>/worktrees/<wt>` for a worktree. Append `/history`,
+ *  `/clear`, `/stream`, etc. */
+function agentProxyPath(key: string): string {
+  const { agent, wt } = parseAgentKey(key)
+  if (agent === LAIR_ID) return ''
+  let base = `/agents/${encodeURIComponent(agent)}`
+  if (wt) base += `/worktrees/${encodeURIComponent(wt)}`
+  return base
+}
 
 // Sidebar is user-resizable by dragging its right edge, clamped to this range.
 const SIDEBAR_MIN_WIDTH = 200
@@ -198,6 +224,14 @@ function App() {
   // Per-agent model name, learned from the server's `ready` frame. Empty
   // string until the first ready lands (footer renders blank in that window).
   const [modelByAgent,      setModelByAgent]      = useState<Record<string, string>>({})
+
+  // Git worktrees per agent (keyed by agent name), fetched from
+  // GET /agents/:name/worktrees. Rendered as indented rows under the agent.
+  const [worktreesByAgent,  setWorktreesByAgent]  = useState<Record<string, WorktreeMeta[]>>({})
+  // When the user clicks "＋ worktree" on an agent row, this holds that agent's
+  // name and an inline branch-name input appears beneath it.
+  const [creatingWtFor,     setCreatingWtFor]     = useState<string | null>(null)
+  const [newBranchDraft,    setNewBranchDraft]    = useState<string>('')
 
   // Optimistic latch for the per-task STOP button. One Set shared across
   // agents — task_ids are server-allocated UUIDs so they don't collide.
@@ -497,9 +531,7 @@ function App() {
     const controller = new AbortController()
     historyAbortRef.current[agentId] = controller
 
-    const base = agentId === LAIR_ID
-      ? `http://127.0.0.1:${tunnelPort}`
-      : `http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(agentId)}`
+    const base = `http://127.0.0.1:${tunnelPort}${agentProxyPath(agentId)}`
 
     try {
       const res = await fetch(`${base}/history`, { signal: controller.signal })
@@ -819,6 +851,9 @@ function App() {
   const handleMasterEvent = (ev: ServerEvent) => {
     if (ev.type === 'agents') {
       setAgents(ev.agents)
+      // Refresh each agent's worktree list so the sidebar nesting stays current
+      // (new agents, or worktrees added from another client).
+      for (const a of ev.agents) void fetchWorktrees(a.id)
       return
     }
     applyChatEvent(LAIR_ID, ev)
@@ -962,10 +997,12 @@ function App() {
     await connectInternal(target, sameLair, child)
   }
 
-  const openChildWs = async (tunnelPort: number, name: string): Promise<WebSocket | null> => {
+  // `key` is a child agent name or a `<agent>::<worktree>` composite. The proxy
+  // path (and thus the stream URL) is derived from it via agentProxyPath.
+  const openChildWs = async (tunnelPort: number, key: string): Promise<WebSocket | null> => {
     // If we already have an open or in-flight WS for this child, reuse it
     // — opening a second would just race with the first.
-    const existing = childWsRefs.current.get(name)
+    const existing = childWsRefs.current.get(key)
     if (existing && existing.readyState <= WebSocket.OPEN) return existing
 
     // Gate: fetch /history for the child *before* opening its WS so the
@@ -974,16 +1011,16 @@ function App() {
     // (loadHistoryForAgent re-fetches on each call so the user always sees
     // fresh server state on tab re-entry, but the existing-WS short-circuit
     // above means we only get here when there's no live WS).
-    await loadHistoryForAgent(name, tunnelPort)
+    await loadHistoryForAgent(key, tunnelPort)
 
-    const ws = new WebSocket(`ws://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(name)}/stream`)
-    childWsRefs.current.set(name, ws)
+    const ws = new WebSocket(`ws://127.0.0.1:${tunnelPort}${agentProxyPath(key)}/stream`)
+    childWsRefs.current.set(key, ws)
     ws.onclose = () => {
-      if (childWsRefs.current.get(name) === ws) childWsRefs.current.delete(name)
-      setConnStatusByAgent(prev => ({ ...prev, [name]: 'pending' }))
+      if (childWsRefs.current.get(key) === ws) childWsRefs.current.delete(key)
+      setConnStatusByAgent(prev => ({ ...prev, [key]: 'pending' }))
     }
     ws.onerror = () => {
-      setConnStatusByAgent(prev => ({ ...prev, [name]: 'error' }))
+      setConnStatusByAgent(prev => ({ ...prev, [key]: 'error' }))
     }
     ws.onmessage = (e) => {
       const data = typeof e.data === 'string' ? e.data : ''
@@ -995,7 +1032,7 @@ function App() {
       }
       // Always write to *this* agent's slot — even if the user has navigated
       // away. That's what makes the in-progress chat survive a tab switch.
-      applyChatEvent(name, ev)
+      applyChatEvent(key, ev)
     }
     return ws
   }
@@ -1026,6 +1063,56 @@ function App() {
   const activeWs = (): WebSocket | null => {
     if (activeAgent === LAIR_ID) return masterWsRef.current
     return childWsRefs.current.get(activeAgent) ?? null
+  }
+
+  // ── Worktrees ──────────────────────────────────────────────────────────────
+
+  const fetchWorktrees = async (agentName: string) => {
+    const port = tunnelPortRef.current
+    if (port == null) return
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/agents/${encodeURIComponent(agentName)}/worktrees`)
+      if (!res.ok) return
+      const data = await res.json() as WorktreeMeta[]
+      setWorktreesByAgent(prev => ({ ...prev, [agentName]: data }))
+    } catch { /* transient — next agents push retries */ }
+  }
+
+  const submitNewWorktree = async (agentName: string) => {
+    const branch = newBranchDraft.trim()
+    if (!branch) return
+    const port = tunnelPortRef.current
+    if (port == null) return
+    setCreatingWtFor(null)
+    setNewBranchDraft('')
+    try {
+      const res = await fetch(
+        `http://127.0.0.1:${port}/agents/${encodeURIComponent(agentName)}/worktrees`,
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ branch }) },
+      )
+      if (!res.ok) return
+      const meta = await res.json() as WorktreeMeta
+      await fetchWorktrees(agentName)
+      selectAgent(worktreeKey(agentName, meta.id))
+    } catch { /* fire-and-forget; list won't show the new tree if it failed */ }
+  }
+
+  const deleteWorktree = async (agentName: string, wtId: string) => {
+    const port = tunnelPortRef.current
+    if (port == null) return
+    const key = worktreeKey(agentName, wtId)
+    // Close its WS and forget local state up front so the UI reacts instantly.
+    try { childWsRefs.current.get(key)?.close() } catch { /* already gone */ }
+    childWsRefs.current.delete(key)
+    if (activeAgent === key) setActiveAgent(agentName)
+    setItemsByAgent(prev => { const n = { ...prev }; delete n[key]; return n })
+    try {
+      await fetch(
+        `http://127.0.0.1:${port}/agents/${encodeURIComponent(agentName)}/worktrees/${encodeURIComponent(wtId)}`,
+        { method: 'DELETE' },
+      )
+    } catch { /* fire-and-forget */ }
+    await fetchWorktrees(agentName)
   }
 
   const send = () => {
@@ -1118,10 +1205,7 @@ function App() {
     // Ask the server to drop its conversation state too — without this the
     // next message would resume on top of the previous transcript. lair's
     // /clear lives at the root; child clears go through the proxy.
-    const base = `http://127.0.0.1:${status.tunnelPort}`
-    const url  = agentId === LAIR_ID
-      ? `${base}/clear`
-      : `${base}/agents/${encodeURIComponent(agentId)}/clear`
+    const url = `http://127.0.0.1:${status.tunnelPort}${agentProxyPath(agentId)}/clear`
     fetch(url, { method: 'POST' }).catch(() => { /* fire-and-forget */ })
   }
 
@@ -1140,9 +1224,14 @@ function App() {
     )
   }
 
-  const activeLabel = activeAgent === LAIR_ID
-    ? 'Lair'
-    : agents.find(a => a.id === activeAgent)?.name ?? activeAgent
+  const activeLabel = (() => {
+    if (activeAgent === LAIR_ID) return 'Lair'
+    const { agent, wt } = parseAgentKey(activeAgent)
+    const agentName = agents.find(a => a.id === agent)?.name ?? agent
+    if (!wt) return agentName
+    const branch = (worktreesByAgent[agent] ?? []).find(w => w.id === wt)?.branch ?? wt
+    return `${agentName} / ${branch}`
+  })()
 
   return (
     <div className="shell" style={{ gridTemplateColumns: `${sidebarWidth}px 1fr` }}>
@@ -1150,6 +1239,14 @@ function App() {
         agents={agents}
         activeAgent={activeAgent}
         onSelect={selectAgent}
+        worktreesByAgent={worktreesByAgent}
+        creatingWtFor={creatingWtFor}
+        newBranchDraft={newBranchDraft}
+        onStartCreateWt={(name) => { setCreatingWtFor(name); setNewBranchDraft('') }}
+        onCancelCreateWt={() => { setCreatingWtFor(null); setNewBranchDraft('') }}
+        onChangeBranchDraft={setNewBranchDraft}
+        onSubmitWt={submitNewWorktree}
+        onDeleteWt={deleteWorktree}
       />
       <div
         className="resizer"
@@ -1292,10 +1389,20 @@ function ConnectScreen({
 
 function Sidebar({
   agents, activeAgent, onSelect,
+  worktreesByAgent, creatingWtFor, newBranchDraft,
+  onStartCreateWt, onCancelCreateWt, onChangeBranchDraft, onSubmitWt, onDeleteWt,
 }: {
   agents: AgentInfo[]
   activeAgent: string
   onSelect: (id: string) => void
+  worktreesByAgent: Record<string, WorktreeMeta[]>
+  creatingWtFor: string | null
+  newBranchDraft: string
+  onStartCreateWt: (agentName: string) => void
+  onCancelCreateWt: () => void
+  onChangeBranchDraft: (v: string) => void
+  onSubmitWt: (agentName: string) => void
+  onDeleteWt: (agentName: string, wtId: string) => void
 }) {
   return (
     <aside className="sidebar">
@@ -1318,17 +1425,51 @@ function Sidebar({
           {agents.length === 0 && (
             <li className="agent-empty">No child agents</li>
           )}
-          {agents.map(a => (
-            <AgentRow
-              key={a.id}
-              id={a.id}
-              name={a.name}
-              statusText={a.status}
-              statusKind={agentStatusKind(a.status)}
-              active={activeAgent === a.id}
-              onSelect={onSelect}
-            />
-          ))}
+          {agents.map(a => {
+            const worktrees = worktreesByAgent[a.id] ?? []
+            return (
+              <Fragment key={a.id}>
+                <AgentRow
+                  id={a.id}
+                  name={a.name}
+                  statusText={a.status}
+                  statusKind={agentStatusKind(a.status)}
+                  active={activeAgent === a.id}
+                  onSelect={onSelect}
+                  onAddWorktree={() => onStartCreateWt(a.id)}
+                />
+                {worktrees.map(wt => (
+                  <AgentRow
+                    key={`${a.id}${WT_SEP}${wt.id}`}
+                    id={worktreeKey(a.id, wt.id)}
+                    name={wt.branch}
+                    statusText="worktree"
+                    statusKind="ready"
+                    active={activeAgent === worktreeKey(a.id, wt.id)}
+                    onSelect={onSelect}
+                    worktree
+                    onDelete={() => onDeleteWt(a.id, wt.id)}
+                  />
+                ))}
+                {creatingWtFor === a.id && (
+                  <li className="worktree-create">
+                    <input
+                      className="worktree-branch-input"
+                      autoFocus
+                      placeholder="new branch name…"
+                      value={newBranchDraft}
+                      onChange={(e) => onChangeBranchDraft(e.currentTarget.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') onSubmitWt(a.id)
+                        if (e.key === 'Escape') onCancelCreateWt()
+                      }}
+                      onBlur={onCancelCreateWt}
+                    />
+                  </li>
+                )}
+              </Fragment>
+            )
+          })}
         </ul>
       </div>
 
@@ -1339,6 +1480,7 @@ function Sidebar({
 
 function AgentRow({
   id, name, statusText, statusKind, active, onSelect,
+  worktree, onAddWorktree, onDelete,
 }: {
   id: string
   name: string
@@ -1346,16 +1488,40 @@ function AgentRow({
   statusKind: 'ready' | 'pending' | 'error'
   active: boolean
   onSelect: (id: string) => void
+  worktree?: boolean
+  onAddWorktree?: () => void
+  onDelete?: () => void
 }) {
   return (
     <li>
       <button
-        className={`agent-row ${active ? 'active' : ''}`}
+        className={`agent-row ${active ? 'active' : ''} ${worktree ? 'worktree-row' : ''}`}
         onClick={() => onSelect(id)}
       >
         <span className={`agent-dot dot-${statusKind}`} />
-        <span className="agent-name">{name}</span>
-        <span className="agent-status">{statusText}</span>
+        <span className="agent-name">
+          {worktree && <span className="worktree-glyph">⌥&nbsp;</span>}
+          {name}
+        </span>
+        <span className="agent-trailing">
+          {onAddWorktree && (
+            <span
+              className="agent-action"
+              title="Add worktree"
+              onClick={(e) => { e.stopPropagation(); onAddWorktree() }}
+            >＋</span>
+          )}
+          {onDelete && (
+            <span
+              className="agent-action danger"
+              title="Delete worktree (and its branch)"
+              onClick={(e) => { e.stopPropagation(); onDelete() }}
+            >✕</span>
+          )}
+          {!onAddWorktree && !onDelete && (
+            <span className="agent-status">{statusText}</span>
+          )}
+        </span>
       </button>
     </li>
   )

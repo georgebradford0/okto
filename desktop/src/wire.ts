@@ -57,6 +57,15 @@ export interface AgentInfo {
   parent?: string  // name of the spawning agent, if any (omitted for operator-spawned roots)
 }
 
+/** One git worktree of an agent, surfaced by GET /agents/:name/worktrees.
+ *  Mirrors lair's agent-side WorktreeMeta. */
+export interface WorktreeMeta {
+  id:         string  // route-safe id derived from the branch
+  branch:     string
+  path:       string
+  created_at: number
+}
+
 /** Mirrors okto_core::TaskRecord. */
 export interface TaskRecord {
   task_id:      string
