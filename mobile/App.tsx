@@ -38,6 +38,7 @@ import {
   type AgentInfo as WireAgentInfo,
   type ServerEvent,
   type TaskRecord,
+  type WorktreeMeta,
   encodeClientFrame,
   parseServerEvent,
 } from './src/wire'
@@ -1797,8 +1798,11 @@ const ChatPane = memo(function ChatPane({
 
 // ── ChildChatScreen ───────────────────────────────────────────────────────────
 
-function ChildChatScreen({ child, tunnelPort, tunnelError, cacheKey, onOpenSidebar, initialDraft, onDraftChange, reconnectingRef, reloadRef, closeWsRef }: {
+function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, onOpenSidebar, initialDraft, onDraftChange, reconnectingRef, reloadRef, closeWsRef }: {
   child:             ContainerInfo
+  /// When set, this pane is a git worktree of `child` — chat is scoped to the
+  /// worktree's proxy path and the header shows its branch.
+  worktree?:         WorktreeMeta | null
   tunnelPort:        number | null
   tunnelError:       string | null
   /// Stable identity for the MMKV history cache. See ChatPane.cacheKey.
@@ -1846,7 +1850,9 @@ function ChildChatScreen({ child, tunnelPort, tunnelError, cacheKey, onOpenSideb
               <View style={[s.connDot, { backgroundColor: statusColor(chatStatus) }]} />
               <Text style={[s.connPillLabel, { color: statusColor(chatStatus) }]}>{chatStatus === 'ready' || chatStatus === 'streaming' ? 'live' : chatStatus}</Text>
             </View>
-            <Text style={s.headerTitle}>{containerDisplayName(child.name)}</Text>
+            <Text style={s.headerTitle}>
+              {containerDisplayName(child.name)}{worktree ? ` / ${worktree.branch}` : ''}
+            </Text>
           </View>
           <View style={s.headerRight}>
             <TasksHeaderButton tasks={tasks} onPress={() => setShowTasksModal(true)} />
@@ -1863,7 +1869,7 @@ function ChildChatScreen({ child, tunnelPort, tunnelError, cacheKey, onOpenSideb
 
         {tunnelPort ? (
           <ChatPane
-            baseUrl={`http://127.0.0.1:${tunnelPort}/agents/${child.name}`}
+            baseUrl={`http://127.0.0.1:${tunnelPort}/agents/${child.name}${worktree ? `/worktrees/${worktree.id}` : ''}`}
             cacheKey={cacheKey}
             onStatusChange={setChatStatus}
             clearRef={clearRef}
@@ -1948,11 +1954,22 @@ function AppInner() {
   const [chatStatus,  setChatStatus]  = useState<ConnStatus>('connecting')
   const [containers,          setContainers]          = useState<ContainerInfo[]>([])
   const [activeChild,         setActiveChild]         = useState<ContainerInfo | null>(null)
+  // Git worktree this pane is scoped to, paired with `activeChild`. `null` when
+  // viewing the agent's main workspace chat.
+  const [activeWorktree,      setActiveWorktree]      = useState<WorktreeMeta | null>(null)
   // When swapping between two child agents, the previously-shown child is
   // parked here so its pane stays visible underneath the incoming slide-in.
   // Without it the swap would briefly reveal the master pane behind, since
   // resetting `childSlideAnim` to 0 also slides the master back into view.
   const [outgoingChild,       setOutgoingChild]       = useState<ContainerInfo | null>(null)
+  const [outgoingWorktree,    setOutgoingWorktree]    = useState<WorktreeMeta | null>(null)
+  // Worktrees per agent name, fetched from GET /agents/:name/worktrees and
+  // rendered as indented rows under their agent in the sidebar.
+  const [worktrees,           setWorktrees]           = useState<Record<string, WorktreeMeta[]>>({})
+  // Agent name whose inline "new branch" input is showing in the sidebar, and
+  // the in-progress branch text.
+  const [creatingWtFor,       setCreatingWtFor]       = useState<string | null>(null)
+  const [newBranchDraft,      setNewBranchDraft]      = useState<string>('')
   // Per-chat background-task registry for the master chat. Pushed by lair on
   // /stream open and after every spawn / completion / cancellation.
   const [masterTasks,         setMasterTasks]         = useState<TaskRecord[]>([])
@@ -1970,7 +1987,7 @@ function AppInner() {
   // load flicker. `reconnectingRef` below still suppresses the per-WS
   // "connecting" status flash so the chat header stays calm.)
   const startingContainerIdRef = useRef<string | null>(null)
-  const openChatRef = useRef((child: ContainerInfo) => {})
+  const openChatRef = useRef((_child: ContainerInfo, _wt?: WorktreeMeta | null) => {})
   const clearChatRef       = useRef<() => void>(() => {})
   const reloadRef          = useRef<() => void>(() => {})
   const closeWsRef         = useRef<() => void>(() => {})
@@ -1998,8 +2015,13 @@ function AppInner() {
   // current values without being a useCallback dependency.
   const connRef            = useRef<NoiseConnectionInfo | null>(null)
   const activeChildRef     = useRef<ContainerInfo | null>(null)
+  const activeWorktreeRef  = useRef<WorktreeMeta | null>(null)
+  // Ref to closeChild so worktree teardown can navigate away without depending
+  // on closeChild's identity (it's defined later in the component).
+  const closeChildRef      = useRef<() => void>(() => {})
   useEffect(() => { connRef.current = conn },         [conn])
   useEffect(() => { activeChildRef.current = activeChild }, [activeChild])
+  useEffect(() => { activeWorktreeRef.current = activeWorktree }, [activeWorktree])
 
   // The single Noise tunnel always points at lair. Mobile reaches a child
   // agent's chat by opening WS to `/agents/<name>/stream` over the same
@@ -2133,6 +2155,44 @@ function AppInner() {
     }
   }, [])
 
+  // Fetch each agent's worktrees whenever the agent list (or tunnel) changes,
+  // so the sidebar nesting tracks worktrees created here or on another client.
+  useEffect(() => {
+    if (tunnelPort == null) return
+    for (const c of containers) {
+      fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(c.name)}/worktrees`)
+        .then(r => r.ok ? r.json() : Promise.reject(new Error('http')))
+        .then((wts: WorktreeMeta[]) => setWorktrees(prev => ({ ...prev, [c.name]: wts })))
+        .catch(() => { /* transient; next push retries */ })
+    }
+  }, [containers, tunnelPort])
+
+  const createWorktree = useCallback((agentName: string, branch: string) => {
+    const b = branch.trim()
+    if (tunnelPort == null || !b) return
+    fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(agentName)}/worktrees`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ branch: b }),
+    })
+      .then(r => r.ok ? r.json() : Promise.reject(new Error('http')))
+      .then((meta: WorktreeMeta) => {
+        setWorktrees(prev => ({
+          ...prev,
+          [agentName]: [...(prev[agentName] ?? []).filter(w => w.id !== meta.id), meta],
+        }))
+        const c = containers.find(x => x.name === agentName)
+        if (c) { setShowSidebar(false); sidebarAnim.setValue(0); openChatRef.current(c, meta) }
+      })
+      .catch(() => {})
+  }, [tunnelPort, containers, sidebarAnim])
+
+  const deleteWorktree = useCallback((agentName: string, wt: WorktreeMeta) => {
+    if (tunnelPort == null) return
+    setWorktrees(prev => ({ ...prev, [agentName]: (prev[agentName] ?? []).filter(w => w.id !== wt.id) }))
+    if (activeWorktreeRef.current?.id === wt.id) closeChildRef.current()
+    fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(agentName)}/worktrees/${encodeURIComponent(wt.id)}`,
+      { method: 'DELETE' }).catch(() => {})
+  }, [tunnelPort])
+
   const handleQrScanned = useCallback((raw: string) => {
     setScanning(false)
     log(`[qr] scanned raw=${raw}`)
@@ -2238,34 +2298,40 @@ function AppInner() {
     })
   }, [sidebarAnim])
 
-  const openChild = useCallback((child: ContainerInfo) => {
-    // No-op if the sidebar tap targets the agent we're already viewing.
-    if (childMounted && activeChild?.id === child.id) return
+  const openChild = useCallback((child: ContainerInfo, wt?: WorktreeMeta | null) => {
+    const wtId = wt?.id ?? null
+    // No-op if the sidebar tap targets the agent/worktree we're already viewing.
+    if (childMounted && activeChild?.id === child.id && (activeWorktree?.id ?? null) === wtId) return
     if (childMounted && activeChild) {
       // Child → child: park the outgoing pane underneath so it covers the
       // master pane while `childSlideAnim` rewinds, then slide the new child
       // in from the right with the same animation used for master → child.
       setOutgoingChild(activeChild)
+      setOutgoingWorktree(activeWorktree)
       setActiveChild(child)
+      setActiveWorktree(wt ?? null)
       childSlideAnim.setValue(0)
       Animated.timing(childSlideAnim, { toValue: 1, duration: 260, useNativeDriver: true }).start(({ finished }) => {
-        if (finished) setOutgoingChild(null)
+        if (finished) { setOutgoingChild(null); setOutgoingWorktree(null) }
       })
     } else {
       setActiveChild(child)
+      setActiveWorktree(wt ?? null)
       setChildMounted(true)
       childSlideAnim.setValue(0)
       Animated.timing(childSlideAnim, { toValue: 1, duration: 260, useNativeDriver: true }).start()
     }
-  }, [childSlideAnim, childMounted, activeChild])
+  }, [childSlideAnim, childMounted, activeChild, activeWorktree])
 
   const closeChild = useCallback(() => {
     // If we're mid-swap, drop the outgoing pane up front — otherwise it would
     // be revealed as the active pane slides out.
     setOutgoingChild(null)
+    setOutgoingWorktree(null)
     Animated.timing(childSlideAnim, { toValue: 0, duration: 220, useNativeDriver: true }).start(({ finished }) => {
       if (finished) {
         setActiveChild(null)
+        setActiveWorktree(null)
         setChildMounted(false)
         setShowSidebar(false)
         sidebarAnim.setValue(0)
@@ -2287,6 +2353,7 @@ function AppInner() {
 
   // Keep the ref in sync so handleContainersUpdate can trigger animation.
   useEffect(() => { openChatRef.current = openChild }, [openChild])
+  useEffect(() => { closeChildRef.current = closeChild }, [closeChild])
 
   // ── QR scanner overlay ──────────────────────────────────────────────────────
   if (scanning) {
@@ -2434,14 +2501,17 @@ function AppInner() {
           // disabled so taps fall through to the incoming pane on top.
           <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
             <ChildChatScreen
-              key={`outgoing-${outgoingChild.id}`}
+              key={`outgoing-${outgoingChild.id}${outgoingWorktree ? `::${outgoingWorktree.id}` : ''}`}
               child={outgoingChild}
+              worktree={outgoingWorktree}
               tunnelPort={tunnelPort}
               tunnelError={tunnelError}
-              cacheKey={`agent:${lairPk}:${outgoingChild.name}`}
+              cacheKey={outgoingWorktree
+                ? `worktree:${lairPk}:${outgoingChild.name}:${outgoingWorktree.id}`
+                : `agent:${lairPk}:${outgoingChild.name}`}
               onOpenSidebar={openSidebar}
-              initialDraft={draftsRef.current[outgoingChild.id]}
-              onDraftChange={d => { draftsRef.current[outgoingChild.id] = d }}
+              initialDraft={draftsRef.current[`${outgoingChild.id}${outgoingWorktree ? `::${outgoingWorktree.id}` : ''}`]}
+              onDraftChange={d => { draftsRef.current[`${outgoingChild.id}${outgoingWorktree ? `::${outgoingWorktree.id}` : ''}`] = d }}
               reconnectingRef={reconnectingRef}
             />
           </View>
@@ -2450,14 +2520,17 @@ function AppInner() {
         {childMounted && activeChild && (
           <Animated.View style={[StyleSheet.absoluteFillObject, { transform: [{ translateX: childTranslateX }] }]}>
             <ChildChatScreen
-              key={activeChild.id}
+              key={`${activeChild.id}${activeWorktree ? `::${activeWorktree.id}` : ''}`}
               child={activeChild}
+              worktree={activeWorktree}
               tunnelPort={tunnelPort}
               tunnelError={tunnelError}
-              cacheKey={`agent:${lairPk}:${activeChild.name}`}
+              cacheKey={activeWorktree
+                ? `worktree:${lairPk}:${activeChild.name}:${activeWorktree.id}`
+                : `agent:${lairPk}:${activeChild.name}`}
               onOpenSidebar={openSidebar}
-              initialDraft={draftsRef.current[activeChild.id]}
-              onDraftChange={d => { draftsRef.current[activeChild.id] = d }}
+              initialDraft={draftsRef.current[`${activeChild.id}${activeWorktree ? `::${activeWorktree.id}` : ''}`]}
+              onDraftChange={d => { draftsRef.current[`${activeChild.id}${activeWorktree ? `::${activeWorktree.id}` : ''}`] = d }}
               reconnectingRef={reconnectingRef}
               reloadRef={reloadRef}
               closeWsRef={closeWsRef}
@@ -2540,10 +2613,11 @@ function AppInner() {
                   </View>
                 )}
                 {containers.map(c => {
-                  const active = childMounted && activeChild?.id === c.id
+                  const active = childMounted && activeChild?.id === c.id && !activeWorktree
+                  const cWorktrees = worktrees[c.name] ?? []
                   return (
+                  <React.Fragment key={c.id}>
                   <TouchableOpacity
-                    key={c.id}
                     style={[s.containerMenuItem, active && s.menuItemActive]}
                     onPress={() => {
                       if (c.status === 'running') {
@@ -2563,8 +2637,61 @@ function AppInner() {
                       <Text style={s.containerMenuItemName}>{containerDisplayName(c.name)}</Text>
                       {c.kind === 'remote' ? <Text style={s.containerMenuItemUrl} numberOfLines={1}>remote</Text> : null}
                     </View>
-                    <Text style={s.containerMenuItemStatus}>{c.status}</Text>
+                    {c.status === 'running' && (
+                      <TouchableOpacity
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        onPress={() => { setCreatingWtFor(prev => prev === c.name ? null : c.name); setNewBranchDraft('') }}
+                      >
+                        <Text style={s.worktreeAddBtn}>＋</Text>
+                      </TouchableOpacity>
+                    )}
                   </TouchableOpacity>
+
+                  {cWorktrees.map(wt => {
+                    const wtActive = childMounted && activeChild?.id === c.id && activeWorktree?.id === wt.id
+                    return (
+                      <TouchableOpacity
+                        key={`${c.id}::${wt.id}`}
+                        style={[s.containerMenuItem, s.worktreeMenuItem, wtActive && s.menuItemActive]}
+                        onPress={() => { setShowSidebar(false); sidebarAnim.setValue(0); openChild(c, wt) }}
+                        onLongPress={() => Alert.alert(
+                          'Delete worktree?',
+                          `Removes the "${wt.branch}" worktree and deletes its branch. This cannot be undone.`,
+                          [
+                            { text: 'Cancel', style: 'cancel' },
+                            { text: 'Delete', style: 'destructive', onPress: () => deleteWorktree(c.name, wt) },
+                          ],
+                        )}
+                        delayLongPress={500}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={s.worktreeGlyph}>⌥</Text>
+                        <View style={{ flex: 1 }}>
+                          <Text style={s.worktreeMenuItemName} numberOfLines={1}>{wt.branch}</Text>
+                        </View>
+                        <Text style={s.containerMenuItemStatus}>worktree</Text>
+                      </TouchableOpacity>
+                    )
+                  })}
+
+                  {creatingWtFor === c.name && (
+                    <View style={[s.containerMenuItem, s.worktreeMenuItem]}>
+                      <TextInput
+                        style={s.worktreeBranchInput}
+                        autoFocus
+                        placeholder="new branch name…"
+                        placeholderTextColor={C.textMuted}
+                        value={newBranchDraft}
+                        onChangeText={setNewBranchDraft}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        returnKeyType="done"
+                        onSubmitEditing={() => { createWorktree(c.name, newBranchDraft); setCreatingWtFor(null); setNewBranchDraft('') }}
+                        onBlur={() => { setCreatingWtFor(null); setNewBranchDraft('') }}
+                      />
+                    </View>
+                  )}
+                  </React.Fragment>
                   )
                 })}
               </ScrollView>
@@ -2772,4 +2899,9 @@ const s = StyleSheet.create({
   containerMenuItemName:    { fontSize: 14.5, fontWeight: '600', color: C.textPrimary, fontFamily: ARIMO, letterSpacing: 0 },
   containerMenuItemUrl:     { fontSize: 11.5, color: C.textMuted, fontFamily: MONO, marginTop: 3, letterSpacing: 0.2 },
   containerMenuItemStatus:  { fontSize: 10, color: C.textMuted, fontFamily: MONO, letterSpacing: 1.2, textTransform: 'uppercase', fontWeight: '700' },
+  worktreeAddBtn:           { fontSize: 18, color: C.textMuted, fontWeight: '600', paddingHorizontal: 4 },
+  worktreeMenuItem:         { paddingLeft: 34, gap: 10, backgroundColor: C.bgElevated },
+  worktreeGlyph:            { fontSize: 13, color: C.textMuted, fontWeight: '700', width: 12 },
+  worktreeMenuItemName:     { fontSize: 13.5, fontWeight: '500', color: C.textSecondary, fontFamily: ARIMO },
+  worktreeBranchInput:      { flex: 1, fontSize: 13, color: C.textPrimary, fontFamily: MONO, paddingVertical: 4, paddingHorizontal: 8, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderRadius: 6, backgroundColor: C.bg },
 })
