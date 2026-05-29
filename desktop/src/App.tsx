@@ -267,6 +267,11 @@ function App() {
   // Mirrors mobile's per-child ChatPane behavior.
   const masterWsRef = useRef<WebSocket | null>(null)
   const childWsRefs = useRef<Map<string, WebSocket>>(new Map())
+  // Loopback port of the live Noise tunnel. Kept in a ref (not just `status`)
+  // because the WS onmessage closures are bound at connect time and would
+  // otherwise read a stale `status`; the reconcile-on-`done` path needs the
+  // current port.
+  const tunnelPortRef = useRef<number | null>(null)
   // Per-agent fallback timers that re-enable the interrupt button if the
   // server's interrupt_ack never arrives. Keyed by agent id.
   const stopAckTimersRef = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({})
@@ -743,6 +748,12 @@ function App() {
         streamingIdRef.current[agentId] = uid()
         setConnStatusByAgent(prev => ({ ...prev, [agentId]: 'ready' }))
         clearStopLock(agentId)
+        // Reconcile against the authoritative server history at the turn
+        // boundary. If another client cleared/edited the conversation while
+        // we were idle, our local copy is stale until the next reconcile —
+        // this keeps both clients converged on lair's history without
+        // waiting for an incidental trigger (tab switch / reconnect).
+        if (tunnelPortRef.current != null) void loadHistoryForAgent(agentId, tunnelPortRef.current)
         break
       }
       case 'interrupted': {
@@ -875,6 +886,7 @@ function App() {
         port:            target.port,
         serverPubkeyB32: target.pk,
       })
+      tunnelPortRef.current = tunnelPort
       // Gate: fetch /history *before* opening the master WS. The server
       // replays buffered events on mid-turn reconnect, and a replay that
       // landed first would be clobbered by /history's later reconcile.
@@ -900,6 +912,7 @@ function App() {
       }
       ws.onclose = () => {
         masterWsRef.current = null
+        tunnelPortRef.current = null
         // Master is gone — close any child WSes; they all sit on the same
         // (now-defunct) Noise proxy. Their onclose handlers will flip each
         // slot's connStatus to 'pending' for the next reconnect.

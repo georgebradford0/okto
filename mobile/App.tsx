@@ -1190,6 +1190,14 @@ const ChatPane = memo(function ChatPane({
         // bubble, not append to the one we just sealed.
         hasAssistantMsgRef.current = false
         streamingIdRef.current = uid()
+        // Reconcile against the server's authoritative history at every turn
+        // boundary. If this turn was driven by another client (we're a passive
+        // listener), our local list may have appended the streamed assistant
+        // rows onto a stale baseline — e.g. the conversation was cleared
+        // elsewhere, or we never saw the other client's user message. The LCP
+        // merge snaps us back to the server's history. For the client that
+        // drove the turn this is a no-op (local already matches /history).
+        loadHistoryRef.current()
         break
       }
       case 'interrupt_ack':
