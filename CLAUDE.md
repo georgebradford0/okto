@@ -71,7 +71,17 @@ Everything lives under `~/.okto/` on the host, bind-mounted at `/data` inside th
 - `~/.okto/lair-launch.json` — bookkeeping for `okto reload`: ports + last-used image reference.
 - `~/.okto/lair/` ↔ `/data/lair/` — lair's per-process data dir (`OKTO_DATA_DIR`). Holds `noise_key.bin`, `agents.json`, `mcp.json`, `messages.json`, `tasks.json`, `relay_signing_key.bin`, `known_hosts`. (No more `lair.pid` / `lair.log` — the container lifecycle is tracked by docker; `okto logs` shells out to `docker logs`.)
 - `~/.okto/.ssh/` ↔ `/data/.ssh/` — the **container-level** SSH keypair (`id_ed25519`, `id_ed25519.pub`). One key per container; lair generates it on startup and seeds every spawned agent's `~/.ssh/` from it, so the whole container shares one identity. Register the matching pubkey once on external services (Prime Intellect, GitHub, GPU pods, etc.) via `okto ssh pubkey`.
-- `~/.okto/agents/<name>/` ↔ `/data/agents/<name>/` — per-agent dirs. Each has `data/` (the agent's `OKTO_DATA_DIR`), `workspace/` (its `WORKSPACE_DIR`), and `.ssh/` (a copy of the container keypair, chowned to the agent's uid), plus an `agent.log` capture written by lair's supervisor.
+- `~/.okto/agents/<name>/` ↔ `/data/agents/<name>/` — per-agent dirs. Each has `data/` (the agent's `OKTO_DATA_DIR`), `workspace/` (its `WORKSPACE_DIR`), and `.ssh/` (a copy of the container keypair, chowned to the agent's uid), plus an `agent.log` capture written by lair's supervisor. Agents with a git repo can also have a `worktrees/<id>/` dir per git worktree (see "Worktrees" below).
+
+### Worktrees
+
+A repo-bound agent can host **git worktrees** of its own `workspace/.git`, each with its own chat. Worktrees are *not* registry rows — they live inside the one agent process:
+
+- Working dir: `/data/agents/<name>/worktrees/<id>/` (a `git worktree` of `workspace/.git`, on its own branch). Because all worktrees share the agent's single clone and run under the agent's own uid, there's no cross-process permission concern.
+- Per-worktree chat state: `/data/agents/<name>/data/worktrees/<id>/{session/messages.json,session/tasks.json}`. The manifest `/data/agents/<name>/data/worktrees.json` is the source of truth (id → {branch, path, created_at}); sessions are rebuilt from it on agent startup, pruning any whose dir vanished.
+- The agent process is **multi-session**: `agent.rs`'s `AppState` is one chat session (history, cwd, system, stream fanout, turn gate, cancel), and a process-level `Agent` holds a `HashMap<worktreeId, AppState>` with `""` = the main workspace. Worktree id is a route-safe slug of the branch (`feature/x` → `feature-x`).
+- Agent routes: `GET/POST /worktrees`, `DELETE /worktrees/:wt`, and `/worktrees/:wt/{history,stream,interrupt,clear,branches,completions,tasks/:id/cancel}` mirror the top-level chat routes scoped to a worktree. `DELETE` runs `git worktree remove` + `git branch -D` (branch is deleted with the worktree) and drops the chat dir.
+- Both clients reach these via lair proxies at `/agents/<name>/worktrees/…` and render worktrees as rows indented under their agent in the sidebar (composite key `<agent>::<wt>` on desktop; paired `activeChild`/`activeWorktree` on mobile).
 
 ### Agent registry
 
@@ -122,6 +132,7 @@ Lair exposes a small management API on `127.0.0.1:8000` for the CLI:
 - `GET    /agents/:name/logs` — last 1 MB of the child's `agent.log`.
 - `GET    /agents/:name/stream` — WebSocket proxy (mobile end).
 - `GET    /agents/:name/history`, `POST /agents/:name/interrupt`, `POST /agents/:name/clear`, `GET /agents/:name/branches` — HTTP proxies of the child's same-name endpoints.
+- `GET/POST /agents/:name/worktrees`, `DELETE /agents/:name/worktrees/:wt`, and `/agents/:name/worktrees/:wt/{stream,history,interrupt,clear,branches,completions,tasks/:id/cancel}` — proxies of the child's worktree endpoints (see "Worktrees").
 - `POST   /tasks/:id/cancel` — cancel a lair background task. Returns `{"id":"…","fired":bool}`.
 - `POST   /agents/:name/tasks/:id/cancel` — proxy to the child's same endpoint; used by `okto tasks stop --agent <name> <id>`.
 
