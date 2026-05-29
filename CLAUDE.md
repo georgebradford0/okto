@@ -8,6 +8,19 @@ Do **not** create git worktrees unless explicitly asked to. Commit and push dire
 
 Do **not** commit debug/diagnostic logging (`println!`, `console.log`, etc. added purely for investigation). Suggest the user add logs locally instead.
 
+## Changelogs
+
+There is **no root changelog**. Each app keeps its own `CHANGELOG.md` (Keep-a-Changelog format with an `## [Unreleased]` section at top):
+
+| App | Changelog | Version source of truth |
+|-----|-----------|-------------------------|
+| `lair/` | `lair/CHANGELOG.md` | `lair/Cargo.toml` |
+| `cli/` | `cli/CHANGELOG.md` | `cli/Cargo.toml` |
+| `desktop/` | `desktop/CHANGELOG.md` | `desktop/package.json` / `src-tauri/tauri.conf.json` |
+| `mobile/` | `mobile/CHANGELOG.md` | `mobile/android/app/build.gradle` (`versionName`) |
+
+When you make a user-facing change to an app, **add an entry under that app's `## [Unreleased]`** in the matching `### Added/Changed/Fixed/Removed/Security` subsection. When you bump an app's version, rename its `## [Unreleased]` heading to `## [<version>] - <YYYY-MM-DD>` and start a fresh empty `## [Unreleased]` above it. A change that spans apps gets an entry in each affected app's changelog.
+
 ## Platform
 
 Linux only — x86_64 and aarch64. macOS and Windows are out of scope for the runtime host. The `okto` CLI is built per-Linux-arch and published via the `cli.yml` GitHub Actions workflow; the lair runtime ships exclusively as a multi-arch Docker image (`ghcr.io/georgebradford0/lair`).
