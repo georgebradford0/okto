@@ -180,12 +180,7 @@ const C = {
   inputBorder:   '#E8E1CF',
 }
 
-const statusColor = (st: ConnStatus): string => {
-  if (st === 'ready')     return C.green
-  if (st === 'streaming') return C.accent
-  if (st === 'error')     return C.red
-  return C.yellow
-}
+
 
 // ── Text rendering ─────────────────────────────────────────────────────────────
 
@@ -1796,7 +1791,55 @@ const ChatPane = memo(function ChatPane({
 })
 
 
-// ── ChildChatScreen ───────────────────────────────────────────────────────────
+// ── ConnectionErrorModal ────────────────────────────────────────────────────────
+
+function ConnectionErrorModal({ visible, onDismiss }: { visible: boolean; onDismiss: () => void }) {
+  const slide = useRef(new Animated.Value(0)).current
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => {
+    if (visible) setMounted(true)
+    Animated.timing(slide, {
+      toValue:        visible ? 1 : 0,
+      duration:       200,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished && !visible) setMounted(false)
+    })
+  }, [visible])
+
+  if (!mounted) return null
+
+  return (
+    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+      <Animated.View
+        style={[s.connErrorBackdrop, { opacity: slide }]}
+        pointerEvents={visible ? 'auto' : 'none'}
+      >
+        <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onDismiss} />
+      </Animated.View>
+      <Animated.View
+        style={[
+          s.connErrorCard,
+          { transform: [{ scale: slide.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] }) }],
+            opacity: slide },
+        ]}
+        pointerEvents={visible ? 'auto' : 'none'}
+      >
+        <View style={s.connErrorIconCircle}>
+          <Text style={s.connErrorIcon}>!</Text>
+        </View>
+        <Text style={s.connErrorTitle}>Connection Lost</Text>
+        <Text style={s.connErrorBody}>Reconnecting automatically…{'\n'}Tap to dismiss.</Text>
+        <TouchableOpacity style={s.connErrorDismissBtn} onPress={onDismiss} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Text style={s.connErrorDismissText}>Dismiss</Text>
+        </TouchableOpacity>
+      </Animated.View>
+    </View>
+  )
+}
+
+// ── ChildChatScreen ────────────────────────────────────────────────────────────
 
 function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, onOpenSidebar, initialDraft, onDraftChange, reconnectingRef, reloadRef, closeWsRef }: {
   child:             ContainerInfo
@@ -1815,6 +1858,9 @@ function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, o
   closeWsRef?:       React.MutableRefObject<() => void>
 }) {
   const [chatStatus, setChatStatus] = useState<ConnStatus>('connecting')
+  const [dismissedConnError, setDismissedConnError] = useState(false)
+  // Reset dismissed flag when status leaves 'error' so next error re-shows the modal.
+  useEffect(() => { if (chatStatus !== 'error') setDismissedConnError(false) }, [chatStatus])
   const [tasks,      setTasks]      = useState<TaskRecord[]>([])
   const [showTasksModal, setShowTasksModal] = useState(false)
   const clearRef     = useRef<() => void>(() => {})
@@ -1846,10 +1892,6 @@ function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, o
                 <View style={s.hamburgerBar} />
               </View>
             </TouchableOpacity>
-            <View style={[s.connStatusPill, { backgroundColor: statusColor(chatStatus) + '22' }]}>
-              <View style={[s.connDot, { backgroundColor: statusColor(chatStatus) }]} />
-              <Text style={[s.connPillLabel, { color: statusColor(chatStatus) }]}>{chatStatus === 'ready' || chatStatus === 'streaming' ? 'live' : chatStatus}</Text>
-            </View>
             <Text style={s.headerTitle}>
               {containerDisplayName(child.name)}{worktree ? ` / ${worktree.branch}` : ''}
             </Text>
@@ -1897,6 +1939,11 @@ function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, o
             log(`[child] cancel_task id=${id}`)
             requestCancel(id)
           }}
+        />
+
+        <ConnectionErrorModal
+          visible={chatStatus === 'error' && !dismissedConnError}
+          onDismiss={() => setDismissedConnError(true)}
         />
       </View>
     </View>
@@ -1952,6 +1999,9 @@ function AppInner() {
     paddingBottom: Math.max(0, -kbHeight.value),
   }))
   const [chatStatus,  setChatStatus]  = useState<ConnStatus>('connecting')
+  const [dismissedConnError, setDismissedConnError] = useState(false)
+  // Reset dismissed flag when status leaves 'error' so next error re-shows the modal.
+  useEffect(() => { if (chatStatus !== 'error') setDismissedConnError(false) }, [chatStatus])
   const [containers,          setContainers]          = useState<ContainerInfo[]>([])
   const [activeChild,         setActiveChild]         = useState<ContainerInfo | null>(null)
   // Git worktree this pane is scoped to, paired with `activeChild`. `null` when
@@ -2459,10 +2509,6 @@ function AppInner() {
                   <View style={s.hamburgerBar} />
                 </View>
               </TouchableOpacity>
-              <View style={[s.connStatusPill, { backgroundColor: statusColor(chatStatus) + '22' }]}>
-                <View style={[s.connDot, { backgroundColor: statusColor(chatStatus) }]} />
-                <Text style={[s.connPillLabel, { color: statusColor(chatStatus) }]}>{chatStatus === 'ready' || chatStatus === 'streaming' ? 'live' : chatStatus}</Text>
-              </View>
             </View>
             <View style={s.headerRight}>
               <TasksHeaderButton tasks={masterTasks} onPress={() => { Keyboard.dismiss(); setShowTasksModal(true) }} />
@@ -2504,6 +2550,11 @@ function AppInner() {
               log(`[app] cancel_task id=${id} (master)`)
               masterRequestCancel(id)
             }}
+          />
+
+          <ConnectionErrorModal
+            visible={chatStatus === 'error' && !dismissedConnError}
+            onDismiss={() => setDismissedConnError(true)}
           />
         </Animated.View>
 
@@ -2791,9 +2842,7 @@ const s = StyleSheet.create({
   clearBtnText:    { fontSize: 11, color: C.textSecondary, fontWeight: '600', fontFamily: ARIMO, letterSpacing: 0.4 },
   headerTitle:     { fontSize: 15, fontWeight: '700', color: C.textPrimary, fontFamily: ARIMO, letterSpacing: 0.2 },
   // Status as a small pill — round dot, restrained mono label, soft pill border
-  connDot:         { width: 7, height: 7, borderRadius: 999 },
-  connStatusPill:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, gap: 7, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, backgroundColor: C.bgElevated },
-  connPillLabel:   { fontSize: 10.5, fontWeight: '700', fontFamily: MONO, letterSpacing: 1.2, textTransform: 'uppercase' },
+
 
   // ── Chat pane ────────────────────────────────────────────────────────────────
   pane:               { flex: 1, backgroundColor: C.bg },
@@ -2893,6 +2942,16 @@ const s = StyleSheet.create({
   hamburgerBar:             { height: 2, borderRadius: 999, backgroundColor: C.textPrimary },
   hamburgerBtnText:         { fontSize: 18, color: C.textPrimary, fontFamily: ARIMO, fontWeight: '700' },
   containerDot:             { width: 8, height: 8, borderRadius: 999 },
+
+  // ── Connection error modal ─────────────────────────────────────────────────
+  connErrorBackdrop:        { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(14,26,36,0.5)', zIndex: 400 },
+  connErrorCard:            { position: 'absolute', top: '38%', left: '12%', right: '12%', backgroundColor: C.bgElevated, borderRadius: 18, padding: 28, alignItems: 'center', zIndex: 401, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 20, shadowOffset: { width: 0, height: 8 }, elevation: 24 },
+  connErrorIconCircle:      { width: 52, height: 52, borderRadius: 999, backgroundColor: C.red + '18', alignItems: 'center', justifyContent: 'center', marginBottom: 14 },
+  connErrorIcon:            { fontSize: 28, fontWeight: '700', color: C.red, fontFamily: NUNITO },
+  connErrorTitle:           { fontSize: 18, fontWeight: '700', color: C.textPrimary, fontFamily: NUNITO, marginBottom: 6 },
+  connErrorBody:            { fontSize: 14, color: C.textMuted, textAlign: 'center', lineHeight: 20, marginBottom: 20 },
+  connErrorDismissBtn:      { paddingVertical: 10, paddingHorizontal: 28, borderRadius: 999, backgroundColor: C.accent },
+  connErrorDismissText:     { fontSize: 15, fontWeight: '600', color: '#fff', fontFamily: ARIMO },
 
   // ── Sidebar — drawer ─────────────────────────────────────────────────────────
   sidebarBackdrop:          { backgroundColor: 'rgba(14,26,36,0.36)', zIndex: 200 },

@@ -9,6 +9,10 @@ the git log.
 
 ## [Unreleased]
 
+### Changed
+
+- Connection status indicator (pill) removed from headers. Connection health is now checked silently in the background; a modal only appears when the connection is lost, and auto-dismisses when the connection recovers.
+
 ### Fixed
 
 - Deleted worktrees no longer reappear in the sidebar. The `useEffect` that fetches
