@@ -1855,7 +1855,7 @@ function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, o
             </Text>
           </View>
           <View style={s.headerRight}>
-            <TasksHeaderButton tasks={tasks} onPress={() => setShowTasksModal(true)} />
+            <TasksHeaderButton tasks={tasks} onPress={() => { Keyboard.dismiss(); setShowTasksModal(true) }} />
             <TouchableOpacity
               style={s.clearBtn}
               onPress={() => clearRef.current()}
@@ -2465,7 +2465,7 @@ function AppInner() {
               </View>
             </View>
             <View style={s.headerRight}>
-              <TasksHeaderButton tasks={masterTasks} onPress={() => setShowTasksModal(true)} />
+              <TasksHeaderButton tasks={masterTasks} onPress={() => { Keyboard.dismiss(); setShowTasksModal(true) }} />
               <TouchableOpacity
                 style={s.clearBtn}
                 onPress={() => clearChatRef.current()}

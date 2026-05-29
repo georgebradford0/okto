@@ -15,3 +15,5 @@ the git log.
   worktrees now aborts stale requests on cleanup, and `deleteWorktree` re-fetches the
   worktree list after the DELETE completes (matching the desktop pattern). Stale
   worktree entries for removed agents are also pruned.
+- Keyboard is now dismissed before opening the tasks modal, preventing the keyboard
+  from covering it.
