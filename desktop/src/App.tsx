@@ -14,7 +14,7 @@ const LAIR_ID = 'lair'
 // Stable empty defaults — important: `itemsByAgent[id] ?? []` would mint a new
 // array reference every render, which causes the chat-scroll useEffect to
 // fire on every keystroke. Sharing one frozen array keeps reference equality.
-const EMPTY_ITEMS:  ChatItem[] = []
+const EMPTY_ITEMS:  Message[] = []
 
 // How long to keep the interrupt button locked after the user clicks it,
 // before assuming the server's `interrupt_ack` was lost and re-enabling.
@@ -26,20 +26,39 @@ const STOP_ACK_TIMEOUT_MS = 3000
 // CANCEL_ACK_TIMEOUT_MS.
 const CANCEL_ACK_TIMEOUT_MS = 6000
 
+// Delay between consecutive history-replay appends on first load. Tuned so
+// each Row's brief render overlaps with the next bubble starting to render —
+// fast enough that long histories finish quickly, slow enough that a viewer
+// perceives motion rather than a flicker. Mirrors mobile's
+// HISTORY_STAGGER_MS.
+const HISTORY_STAGGER_MS = 35
+
+// Retry delay for /history when the native Noise proxy isn't ready yet
+// (transient on launch / reconnect). One retry, then we surface an error.
+// Mirrors mobile's 600 ms backoff inside loadHistory.
+const HISTORY_RETRY_MS = 600
+
 const EMPTY_TASKS: TaskRecord[] = []
 
 // localStorage key for the persisted client state. Bump the suffix on
 // incompatible schema changes so old blobs are silently ignored instead of
-// crashing the hydrate path.
-const STORAGE_KEY = 'okto.desktop.state.v1'
+// crashing the hydrate path. v2: ChatItem (discriminated union) replaced by
+// flat Message[] mirroring mobile (server-authoritative history via
+// GET /history reconcile).
+const STORAGE_KEY = 'okto.desktop.state.v2'
 
 /** What we serialize to localStorage between launches. Notably *not*
  *  persisted: connStatus (rebuilt from WS state on reconnect), the tunnel
  *  port (a fresh ephemeral one is bound by the Tauri side every launch),
- *  and the transient interrupt/cancel latches. */
+ *  and the transient interrupt/cancel latches.
+ *
+ *  This is a *flash-prevention cache*, not the source of truth — the chat
+ *  shell renders the cached messages on launch so there's no blank-state
+ *  flicker, then GET /history reconciles via an LCP merge (mirrors mobile's
+ *  historyCache.ts + loadHistory flow). */
 interface PersistedState {
   qrPayload?:    QrPayload
-  itemsByAgent?: Record<string, ChatItem[]>
+  itemsByAgent?: Record<string, Message[]>
   draftByAgent?: Record<string, string>
   tasksByAgent?: Record<string, TaskRecord[]>
   activeAgent?:  string
@@ -66,18 +85,48 @@ const initialStored: PersistedState | null = (() => {
 
 // ── Chat item model ──────────────────────────────────────────────────────────
 //
-// We don't render one row per ServerEvent — that would scroll the user past
-// every `text` delta. Instead we fold the stream into the same chat-item shape
-// mobile uses: user / assistant / tool / cost / etc. Adjacent `text` events
-// from the model accumulate into the *currently streaming* assistant item.
+// Mirrors mobile's `Message` shape so the server-authoritative GET /history
+// payload (which carries `cost_usd` on the assistant message and projects
+// each tool_use into a single flattened row with text + output) reconciles
+// cleanly via an LCP merge. We don't render one row per ServerEvent — that
+// would scroll the user past every `text` delta. Instead `text` deltas
+// accumulate into the currently-streaming assistant message (matched by id),
+// tool lifecycle (use → output[*] → result) folds into a single tool message
+// whose id is the wire tool_use_id, and cost is stamped onto the last
+// assistant message at done/interrupted (not its own row).
 
-type ChatItem =
-  | { kind: 'user';        text: string }
-  | { kind: 'assistant';   text: string; done: boolean }
-  | { kind: 'tool';        toolUseId: string; tool: string; display: string; outputs: string[]; result?: string; running: boolean }
-  | { kind: 'cost';        cost: number; interrupted: boolean }
-  | { kind: 'error';       message: string }
-  | { kind: 'bg';          text: string }
+interface Message {
+  id:        string
+  role:      'user' | 'assistant' | 'tool' | 'interrupted' | 'error' | 'bg_complete' | 'bg_progress'
+  text:      string
+  /** Per-turn cost, attached to the last assistant message at done/interrupted. */
+  cost?:     number
+  /** Accumulated tool output (live stdout from tool_output, replaced by tool_result). */
+  output?:   string
+  /** True while a tool is mid-execution; cleared on tool_result / done / interrupted. */
+  running?:  boolean
+  /** Denormalized for the renderer so Row never closes over the full list. */
+  prevRole?: Message['role']
+}
+
+// Monotonic local id for messages we mint client-side (user sends, errors,
+// fresh assistant streams that aren't tied to a wire tool_use_id). Tool
+// messages reuse the wire tool_use_id directly.
+let _id = 0
+const uid = (): string => `m${Date.now()}_${++_id}`
+
+/** Stamp prevRole on every message so Row never needs to close over the full
+ *  array. Mirrors mobile's withPrevRoles. */
+const withPrevRoles = (msgs: Message[]): Message[] =>
+  msgs.map((m, i) => ({ ...m, prevRole: i > 0 ? msgs[i - 1].role : undefined }))
+
+/** Append one message to an existing array and re-stamp only the new entry's
+ *  prevRole. Used by every fold-event path that doesn't otherwise need to
+ *  recompute the whole list. */
+const appendMsg = (prev: Message[], msg: Message): Message[] => {
+  const stamped = { ...msg, prevRole: prev.length > 0 ? prev[prev.length - 1].role : undefined }
+  return [...prev, stamped]
+}
 
 type ConnStatus = 'ready' | 'streaming' | 'error' | 'pending'
 
@@ -114,9 +163,16 @@ function App() {
   // separate lets a child's stream keep accumulating while the user is
   // looking at another tab — switching back restores the in-progress
   // transcript, draft, and connection status untouched.
-  const [itemsByAgent,      setItemsByAgent]      = useState<Record<string, ChatItem[]>>(() =>
-    initialStored?.itemsByAgent ?? {}
-  )
+  const [itemsByAgent,      setItemsByAgent]      = useState<Record<string, Message[]>>(() => {
+    // Hydrate the flash-prevention cache and re-stamp prevRole on every row —
+    // cheaper than serializing it (denormalized, fully derivable) and keeps
+    // the persisted blob shape narrowly the on-screen Message shape minus
+    // the cache field.
+    const raw = initialStored?.itemsByAgent ?? {}
+    const out: Record<string, Message[]> = {}
+    for (const [k, v] of Object.entries(raw)) out[k] = withPrevRoles(v)
+    return out
+  })
   const [draftByAgent,      setDraftByAgent]      = useState<Record<string, string>>(() =>
     initialStored?.draftByAgent ?? {}
   )
@@ -178,6 +234,45 @@ function App() {
   // Per-agent fallback timers that re-enable the interrupt button if the
   // server's interrupt_ack never arrives. Keyed by agent id.
   const stopAckTimersRef = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({})
+
+  // Per-agent streaming state. `streamingId` is the Message id that the next
+  // text delta should land on (or extend, if `hasAssistant` is true); bumped
+  // at every turn boundary (user send / tool_use / done / interrupted / error)
+  // so a fresh assistant bubble materializes for each new chunk of model text.
+  // Mirrors mobile's streamingIdRef + hasAssistantMsgRef, keyed by agent.
+  const streamingIdRef = useRef<Record<string, string>>({})
+  const hasAssistantRef = useRef<Record<string, boolean>>({})
+
+  // Per-agent shadow message-list used during a `ready{resumed:true}` →
+  // `replay_end` window. While set, buffered events fold into this shadow
+  // instead of the visible list; replay_end swaps it in atomically so the
+  // user doesn't see a truncate-then-rebuild flash on mid-turn reconnect.
+  // Mirrors mobile's replayingRef — wrap the array in an object so a captured
+  // empty list (`[]`) doesn't read as falsy in `if (replayingRef.current[id])`.
+  const replayingRef = useRef<Record<string, { msgs: Message[] } | null>>({})
+
+  // Per-agent in-flight /history AbortController so a second connect (or a
+  // tab switch that re-fires the loader) cancels the prior fetch instead of
+  // racing with it. Mirrors mobile's historyAbortRef.
+  const historyAbortRef = useRef<Record<string, AbortController | null>>({})
+
+  // Per-agent stagger queue for the divergent /history suffix — first new
+  // row drops in synchronously, the rest land one per HISTORY_STAGGER_MS so
+  // each bubble's render cascades instead of a wall. Mirrors mobile's
+  // historyStaggerRef.
+  const historyStaggerRef = useRef<Record<string, {
+    queue: Message[]
+    timer: ReturnType<typeof setTimeout> | null
+  }>>({})
+
+  // Per-agent "history has loaded" tracker. Mirrors mobile's historyReadyFor
+  // but used informationally — the WS-open gate is the await on
+  // loadHistoryForAgent in connectInternal / openChildWs, not this flag.
+  // Consumed by the renderer to suppress the "Awaiting your first message"
+  // empty-state until we *know* the conversation is empty, rather than
+  // flashing it during the /history fetch. State (not a ref) so an empty
+  // history → no setItemsByAgent → no re-render still flips the empty-state.
+  const [historyReady, setHistoryReady] = useState<Record<string, boolean>>({})
 
   // Last QrPayload that produced an OPEN master WS — used both as the
   // "same lair?" check inside connect() and as the qrPayload we persist
@@ -308,10 +403,145 @@ function App() {
     cancelTimersRef.current.set(taskId, setTimeout(() => releaseCancel(taskId), CANCEL_ACK_TIMEOUT_MS))
   }
 
+  /** Per-agent `setItemsByAgent` shim that respects the shadow-replay buffer:
+   *  while a `ready{resumed:true}` → `replay_end` window is open for this
+   *  agent, buffered events fold into the shadow Message[] instead of the
+   *  visible list; `replay_end` then swaps the shadow in atomically (see
+   *  the `replay_end` case below). Mirrors mobile's applyMsgs. */
+  const applyMsgs = (agentId: string, updater: (prev: Message[]) => Message[]) => {
+    const shadow = replayingRef.current[agentId]
+    if (shadow) {
+      shadow.msgs = updater(shadow.msgs)
+      return
+    }
+    setItemsByAgent(prev => ({ ...prev, [agentId]: updater(prev[agentId] ?? []) }))
+  }
+
+  /** Drains the staggered history-replay queue for one agent — one append per
+   *  tick so each new Row renders one after the next rather than all at once.
+   *  Idempotent against live-stream events that may race in (dedupe by id).
+   *  Mirrors mobile's tickHistoryStagger. */
+  const tickHistoryStagger = (agentId: string) => {
+    const stagger = historyStaggerRef.current[agentId]
+    if (!stagger) return
+    const next = stagger.queue.shift()
+    if (next === undefined) {
+      stagger.timer = null
+      return
+    }
+    applyMsgs(agentId, prev => prev.some(m => m.id === next.id)
+      ? prev
+      : withPrevRoles([...prev, next]))
+    stagger.timer = stagger.queue.length > 0
+      ? setTimeout(() => tickHistoryStagger(agentId), HISTORY_STAGGER_MS)
+      : null
+  }
+
+  /** Fetch /history for an agent (lair root or child via the proxy) and
+   *  reconcile against the agent's current visible message list using a
+   *  longest-common-prefix merge. Matched rows are kept verbatim so they
+   *  retain their ids and React's reconciler reuses the mounted bubbles
+   *  (a naive full replace would re-key every row and re-render). For the
+   *  divergent suffix we drop the first in immediately and queue the rest
+   *  for the staggered ticker so each bubble appears one after the next.
+   *
+   *  Sets `historyReadyByAgent[agentId]` on success so the WS gate can open.
+   *  Mirrors mobile's loadHistory + LCP merge. */
+  const loadHistoryForAgent = async (
+    agentId:    string,
+    tunnelPort: number,
+    attempt:    number = 0,
+  ): Promise<void> => {
+    historyAbortRef.current[agentId]?.abort()
+    const controller = new AbortController()
+    historyAbortRef.current[agentId] = controller
+
+    const base = agentId === LAIR_ID
+      ? `http://127.0.0.1:${tunnelPort}`
+      : `http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(agentId)}`
+
+    try {
+      const res = await fetch(`${base}/history`, { signal: controller.signal })
+      const data = await res.json() as {
+        messages: Array<{ role: string; text: string; cost_usd?: number; output?: string }>
+      }
+      // Superseded by a later loadHistoryForAgent call (e.g. quick tab
+      // switch) — drop this response on the floor.
+      if (historyAbortRef.current[agentId] !== controller) return
+
+      const msgs: Message[] = data.messages.map((m, i) => ({
+        id:   `h${agentId}_${i}`,
+        role: m.role as Message['role'],
+        text: m.text,
+        ...(m.cost_usd != null ? { cost: m.cost_usd } : {}),
+        ...(m.output    != null ? { output: m.output } : {}),
+      }))
+
+      // Reset any prior stagger queue for this agent — we're about to
+      // recompute the divergent suffix from scratch.
+      const stagger = historyStaggerRef.current[agentId] ?? { queue: [], timer: null }
+      if (stagger.timer) { clearTimeout(stagger.timer); stagger.timer = null }
+      stagger.queue = []
+      historyStaggerRef.current[agentId] = stagger
+
+      // Tool rows are matched leniently: live tool text is "label (arg)" and
+      // server projects it as "name(arg)", so a strict text compare would
+      // diverge on the first tool row and force a full replace (losing the
+      // mounted chip's expanded/collapsed state and remounting every later
+      // row). They're the same event — match by role and keep the live row.
+      const eq = (a: Message, b: Message): boolean => {
+        if (a.role !== b.role) return false
+        if (a.role === 'tool') return true
+        return a.text === b.text && a.cost === b.cost && a.output === b.output
+      }
+
+      applyMsgs(agentId, (cur) => {
+        let common = 0
+        while (common < cur.length && common < msgs.length && eq(cur[common], msgs[common])) common++
+        // Server history is a prefix of what we already have — identical, or
+        // we're live-ahead via the stream. Nothing to apply.
+        if (common === msgs.length) return cur
+        const suffix = msgs.slice(common)
+        // Single new row — append directly; no need to engage the ticker.
+        if (suffix.length === 1) {
+          return withPrevRoles([...cur.slice(0, common), suffix[0]])
+        }
+        // Multiple new rows — first goes in synchronously so the user sees
+        // motion immediately; the rest land one per stagger tick.
+        stagger.queue = suffix.slice(1)
+        stagger.timer = setTimeout(() => tickHistoryStagger(agentId), HISTORY_STAGGER_MS)
+        return withPrevRoles([...cur.slice(0, common), suffix[0]])
+      })
+
+      setHistoryReady(prev => prev[agentId] ? prev : { ...prev, [agentId]: true })
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') return
+      // The native Noise proxy may not be ready to accept connections
+      // immediately after the tunnel reconnects (transient on launch /
+      // foreground return), which would surface here as a network error.
+      // One retry then re-throw so the caller (connectInternal /
+      // openChildWs) can skip its WS open and surface the error. We *await*
+      // the retry rather than scheduling-and-resolving so the caller knows
+      // history is settled when this promise resolves.
+      if (attempt === 0) {
+        await new Promise(r => setTimeout(r, HISTORY_RETRY_MS))
+        if (historyAbortRef.current[agentId] !== controller) return
+        await loadHistoryForAgent(agentId, tunnelPort, 1)
+      } else {
+        setConnStatusByAgent(prev => ({ ...prev, [agentId]: 'error' }))
+        throw e
+      }
+    }
+  }
+
   // Apply a chat-stream event to a specific agent's slot. Runs regardless of
   // which tab is currently visible — that's what makes per-agent persistence
   // work; events flow into their own slot and the active tab just renders
   // whichever one is selected.
+  //
+  // The fold is inlined here (rather than a pure `foldEvent`) because tracking
+  // the active streaming-assistant id requires touching per-agent refs —
+  // mirrors mobile's handleStreamEvent.
   const applyChatEvent = (agentId: string, ev: ServerEvent) => {
     // `tasks` and `cancel_task_ack` don't belong in the chat scroll — they
     // drive the background-tasks registry / STOP-button latch instead.
@@ -329,24 +559,201 @@ function App() {
       return
     }
 
-    if (ev.type === 'ready' && ev.model) {
-      setModelByAgent(prev => prev[agentId] === ev.model ? prev : { ...prev, [agentId]: ev.model })
-    }
-    setItemsByAgent(prev => ({ ...prev, [agentId]: foldEvent(prev[agentId] ?? [], ev) }))
-    let next: ConnStatus | null = null
-    if (ev.type === 'ready')        next = 'ready'
-    if (ev.type === 'text')         next = 'streaming'
-    if (ev.type === 'tool_use')     next = 'streaming'
-    if (ev.type === 'done')         next = 'ready'
-    if (ev.type === 'interrupted')  next = 'ready'
-    if (ev.type === 'error')        next = 'error'
-    if (next !== null) {
-      setConnStatusByAgent(prev => ({ ...prev, [agentId]: next! }))
-    }
-    // Server acknowledged our interrupt — re-enable the stop button so the
-    // user can interrupt the next turn without waiting for the 3s fallback.
-    if (ev.type === 'interrupt_ack' || ev.type === 'interrupted' || ev.type === 'done') {
-      clearStopLock(agentId)
+    // Ensure per-agent streaming-id state exists before any case touches it.
+    if (streamingIdRef.current[agentId] === undefined) streamingIdRef.current[agentId] = uid()
+    if (hasAssistantRef.current[agentId] === undefined) hasAssistantRef.current[agentId] = false
+
+    switch (ev.type) {
+      case 'ready': {
+        if (ev.model) {
+          setModelByAgent(prev => prev[agentId] === ev.model ? prev : { ...prev, [agentId]: ev.model })
+        }
+        // Mid-turn reconnect: the server is about to replay every buffered
+        // event for the in-flight turn. Anchor a shadow copy of the current
+        // visible list — buffered events fold into it via applyMsgs above —
+        // and atomically swap when `replay_end` lands. Without this the user
+        // sees the visible list truncate to pre-turn state, then rebuild as
+        // each frame arrives.
+        //
+        // Read the anchor through the React updater rather than the closed-
+        // over `itemsByAgent`: the WS handler was wired in connectInternal
+        // which closes over that render's stale list, but the post-/history
+        // updated list lives in the next render's state — only `prev` inside
+        // a setter sees it.
+        if (ev.resumed) {
+          setItemsByAgent(prev => {
+            replayingRef.current[agentId] = { msgs: prev[agentId] ?? [] }
+            return prev
+          })
+        } else {
+          // Not resumed — drop any stale shadow from a previous mid-replay
+          // drop (defensive: the WS was closed before replay_end arrived).
+          replayingRef.current[agentId] = null
+        }
+        setConnStatusByAgent(prev => ({ ...prev, [agentId]: 'ready' }))
+        break
+      }
+      case 'replay_end': {
+        // Server's mid-turn replay has fully reseeded our shadow. Swap it
+        // into view as a single update so the user sees one transition (the
+        // streaming turn picks up from there as fresh events arrive).
+        const shadow = replayingRef.current[agentId]
+        if (shadow) {
+          replayingRef.current[agentId] = null
+          setItemsByAgent(prev => ({ ...prev, [agentId]: withPrevRoles(shadow.msgs) }))
+        }
+        break
+      }
+      case 'text': {
+        const chunk = ev.text
+        const sid = streamingIdRef.current[agentId]
+        if (!hasAssistantRef.current[agentId]) {
+          hasAssistantRef.current[agentId] = true
+          applyMsgs(agentId, prev => appendMsg(prev, { id: sid, role: 'assistant', text: chunk }))
+        } else {
+          applyMsgs(agentId, prev => prev.map(m => m.id === sid ? { ...m, text: m.text + chunk } : m))
+        }
+        setConnStatusByAgent(prev => ({ ...prev, [agentId]: 'streaming' }))
+        break
+      }
+      case 'tool_use': {
+        // Bump streaming id so the *next* text block becomes a fresh
+        // assistant message after the tool, not appended to pre-tool text.
+        hasAssistantRef.current[agentId] = false
+        streamingIdRef.current[agentId] = uid()
+        const firstVal = ev.input && typeof ev.input === 'object'
+          ? String(Object.values(ev.input as Record<string, unknown>)[0] ?? '').trim()
+          : ''
+        const label = ev.display ?? humanizeTool(ev.tool)
+        const toolText = firstVal ? `${label} (${firstVal})` : label
+        // Use the wire tool_use_id as the Message id so subsequent
+        // tool_output/tool_result events route to the right bubble even
+        // when the model emits multiple tool_use blocks in one turn. The
+        // model can emit several tool_use blocks at once and they all
+        // stream to the client before the server executes any of them —
+        // mark this tool `running` only if no earlier tool is still
+        // executing, otherwise it's queued.
+        applyMsgs(agentId, prev => {
+          const anyRunning = prev.some(m => m.running)
+          return appendMsg(prev, { id: ev.tool_use_id, role: 'tool', text: toolText, running: !anyRunning })
+        })
+        setConnStatusByAgent(prev => ({ ...prev, [agentId]: 'streaming' }))
+        break
+      }
+      case 'tool_output': {
+        const toolId = ev.tool_use_id
+        applyMsgs(agentId, prev => prev.map(m =>
+          m.id === toolId ? { ...m, output: (m.output ?? '') + ev.line + '\n' } : m
+        ))
+        break
+      }
+      case 'tool_result': {
+        const toolId = ev.tool_use_id
+        const out = stringifyResult(ev.output)
+        applyMsgs(agentId, prev => {
+          const completedIdx = prev.findIndex(m => m.id === toolId)
+          if (completedIdx < 0) return prev
+          // Promote the next queued tool (earliest after the completed one,
+          // not running, no output yet) to active execution. Tools run in
+          // emission order so the next queued slot is always after the
+          // current one in the array.
+          let nextQueuedIdx = -1
+          for (let i = completedIdx + 1; i < prev.length; i++) {
+            const m = prev[i]
+            if (m.role === 'tool' && !m.running && m.output === undefined) {
+              nextQueuedIdx = i
+              break
+            }
+          }
+          return prev.map((m, i) => {
+            if (i === completedIdx)  return { ...m, output: out, running: false }
+            if (i === nextQueuedIdx) return { ...m, running: true }
+            return m
+          })
+        })
+        break
+      }
+      case 'done': {
+        const cost = ev.cost_usd
+        applyMsgs(agentId, prev => {
+          // Defensive: clear any leftover running flags (e.g. dropped
+          // tool_result frames) so the chip's pulse doesn't stay on after
+          // the turn ends.
+          const base = prev.some(m => m.running)
+            ? prev.map(m => m.running ? { ...m, running: false } : m)
+            : prev
+          for (let i = base.length - 1; i >= 0; i--) {
+            if (base[i].role === 'assistant') {
+              const next = base.slice()
+              next[i] = { ...next[i], cost }
+              return next
+            }
+          }
+          return base
+        })
+        // Turn boundary — anything streamed after this (auto-turn from a
+        // bg_complete, or the next user turn) must start a fresh assistant
+        // bubble, not append to the one we just sealed.
+        hasAssistantRef.current[agentId] = false
+        streamingIdRef.current[agentId] = uid()
+        setConnStatusByAgent(prev => ({ ...prev, [agentId]: 'ready' }))
+        clearStopLock(agentId)
+        break
+      }
+      case 'interrupted': {
+        const cost = ev.cost_usd
+        applyMsgs(agentId, prev => {
+          // Any tool still marked as running won't get a tool_result now.
+          let base = prev.map(m => m.running ? { ...m, running: false } : m)
+          for (let i = base.length - 1; i >= 0; i--) {
+            if (base[i].role === 'assistant') {
+              base = base.slice()
+              base[i] = { ...base[i], cost }
+              break
+            }
+          }
+          return appendMsg(base, { id: uid(), role: 'interrupted', text: 'interrupted' })
+        })
+        hasAssistantRef.current[agentId] = false
+        streamingIdRef.current[agentId] = uid()
+        setConnStatusByAgent(prev => ({ ...prev, [agentId]: 'ready' }))
+        clearStopLock(agentId)
+        break
+      }
+      case 'interrupt_ack':
+        clearStopLock(agentId)
+        break
+      case 'error': {
+        applyMsgs(agentId, prev => appendMsg(
+          prev.map(m => m.running ? { ...m, running: false } : m),
+          { id: uid(), role: 'error', text: ev.message },
+        ))
+        hasAssistantRef.current[agentId] = false
+        streamingIdRef.current[agentId] = uid()
+        setConnStatusByAgent(prev => ({ ...prev, [agentId]: 'error' }))
+        break
+      }
+      case 'bg_complete': {
+        // Dedupe by task id so a subsequent /history reload (which also
+        // contains this row) is a no-op rather than a duplicate. The id
+        // matches what mobile uses so the LCP merge tracks the same anchor.
+        const id = `bg_${ev.task_id}`
+        applyMsgs(agentId, prev => prev.some(m => m.id === id)
+          ? prev
+          : appendMsg(prev, { id, role: 'bg_complete', text: ev.text }))
+        break
+      }
+      case 'bg_progress': {
+        // Distinct per event (monitored tasks emit one per stdout chunk);
+        // text matches the persisted bg_progress row so /history reconciles
+        // cleanly.
+        applyMsgs(agentId, prev => appendMsg(prev, { id: uid(), role: 'bg_progress', text: ev.text }))
+        break
+      }
+      // system / agents / ping / pong / tasks / cancel_task_ack: handled
+      // upstream or not surfaced in the chat log.
+      default:
+        break
     }
   }
 
@@ -377,6 +784,22 @@ function App() {
     // restored items. `connecting` = brand-new attempt → keep the connect
     // screen visible with a "Connecting…" button. Same WS path under both.
     setStatus({ kind: preserveState ? 'reconnecting' : 'connecting', target })
+    // History-ready gate always resets on connect — the server's canonical
+    // /history must reseed each agent's list before its WS opens (else a
+    // mid-turn replay could clobber the streaming bubble). Per-agent
+    // /history aborts also reset; any in-flight fetch from a prior tunnel
+    // is canceled below as part of the abort sweep.
+    setHistoryReady({})
+    for (const c of Object.values(historyAbortRef.current)) {
+      try { c?.abort() } catch {}
+    }
+    historyAbortRef.current = {}
+    for (const s of Object.values(historyStaggerRef.current)) {
+      if (s?.timer) clearTimeout(s.timer)
+    }
+    historyStaggerRef.current = {}
+    replayingRef.current = {}
+
     if (!preserveState) {
       setItemsByAgent({})
       setDraftByAgent({})
@@ -407,6 +830,12 @@ function App() {
         port:            target.port,
         serverPubkeyB32: target.pk,
       })
+      // Gate: fetch /history *before* opening the master WS. The server
+      // replays buffered events on mid-turn reconnect, and a replay that
+      // landed first would be clobbered by /history's later reconcile.
+      // Mirrors mobile's `historyReadyFor === baseUrl` WS gate.
+      await loadHistoryForAgent(LAIR_ID, tunnelPort)
+
       const ws = new WebSocket(`ws://127.0.0.1:${tunnelPort}/stream`)
       masterWsRef.current = ws
       ws.onopen  = () => {
@@ -418,7 +847,11 @@ function App() {
         // Re-open the WS for the restored active child (if any) so the
         // user's saved tab is immediately interactive — otherwise typing
         // into a child chat would silently no-op until they re-click it.
-        if (childToReopen) openChildWs(tunnelPort, childToReopen)
+        if (childToReopen) {
+          // Fire-and-forget — openChildWs is async only because it gates on
+          // /history; nothing here needs to await its result.
+          openChildWs(tunnelPort, childToReopen).catch(() => {})
+        }
       }
       ws.onclose = () => {
         masterWsRef.current = null
@@ -471,11 +904,19 @@ function App() {
     await connectInternal(target, sameLair, child)
   }
 
-  const openChildWs = (tunnelPort: number, name: string): WebSocket | null => {
+  const openChildWs = async (tunnelPort: number, name: string): Promise<WebSocket | null> => {
     // If we already have an open or in-flight WS for this child, reuse it
     // — opening a second would just race with the first.
     const existing = childWsRefs.current.get(name)
     if (existing && existing.readyState <= WebSocket.OPEN) return existing
+
+    // Gate: fetch /history for the child *before* opening its WS so the
+    // server's mid-turn replay can't land ahead of the canonical history.
+    // No-op if a previous open already loaded history for this agent
+    // (loadHistoryForAgent re-fetches on each call so the user always sees
+    // fresh server state on tab re-entry, but the existing-WS short-circuit
+    // above means we only get here when there's no live WS).
+    await loadHistoryForAgent(name, tunnelPort)
 
     const ws = new WebSocket(`ws://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(name)}/stream`)
     childWsRefs.current.set(name, ws)
@@ -518,7 +959,9 @@ function App() {
       if (!childWsRefs.current.has(id)) {
         setConnStatusByAgent(prev => ({ ...prev, [id]: 'pending' }))
       }
-      openChildWs(status.tunnelPort, id)
+      // Fire-and-forget — openChildWs is async only because it awaits
+      // /history before opening the WS; selectAgent just navigates.
+      openChildWs(status.tunnelPort, id).catch(() => {})
     }
   }
 
@@ -535,9 +978,13 @@ function App() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return
     ws.send(encodeClientFrame({ type: 'user_message', text }))
     const agentId = activeAgent
+    // Turn boundary: bump streaming id + clear hasAssistant so the next text
+    // delta starts a fresh assistant bubble (mirrors mobile's pre-send reset).
+    streamingIdRef.current[agentId] = uid()
+    hasAssistantRef.current[agentId] = false
     setItemsByAgent(prev => ({
       ...prev,
-      [agentId]: [...(prev[agentId] ?? []), { kind: 'user', text }],
+      [agentId]: appendMsg(prev[agentId] ?? [], { id: uid(), role: 'user', text }),
     }))
     setDraftByAgent(prev => ({ ...prev, [agentId]: '' }))
     // Optimistically flip to 'streaming' so the orbit indicator + stop button
@@ -581,6 +1028,18 @@ function App() {
     stopAckTimersRef.current = {}
     for (const t of cancelTimersRef.current.values()) clearTimeout(t)
     cancelTimersRef.current.clear()
+    // Abort any in-flight /history fetch and drain pending stagger queues
+    // so a quick disconnect-then-reconnect doesn't double-apply rows.
+    for (const c of Object.values(historyAbortRef.current)) {
+      try { c?.abort() } catch {}
+    }
+    historyAbortRef.current = {}
+    for (const s of Object.values(historyStaggerRef.current)) {
+      if (s?.timer) clearTimeout(s.timer)
+    }
+    historyStaggerRef.current = {}
+    replayingRef.current = {}
+    setHistoryReady({})
     setShowTasksModal(false)
     // Close the master WS via the ref, not status.ws — during 'reconnecting'
     // (or 'connecting') the WS is mid-handshake and not yet attached to the
@@ -654,10 +1113,14 @@ function App() {
         </div>
 
         <div className="chat" ref={chatRef}>
-          {items.length === 0 && (
+          {items.length === 0 && historyReady[activeAgent] && (
+            // Only show the "empty conversation" prompt once /history has
+            // confirmed the agent really has no messages — otherwise the
+            // text flashes for the duration of the GET /history while the
+            // chat is just waiting on the server's authoritative reply.
             <div className="chat-empty">Awaiting your first message</div>
           )}
-          {items.map((item, i) => <Row key={i} item={item} />)}
+          {items.map(item => <Row key={item.id} item={item} />)}
         </div>
 
         <InputBar
@@ -690,101 +1153,11 @@ function App() {
   )
 }
 
-// ── Fold ServerEvent into our chat-item list ─────────────────────────────────
+// ── Fold helpers ─────────────────────────────────────────────────────────────
 //
-// Most events become their own item; the exception is `text`, which appends to
-// the currently-streaming assistant item (or starts a new one). Tool lifecycle
-// (use → output[*] → result) folds into a single `tool` item keyed by id.
-
-function foldEvent(items: ChatItem[], ev: ServerEvent): ChatItem[] {
-  switch (ev.type) {
-    case 'text': {
-      const last = items[items.length - 1]
-      if (last && last.kind === 'assistant' && !last.done) {
-        const next = items.slice(0, -1)
-        next.push({ ...last, text: last.text + ev.text })
-        return next
-      }
-      return [...items, { kind: 'assistant', text: ev.text, done: false }]
-    }
-    case 'tool_use': {
-      const anyRunning = items.some(x => x.kind === 'tool' && x.running)
-      return [...items, {
-        kind:      'tool',
-        toolUseId: ev.tool_use_id,
-        tool:      ev.tool,
-        display:   ev.display ?? humanizeTool(ev.tool),
-        outputs:   [],
-        running:   !anyRunning,
-      }]
-    }
-    case 'tool_output': {
-      // Fold into the most recent matching tool chip.
-      const idx = lastIndex(items, x => x.kind === 'tool' && x.toolUseId === ev.tool_use_id)
-      if (idx < 0) return items
-      const tool = items[idx] as Extract<ChatItem, { kind: 'tool' }>
-      const next = items.slice()
-      next[idx] = { ...tool, outputs: [...tool.outputs, ev.line] }
-      return next
-    }
-    case 'tool_result': {
-      const idx = lastIndex(items, x => x.kind === 'tool' && x.toolUseId === ev.tool_use_id)
-      if (idx < 0) return items
-      // Promote the next queued tool (earliest after the completed one,
-      // not running, no output yet) to active execution. Tools run in
-      // emission order so the next queued slot is always after the
-      // current one in the array.
-      let nextQueuedIdx = -1
-      for (let i = idx + 1; i < items.length; i++) {
-        const it = items[i]
-        if (it.kind === 'tool' && !it.running && it.result === undefined) {
-          nextQueuedIdx = i
-          break
-        }
-      }
-      return items.map((it, i) => {
-        if (i === idx)  return { ...it, result: stringifyResult(ev.output), running: false }
-        if (i === nextQueuedIdx) return { ...it, running: true }
-        return it
-      }) as ChatItem[]
-    }
-    case 'done':
-    case 'interrupted': {
-      // Defensive: clear any leftover running flags (e.g. dropped tool_result).
-      const cleared = items.some(it => it.kind === 'tool' && it.running)
-        ? items.map(it => it.kind === 'tool' && it.running ? { ...it, running: false } : it) as ChatItem[]
-        : items
-      const next = sealStreamingAssistant(cleared)
-      next.push({ kind: 'cost', cost: ev.cost_usd, interrupted: ev.type === 'interrupted' })
-      return next
-    }
-    case 'interrupt_ack':
-      return items
-    case 'error':
-      return [...sealStreamingAssistant(items), { kind: 'error', message: ev.message }]
-    case 'bg_complete':
-    case 'bg_progress':
-      return [...items, { kind: 'bg', text: ev.text }]
-    // ready, system, agents, tasks, cancel_task_ack: not surfaced in the chat log.
-    default:
-      return items
-  }
-}
-
-function sealStreamingAssistant(items: ChatItem[]): ChatItem[] {
-  const last = items[items.length - 1]
-  if (last && last.kind === 'assistant' && !last.done) {
-    const next = items.slice(0, -1)
-    next.push({ ...last, done: true })
-    return next
-  }
-  return items.slice()
-}
-
-function lastIndex<T>(arr: T[], pred: (x: T) => boolean): number {
-  for (let i = arr.length - 1; i >= 0; i--) if (pred(arr[i])) return i
-  return -1
-}
+// The per-event fold itself is inlined into `applyChatEvent` above (because
+// each case touches per-agent streamingId/hasAssistant refs); only the
+// shared shape-coercion helpers live here.
 
 function stringifyResult(out: unknown): string {
   if (typeof out === 'string') return out
@@ -1152,47 +1525,42 @@ function MarkdownText({ text }: { text: string }) {
 
 // ── Row ──────────────────────────────────────────────────────────────────────
 
-function ToolRow({ item }: { item: Extract<ChatItem, { kind: 'tool' }> }) {
+function ToolRow({ item }: { item: Message }) {
   // Output hidden by default; user clicks the chip to expand. Local state per
-  // chip — the message-list key is the toolUseId (stable across re-renders),
-  // so collapsed/expanded persists for the chip's lifetime.
+  // chip — the row key is the tool_use_id (stable across re-renders), so
+  // collapsed/expanded persists for the chip's lifetime.
   const [expanded, setExpanded] = useState(false)
-  const hasOutputs = item.outputs.length > 0
-  const hasResult  = item.result !== undefined && !hasOutputs
-  const hasBody    = hasOutputs || hasResult
-  const prefix     = item.running
+  const hasOutput = item.output != null && item.output.length > 0
+  const prefix    = item.running
     ? 'Running '
-    : (!item.running && item.result === undefined && item.outputs.length === 0 ? 'Pending ' : '')
+    : (!item.running && item.output === undefined ? 'Pending ' : '')
   return (
     <div className="row">
-      <div className={'tool-chip' + (item.running ? ' tool-running' : (!item.result && !item.outputs.length ? ' tool-queued' : ''))}>
+      <div className={'tool-chip' + (item.running ? ' tool-running' : (!hasOutput ? ' tool-queued' : ''))}>
         <button
           type="button"
           className="tool-line"
-          onClick={() => { if (hasBody) setExpanded(e => !e) }}
-          disabled={!hasBody}
-          aria-expanded={hasBody ? expanded : undefined}
+          onClick={() => { if (hasOutput) setExpanded(e => !e) }}
+          disabled={!hasOutput}
+          aria-expanded={hasOutput ? expanded : undefined}
         >
           {item.running && <span className="tool-dot-pulse" />}
-          {!item.running && item.result === undefined && item.outputs.length === 0 && <span className="tool-dot-queued" />}
-          <span className="tool-line-text">{prefix}{item.display}</span>
-          {hasBody && (
+          {!item.running && item.output === undefined && <span className="tool-dot-queued" />}
+          <span className="tool-line-text">{prefix}{item.text}</span>
+          {hasOutput && (
             <span className={'tool-chevron' + (expanded ? ' tool-chevron-open' : '')} aria-hidden="true">▸</span>
           )}
         </button>
-        {expanded && hasOutputs && (
-          <div className="tool-output">{item.outputs.join('\n')}</div>
-        )}
-        {expanded && hasResult && (
-          <div className="tool-result">{truncate(item.result!, 800)}</div>
+        {expanded && hasOutput && (
+          <div className="tool-output">{truncate(item.output!, 4000)}</div>
         )}
       </div>
     </div>
   )
 }
 
-function Row({ item }: { item: ChatItem }) {
-  switch (item.kind) {
+function Row({ item }: { item: Message }) {
+  switch (item.role) {
     case 'user':
       return (
         <div className="row right">
@@ -1200,23 +1568,37 @@ function Row({ item }: { item: ChatItem }) {
         </div>
       )
     case 'assistant':
-      return <div className="row"><div className="assistant-text"><MarkdownText text={item.text} /></div></div>
-    case 'tool':
-      return <ToolRow item={item} />
-    case 'cost':
+      // Cost (when present) is the turn total stamped onto the last
+      // assistant message at done/interrupted — render it as a small label
+      // below the text. Mirrors mobile's MessageBubble assistant branch.
       return (
         <div className="row">
-          {item.interrupted ? (
-            <span className="interrupted-line">● Interrupted · ${item.cost.toFixed(4)}</span>
-          ) : (
-            <span className="cost-label">${item.cost.toFixed(4)}</span>
-          )}
+          <div className="assistant-text">
+            <MarkdownText text={item.text} />
+            {item.cost != null && (
+              <div className="cost-label">${item.cost.toFixed(4)}</div>
+            )}
+          </div>
         </div>
       )
+    case 'tool':
+      return <ToolRow item={item} />
+    case 'interrupted':
+      // Cost (if any) lives on the preceding assistant message — this row is
+      // just the standalone "● Interrupted" marker.
+      return <div className="row"><span className="interrupted-line">● Interrupted</span></div>
     case 'error':
-      return <div className="row"><span className="error-line">● {item.message}</span></div>
-    case 'bg':
-      return <div className="row"><span className="bg-line">{item.text}</span></div>
+      return <div className="row"><span className="error-line">● {item.text}</span></div>
+    case 'bg_complete':
+    case 'bg_progress': {
+      // Take just the first line — the persisted body is prefixed with a
+      // "Background command <id> completed…" / "[monitor] … produced new
+      // output:" header which is enough context; the long body would crowd
+      // the chip. Marker differs so the user can spot progress vs. final.
+      const firstLine = item.text.split('\n', 1)[0] || item.text
+      const marker = item.role === 'bg_progress' ? '◈' : '◇'
+      return <div className="row"><span className="bg-line">{marker} {firstLine}</span></div>
+    }
   }
 }
 
