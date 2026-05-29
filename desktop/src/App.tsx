@@ -1159,6 +1159,7 @@ function App() {
       />
       <div className="main">
         <div className="main-head">
+          <h1 className="chat-title">{activeLabel}</h1>
           <button
             className="btn-ghost danger disconnect-btn"
             onClick={disconnect}
@@ -1787,7 +1788,6 @@ function InputBar({
           value={draft}
           onChange={(e) => setDraft(e.currentTarget.value)}
           onKeyDown={onKey}
-          placeholder="Message lair…"
           rows={1}
         />
         {streaming ? (
