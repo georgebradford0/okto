@@ -1,5 +1,6 @@
 # TODO
 
+- [ ] Setup graphical update in desktop
 - [ ] Remove aws and install using startup scripts
 - [ ] Need to lock down a pattern for SSH through lair and it's agents for connecting to GPU instances that are spun up
 - [ ] Fix app icon in terminal output of init
