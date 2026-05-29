@@ -22,7 +22,7 @@ use axum::{
     },
     http::{Method, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use okto_core::{
@@ -47,7 +47,7 @@ use okto_core::{
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, Notify};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tower_http::cors::{Any, CorsLayer};
 
 // ── Session persistence ───────────────────────────────────────────────────────
@@ -58,6 +58,87 @@ fn save_messages(dir: &Path, messages: &[ApiMessage]) {
 
 fn load_messages(dir: &Path) -> Vec<ApiMessage> {
     okto_core::load_messages(dir, "agent")
+}
+
+// ── Worktrees ───────────────────────────────────────────────────────────────
+//
+// A worktree is a git worktree of this agent's own `workspace/.git`, living at
+// `<agent_dir>/worktrees/<id>/`, with its own chat session. All worktrees share
+// the agent's single clone and run under the agent's own uid, so there's no
+// cross-process permission concern. The manifest at `<data_dir>/worktrees.json`
+// is the source of truth for which worktrees exist; sessions are rebuilt from
+// it on startup.
+
+/// One worktree's persistent metadata. Serialized into `worktrees.json` and
+/// surfaced to clients (which nest worktree chats under the agent row).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct WorktreeMeta {
+    /// Filesystem-safe id (derived from the branch); used in routes + as the
+    /// session key.
+    id:         String,
+    /// Branch checked out in this worktree.
+    branch:     String,
+    /// Absolute path of the worktree working dir (`<agent_dir>/worktrees/<id>`).
+    path:       String,
+    /// Unix seconds at creation.
+    created_at: u64,
+}
+
+fn manifest_path() -> PathBuf { data_dir().join("worktrees.json") }
+
+fn load_worktree_manifest() -> Vec<WorktreeMeta> {
+    match fs::read_to_string(manifest_path()) {
+        Ok(t) if !t.trim().is_empty() => serde_json::from_str(&t).unwrap_or_else(|e| {
+            warn!("[agent/worktrees] manifest corrupt ({e}); starting empty");
+            Vec::new()
+        }),
+        _ => Vec::new(),
+    }
+}
+
+fn save_worktree_manifest(metas: &[WorktreeMeta]) {
+    let path = manifest_path();
+    match serde_json::to_string_pretty(metas) {
+        Ok(json) => {
+            if let Err(e) = fs::write(&path, json) {
+                warn!("[agent/worktrees] failed to write {}: {e}", path.display());
+            }
+        }
+        Err(e) => warn!("[agent/worktrees] serialize manifest failed: {e}"),
+    }
+}
+
+/// Filesystem-safe, route-safe id derived from a branch name (`feature/x` →
+/// `feature-x`). Non-alphanumeric chars collapse to `-`; falls back to `wt`.
+fn worktree_id_from_branch(branch: &str) -> String {
+    let s: String = branch.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '-' })
+        .collect();
+    let trimmed = s.trim_matches('-').to_string();
+    if trimmed.is_empty() { "wt".to_string() } else { trimmed }
+}
+
+/// Build a chat session for a worktree from its metadata, loading any persisted
+/// history/tasks from `<data_dir>/worktrees/<id>/`. A worktree is always a repo,
+/// so it gets the repo system prompt.
+fn worktree_session(mcp_pool: &McpPool, meta: &WorktreeMeta) -> Arc<AppState> {
+    let sdata = data_dir().join("worktrees").join(&meta.id);
+    let messages = load_messages(&sdata);
+    let mut ss = StreamState::new();
+    ss.tasks = okto_core::load_tasks(&sdata, "agent");
+    Arc::new(AppState {
+        id:            meta.id.clone(),
+        branch:        Some(meta.branch.clone()),
+        data_dir:      sdata,
+        messages:      Arc::new(Mutex::new(messages)),
+        last_cost_usd: Mutex::new(None),
+        system:        build_system_prompt(&meta.path),
+        cwd:           meta.path.clone(),
+        stream_state:  Mutex::new(ss),
+        turn_gate:     Mutex::new(TurnGate::new()),
+        cancel:        Mutex::new(CancellationToken::new()),
+        mcp_pool:      mcp_pool.clone(),
+    })
 }
 
 /// Unified turn-gate: all decisions about who gets the next conversation turn
@@ -111,9 +192,8 @@ struct AppState {
     /// Worktree id this session is bound to; `""` for the main workspace.
     id:            String,
     /// Branch checked out in this session's worktree. `None` for the main
-    /// workspace (whatever branch the clone is on). Consumed by the worktree
-    /// lifecycle in the next phase.
-    #[allow(dead_code)]
+    /// workspace (whatever branch the clone is on). Read at teardown to delete
+    /// the branch along with the worktree.
     branch:        Option<String>,
     /// Directory this session persists its `session/messages.json` +
     /// `session/tasks.json` under. Main workspace = the agent's `data_dir()`;
@@ -135,17 +215,16 @@ struct AppState {
 /// and operate on it. Worktree lifecycle (add/list/remove) mutates `sessions`.
 struct Agent {
     sessions:  Mutex<HashMap<String, Arc<AppState>>>,
-    /// Process-wide MCP pool, cloned into each session created at runtime
-    /// (worktree sessions, next phase).
-    #[allow(dead_code)]
+    /// Worktree manifest — source of truth for which worktrees exist. Mirrors
+    /// `worktrees.json`; mutated under this lock then persisted.
+    worktrees: Mutex<Vec<WorktreeMeta>>,
+    /// Process-wide MCP pool, cloned into each worktree session.
     mcp_pool:  McpPool,
     /// The agent's own dir (`/data/agents/<name>`): parent of `workspace/`,
     /// `worktrees/`, and `data/`. Used to lay out worktree dirs.
-    #[allow(dead_code)]
     agent_dir: PathBuf,
     /// The main git clone (`<agent_dir>/workspace`) whose `.git` every worktree
     /// attaches to.
-    #[allow(dead_code)]
     workspace: PathBuf,
 }
 
@@ -158,8 +237,7 @@ impl Agent {
     }
 
     /// Look up a session by worktree id (`""` = main). `None` if no such
-    /// worktree session exists. Used by the worktree-scoped routes next phase.
-    #[allow(dead_code)]
+    /// worktree session exists.
     fn session(&self, id: &str) -> Option<Arc<AppState>> {
         self.sessions.lock().unwrap().get(id).cloned()
     }
@@ -653,6 +731,192 @@ fn branches_session(s: &Arc<AppState>) -> Response {
 
 async fn get_branches_handler(State(agent): State<Arc<Agent>>) -> impl IntoResponse {
     branches_session(&agent.default_session())
+}
+
+// ── Worktree-scoped chat routes ─────────────────────────────────────────────
+//
+// `/worktrees/:wt/...` mirrors the top-level chat routes but targets a worktree
+// session. Each resolves the session by id and 404s if it doesn't exist.
+
+/// Resolve a worktree session or return a 404 response.
+fn require_session(agent: &Arc<Agent>, wt: &str) -> Result<Arc<AppState>, Response> {
+    agent.session(wt).ok_or_else(|| {
+        (StatusCode::NOT_FOUND, format!("no worktree '{wt}'")).into_response()
+    })
+}
+
+async fn history_handler_wt(
+    AxumPath(wt): AxumPath<String>,
+    State(agent): State<Arc<Agent>>,
+) -> Response {
+    match require_session(&agent, &wt) {
+        Ok(s)  => history_session(&s).into_response(),
+        Err(r) => r,
+    }
+}
+
+async fn stream_handler_wt(
+    ws:           WebSocketUpgrade,
+    AxumPath(wt): AxumPath<String>,
+    State(agent): State<Arc<Agent>>,
+) -> Response {
+    match require_session(&agent, &wt) {
+        Ok(s)  => ws.on_upgrade(move |socket| handle_stream(socket, s)),
+        Err(r) => r,
+    }
+}
+
+async fn interrupt_handler_wt(
+    AxumPath(wt): AxumPath<String>,
+    State(agent): State<Arc<Agent>>,
+) -> Response {
+    match require_session(&agent, &wt) {
+        Ok(s)  => interrupt_session(&s).into_response(),
+        Err(r) => r,
+    }
+}
+
+async fn clear_handler_wt(
+    AxumPath(wt): AxumPath<String>,
+    State(agent): State<Arc<Agent>>,
+) -> Response {
+    match require_session(&agent, &wt) {
+        Ok(s)  => clear_session(&s).into_response(),
+        Err(r) => r,
+    }
+}
+
+async fn branches_handler_wt(
+    AxumPath(wt): AxumPath<String>,
+    State(agent): State<Arc<Agent>>,
+) -> Response {
+    match require_session(&agent, &wt) {
+        Ok(s)  => branches_session(&s),
+        Err(r) => r,
+    }
+}
+
+async fn completions_handler_wt(
+    AxumPath(wt): AxumPath<String>,
+    State(agent): State<Arc<Agent>>,
+    Query(p):     Query<CompletionQuery>,
+) -> Response {
+    match require_session(&agent, &wt) {
+        Ok(s)  => completions_session(&s, p).into_response(),
+        Err(r) => r,
+    }
+}
+
+async fn cancel_task_handler_wt(
+    AxumPath((wt, id)): AxumPath<(String, String)>,
+    State(agent):       State<Arc<Agent>>,
+) -> Response {
+    match require_session(&agent, &wt) {
+        Ok(s)  => cancel_task_session(&s, &id).into_response(),
+        Err(r) => r,
+    }
+}
+
+// ── Worktree lifecycle ──────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct CreateWorktreeBody {
+    branch: String,
+    /// Optional base ref to branch from. Defaults to the repo's default branch.
+    base:   Option<String>,
+}
+
+async fn list_worktrees_handler(State(agent): State<Arc<Agent>>) -> Json<Vec<WorktreeMeta>> {
+    Json(agent.worktrees.lock().unwrap().clone())
+}
+
+/// POST /worktrees — create a new git worktree (on a new branch) plus its chat
+/// session. The agent runs `git worktree add` against its own `workspace/.git`,
+/// so the new tree shares the one clone and runs under this process's uid.
+async fn create_worktree_handler(
+    State(agent): State<Arc<Agent>>,
+    Json(body):   Json<CreateWorktreeBody>,
+) -> Response {
+    let branch = body.branch.trim().to_string();
+    if branch.is_empty() {
+        return (StatusCode::BAD_REQUEST, "branch is required").into_response();
+    }
+    if !agent.workspace.join(".git").exists() {
+        return (StatusCode::BAD_REQUEST, "this agent has no git repo to branch from").into_response();
+    }
+    let id = worktree_id_from_branch(&branch);
+    if agent.session(&id).is_some() {
+        return (StatusCode::CONFLICT, format!("worktree '{id}' already exists")).into_response();
+    }
+
+    let workspace = agent.workspace.to_string_lossy().to_string();
+    let wt_dir    = agent.agent_dir.join("worktrees").join(&id);
+    let wt_path   = wt_dir.to_string_lossy().to_string();
+    if let Err(e) = fs::create_dir_all(agent.agent_dir.join("worktrees")) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("create worktrees dir: {e}")).into_response();
+    }
+
+    // Resolve the base ref (default branch) and add the worktree. Both are
+    // blocking git invocations — run off the async runtime.
+    let base = body.base.clone();
+    let (ws, wtp, br) = (workspace.clone(), wt_path.clone(), branch.clone());
+    let git_res = tokio::task::spawn_blocking(move || {
+        let base = base.unwrap_or_else(|| {
+            okto_core::git_default_base(&ws).unwrap_or_else(|_| "HEAD".to_string())
+        });
+        okto_core::add_worktree(&ws, &wtp, &br, &base)
+    }).await;
+    match git_res {
+        Ok(Ok(()))  => {}
+        Ok(Err(e))  => return (StatusCode::INTERNAL_SERVER_ERROR, format!("git worktree add: {e}")).into_response(),
+        Err(e)      => return (StatusCode::INTERNAL_SERVER_ERROR, format!("worktree task panicked: {e}")).into_response(),
+    }
+
+    let meta = WorktreeMeta { id: id.clone(), branch: branch.clone(), path: wt_path, created_at: now_secs() };
+    let session = worktree_session(&agent.mcp_pool, &meta);
+    agent.sessions.lock().unwrap().insert(id.clone(), session);
+    {
+        let mut wts = agent.worktrees.lock().unwrap();
+        wts.push(meta.clone());
+        save_worktree_manifest(&wts);
+    }
+    info!("[agent/worktrees] created '{id}' on branch '{branch}'");
+    (StatusCode::OK, Json(meta)).into_response()
+}
+
+/// DELETE /worktrees/:wt — tear down a worktree: cancel its turn, drop its
+/// session, `git worktree remove` + delete its branch, and remove its chat
+/// data dir.
+async fn delete_worktree_handler(
+    AxumPath(wt): AxumPath<String>,
+    State(agent): State<Arc<Agent>>,
+) -> Response {
+    let session = agent.sessions.lock().unwrap().remove(&wt);
+    let Some(session) = session else {
+        return (StatusCode::NOT_FOUND, format!("no worktree '{wt}'")).into_response();
+    };
+    // Cancel any in-flight turn so the process can't write into a dir we're
+    // about to remove.
+    session.cancel.lock().unwrap().cancel();
+
+    let workspace = agent.workspace.to_string_lossy().to_string();
+    let wt_path   = session.cwd.clone();
+    let branch    = session.branch.clone();
+    let git_res = tokio::task::spawn_blocking(move || {
+        okto_core::remove_worktree(&workspace, &wt_path, branch.as_deref())
+    }).await;
+    if let Ok(Err(e)) = git_res {
+        warn!("[agent/worktrees] remove '{wt}': {e} (continuing teardown)");
+    }
+    // Drop the per-worktree chat data dir.
+    let _ = fs::remove_dir_all(&session.data_dir);
+    {
+        let mut wts = agent.worktrees.lock().unwrap();
+        wts.retain(|m| m.id != wt);
+        save_worktree_manifest(&wts);
+    }
+    info!("[agent/worktrees] deleted '{wt}'");
+    StatusCode::OK.into_response()
 }
 
 async fn get_config_handler() -> Json<Config> { Json(read_config()) }
@@ -1333,8 +1597,27 @@ pub async fn run() -> anyhow::Result<()> {
         mcp_pool:      mcp_pool.clone(),
     });
 
+    // Rebuild worktree sessions from the manifest. A worktree whose dir went
+    // missing out-of-band is dropped (and pruned from the manifest).
+    let mut sessions: HashMap<String, Arc<AppState>> =
+        HashMap::from([(String::new(), default_session)]);
+    let mut worktrees: Vec<WorktreeMeta> = Vec::new();
+    for meta in load_worktree_manifest() {
+        if PathBuf::from(&meta.path).join(".git").exists() {
+            info!("[agent] restoring worktree '{}' (branch '{}')", meta.id, meta.branch);
+            sessions.insert(meta.id.clone(), worktree_session(&mcp_pool, &meta));
+            worktrees.push(meta);
+        } else {
+            warn!("[agent] worktree '{}' path {} missing — pruning from manifest", meta.id, meta.path);
+        }
+    }
+    if worktrees.len() != load_worktree_manifest().len() {
+        save_worktree_manifest(&worktrees);
+    }
+
     let agent = Arc::new(Agent {
-        sessions:  Mutex::new(HashMap::from([(String::new(), default_session)])),
+        sessions:  Mutex::new(sessions),
+        worktrees: Mutex::new(worktrees),
         mcp_pool,
         agent_dir,
         workspace: workspace.clone(),
@@ -1355,6 +1638,17 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/branches",    get(get_branches_handler))
         .route("/completions", get(get_completions_handler))
         .route("/config",      get(get_config_handler).put(update_config_handler))
+        // Worktrees: lifecycle + per-worktree chat routes (mirror the top-level
+        // chat routes, scoped to a worktree session).
+        .route("/worktrees",                  get(list_worktrees_handler).post(create_worktree_handler))
+        .route("/worktrees/:wt",              delete(delete_worktree_handler))
+        .route("/worktrees/:wt/history",      get(history_handler_wt))
+        .route("/worktrees/:wt/stream",       get(stream_handler_wt))
+        .route("/worktrees/:wt/interrupt",    post(interrupt_handler_wt))
+        .route("/worktrees/:wt/clear",        post(clear_handler_wt))
+        .route("/worktrees/:wt/branches",     get(branches_handler_wt))
+        .route("/worktrees/:wt/completions",  get(completions_handler_wt))
+        .route("/worktrees/:wt/tasks/:id/cancel", post(cancel_task_handler_wt))
         .with_state(agent.clone())
         .layer(cors);
 
