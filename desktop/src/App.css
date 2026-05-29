@@ -267,6 +267,36 @@ textarea { resize: none; }
   height: 100vh;
   background: var(--bg);
   overflow: hidden;
+  position: relative;
+}
+
+/* Drag handle straddling the sidebar/main boundary. Absolutely positioned
+   (out of grid flow) so the grid still sees only sidebar + main. */
+.resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  transform: translateX(-50%);
+  cursor: col-resize;
+  z-index: 50;
+}
+
+.resizer::after {
+  content: '';
+  position: absolute;
+  top: 16px;
+  bottom: 16px;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 2px;
+  background: transparent;
+  transition: background var(--t-fast) var(--ease);
+}
+
+.resizer:hover::after {
+  background: var(--border-strong);
 }
 
 .sidebar {
@@ -1111,7 +1141,7 @@ textarea { resize: none; }
    ───────────────────────────────────────────────────────────────────────── */
 
 .input-bar {
-  padding: 14px 24px 18px;
+  padding: 14px 24px 18px 2px;
   background: transparent;
   position: relative;
 }
@@ -1175,7 +1205,7 @@ textarea { resize: none; }
   max-height: 200px;
   padding: 14px 18px;
   background: var(--bg-elevated);
-  border: none;
+  border: 1px solid var(--border);
   border-radius: var(--r-lg);
   color: var(--text-primary);
   font-family: var(--sans);
@@ -1187,7 +1217,7 @@ textarea { resize: none; }
 }
 
 .chat-input:focus {
-  box-shadow: var(--shadow-sm), 0 0 0 4px var(--accent-glow);
+  box-shadow: var(--shadow-sm), 0 0 0 1px var(--accent-glow);
 }
 
 .chat-input::placeholder { color: var(--text-faint); }

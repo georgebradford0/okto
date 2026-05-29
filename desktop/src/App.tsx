@@ -11,6 +11,12 @@ import './App.css'
 // their names (per AgentInfo.id); 'lair' is reserved so it can never collide.
 const LAIR_ID = 'lair'
 
+// Sidebar is user-resizable by dragging its right edge, clamped to this range.
+const SIDEBAR_MIN_WIDTH = 200
+const SIDEBAR_MAX_WIDTH = 420
+const SIDEBAR_DEFAULT_WIDTH = 264
+const SIDEBAR_WIDTH_KEY = 'okto.sidebarWidth'
+
 // Stable empty defaults — important: `itemsByAgent[id] ?? []` would mint a new
 // array reference every render, which causes the chat-scroll useEffect to
 // fire on every keystroke. Sharing one frozen array keeps reference equality.
@@ -200,6 +206,36 @@ function App() {
 
   // Visibility for the Background Tasks modal.
   const [showTasksModal,    setShowTasksModal]    = useState(false)
+
+  // User-draggable sidebar width (persisted, clamped to MIN..MAX).
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY))
+    return saved >= SIDEBAR_MIN_WIDTH && saved <= SIDEBAR_MAX_WIDTH
+      ? saved
+      : SIDEBAR_DEFAULT_WIDTH
+  })
+
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth))
+  }, [sidebarWidth])
+
+  const startSidebarResize = (e: React.MouseEvent) => {
+    e.preventDefault()
+    const onMove = (ev: MouseEvent) => {
+      const w = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, ev.clientX))
+      setSidebarWidth(w)
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }
 
   // Derived per-agent slices for the active tab. EMPTY_ITEMS is a stable
   // reference so [items] dep checks don't fire when an unrelated tab updates.
@@ -1096,11 +1132,17 @@ function App() {
     : agents.find(a => a.id === activeAgent)?.name ?? activeAgent
 
   return (
-    <div className="shell">
+    <div className="shell" style={{ gridTemplateColumns: `${sidebarWidth}px 1fr` }}>
       <Sidebar
         agents={agents}
         activeAgent={activeAgent}
         onSelect={selectAgent}
+      />
+      <div
+        className="resizer"
+        style={{ left: sidebarWidth - 14 }}
+        onMouseDown={startSidebarResize}
+        title="Drag to resize sidebar"
       />
       <div className="main">
         <div className="main-head">
