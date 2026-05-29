@@ -1999,6 +1999,214 @@ pub fn get_branches_for_repo(repo: &str) -> Result<Vec<Branch>, String> {
     Ok(branches)
 }
 
+// ── Git worktrees ───────────────────────────────────────────────────────────
+//
+// A worktree-backed agent's `workspace/` is a `git worktree` of a shared
+// per-repo cache under `OKTO_REPOS_DIR/<slug>`, on its own branch. The cache
+// is a normal clone that nobody works in directly; every worktree attaches to
+// it, so deleting any one agent never breaks the others. These helpers are the
+// pure git mechanics — the lair side owns token-splicing, path layout, and the
+// registry bookkeeping.
+
+/// Filesystem-safe cache key derived from a repo origin URL. Mirrors the
+/// `lair-<slug>` default-name logic: take the last path segment, strip a
+/// trailing `.git`, lowercase. Falls back to `repo` for degenerate URLs.
+pub fn repo_slug_from_url(url: &str) -> String {
+    let slug = url
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("repo")
+        .trim_end_matches(".git")
+        .to_lowercase();
+    let cleaned: String = slug
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '-' })
+        .collect();
+    if cleaned.is_empty() { "repo".to_string() } else { cleaned }
+}
+
+/// Run `git <args>` and return trimmed stdout, or an `Err` carrying stderr.
+fn run_git_capture(args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .output()
+        .map_err(|e| format!("spawn `git {}`: {e}", args.join(" ")))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        warn!("[git] `git {}` failed: {stderr}", args.join(" "));
+        return Err(if stderr.is_empty() {
+            format!("`git {}` exited with {}", args.join(" "), out.status)
+        } else {
+            stderr
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Origin URL configured on the repo at `repo_path` (`remote.origin.url`).
+/// Used to derive the shared-cache identity from an existing agent workspace
+/// when the first worktree for that repo is requested.
+pub fn git_remote_origin(repo_path: &str) -> Result<String, String> {
+    run_git_capture(&["-C", repo_path, "remote", "get-url", "origin"])
+}
+
+/// Clone `url` into `dest` (a fresh dir). `url` should already carry any auth
+/// (e.g. an HTTPS token spliced in by the caller).
+pub fn git_clone(url: &str, dest: &str) -> Result<(), String> {
+    run_git_capture(&["clone", url, dest]).map(|_| ())
+}
+
+/// `git fetch --all` in the repo at `repo_path`.
+pub fn git_fetch_all(repo_path: &str) -> Result<(), String> {
+    run_git_capture(&["-C", repo_path, "fetch", "--all", "--prune"]).map(|_| ())
+}
+
+/// True if `branch` already exists (locally) in the repo at `repo_path`.
+pub fn git_branch_exists(repo_path: &str, branch: &str) -> bool {
+    run_git_capture(&[
+        "-C", repo_path, "rev-parse", "--verify", "--quiet",
+        &format!("refs/heads/{branch}"),
+    ]).is_ok()
+}
+
+/// Add a new worktree at `worktree_path` checked out on a freshly-created
+/// `branch`, branched from `base` (an existing ref in the cache, e.g. the
+/// default branch). Fails if `branch` already exists or is checked out
+/// elsewhere — both are worktree invariants the caller should surface.
+pub fn add_worktree(cache: &str, worktree_path: &str, branch: &str, base: &str) -> Result<(), String> {
+    run_git_capture(&[
+        "-C", cache, "worktree", "add", "-b", branch, worktree_path, base,
+    ]).map(|_| ())
+}
+
+/// Resolve the cache's current default branch ref (what `HEAD` points at after
+/// a fresh clone), e.g. `origin/main`. Used as the base for new worktrees.
+pub fn git_default_base(cache: &str) -> Result<String, String> {
+    // `origin/HEAD` is a symbolic ref to the remote's default branch.
+    match run_git_capture(&["-C", cache, "rev-parse", "--abbrev-ref", "origin/HEAD"]) {
+        Ok(s) if !s.is_empty() => Ok(s),
+        _ => Ok("HEAD".to_string()),
+    }
+}
+
+/// Remove the worktree at `worktree_path` and delete its `branch`, then prune
+/// stale administrative entries. Branch deletion failures (already gone, etc.)
+/// are non-fatal — teardown should be best-effort. The shared cache itself is
+/// left intact for other worktrees.
+pub fn remove_worktree(cache: &str, worktree_path: &str, branch: Option<&str>) -> Result<(), String> {
+    // `--force` so an uncommitted/dirty worktree still detaches — the agent is
+    // being terminated, the user opted into discarding it.
+    let removed = run_git_capture(&["-C", cache, "worktree", "remove", "--force", worktree_path]);
+    if let Err(e) = &removed {
+        warn!("[git] worktree remove {worktree_path}: {e} (continuing)");
+    }
+    if let Some(b) = branch.filter(|b| !b.is_empty()) {
+        if let Err(e) = run_git_capture(&["-C", cache, "branch", "-D", b]) {
+            warn!("[git] branch -D {b}: {e} (continuing)");
+        }
+    }
+    let _ = run_git_capture(&["-C", cache, "worktree", "prune"]);
+    Ok(())
+}
+
+#[cfg(test)]
+mod git_worktree_tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    /// Unique scratch dir under the OS temp dir; removed on `Drop`.
+    struct TmpDir(PathBuf);
+    impl TmpDir {
+        fn new() -> Self {
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let p = std::env::temp_dir()
+                .join(format!("okto-wt-{}-{}", std::process::id(), n));
+            std::fs::create_dir_all(&p).unwrap();
+            TmpDir(p)
+        }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+    /// Run git with identity/config flags so tests don't depend on the
+    /// machine's global git config. Panics on failure.
+    fn git(dir: &str, args: &[&str]) {
+        let mut full = vec![
+            "-C", dir,
+            "-c", "user.email=test@okto.local",
+            "-c", "user.name=okto-test",
+            "-c", "init.defaultBranch=main",
+            "-c", "commit.gpgsign=false",
+        ];
+        full.extend_from_slice(args);
+        let out = std::process::Command::new("git").args(&full).output().unwrap();
+        assert!(out.status.success(),
+            "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+    }
+
+    fn init_repo_with_commit(dir: &str) {
+        std::process::Command::new("git")
+            .args(["-c", "init.defaultBranch=main", "init", dir]).output().unwrap();
+        std::fs::write(format!("{dir}/README.md"), "hello").unwrap();
+        git(dir, &["add", "."]);
+        git(dir, &["commit", "-m", "init"]);
+    }
+
+    #[test]
+    fn slug_derivation() {
+        assert_eq!(repo_slug_from_url("https://github.com/foo/Bar.git"), "bar");
+        assert_eq!(repo_slug_from_url("git@github.com:foo/Bar.git"), "bar");
+        assert_eq!(repo_slug_from_url("https://github.com/foo/baz/"), "baz");
+        assert_eq!(repo_slug_from_url("ssh://host/path/My_Repo"), "my_repo");
+        assert_eq!(repo_slug_from_url(""), "repo");
+        // Path-traversal / odd chars are flattened to dashes.
+        assert!(!repo_slug_from_url("a/b/../weird name").contains('/'));
+    }
+
+    #[test]
+    fn worktree_add_and_remove() {
+        let tmp = TmpDir::new();
+        let root = tmp.0.to_string_lossy().to_string();
+        let cache = format!("{root}/cache");
+        let wt    = format!("{root}/wt");
+
+        init_repo_with_commit(&cache);
+
+        assert!(!git_branch_exists(&cache, "feature"));
+        add_worktree(&cache, &wt, "feature", "HEAD").unwrap();
+
+        // Worktree dir exists, carries a `.git` *file* (not dir), and the
+        // branch now exists in the cache.
+        assert!(std::path::Path::new(&wt).is_dir());
+        assert!(std::path::Path::new(&format!("{wt}/.git")).is_file());
+        assert!(std::path::Path::new(&format!("{wt}/README.md")).exists());
+        assert!(git_branch_exists(&cache, "feature"));
+
+        // Adding the same branch again must fail (worktree invariant).
+        assert!(add_worktree(&cache, &format!("{root}/wt2"), "feature", "HEAD").is_err());
+
+        // Teardown removes the worktree dir and deletes the branch.
+        remove_worktree(&cache, &wt, Some("feature")).unwrap();
+        assert!(!std::path::Path::new(&wt).exists());
+        assert!(!git_branch_exists(&cache, "feature"));
+    }
+
+    #[test]
+    fn remote_origin_roundtrip() {
+        let tmp = TmpDir::new();
+        let root = tmp.0.to_string_lossy().to_string();
+        let repo = format!("{root}/r");
+        init_repo_with_commit(&repo);
+        git(&repo, &["remote", "add", "origin", "https://example.com/foo/bar.git"]);
+        assert_eq!(git_remote_origin(&repo).unwrap(), "https://example.com/foo/bar.git");
+    }
+}
+
 // ── Shell Environment Bootstrap ───────────────────────────────────────────────
 
 pub fn init_shell_env() {

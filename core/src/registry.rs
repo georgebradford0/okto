@@ -95,6 +95,22 @@ pub struct AgentRecord {
     /// to drive cascade-terminate and to enforce depth / descendant caps.
     #[serde(default)]
     pub parent:         Option<String>,
+    /// Name of the source ("main repo") agent this agent is a git worktree
+    /// of. `None` for ordinary agents. Orthogonal to `parent`: a worktree is
+    /// operator-created (so `parent` is `None`) but git-anchored to a shared
+    /// repo cache, not to the source agent. Drives the indented sidebar
+    /// nesting on the clients and worktree teardown.
+    #[serde(default)]
+    pub worktree_of:    Option<String>,
+    /// Shared repo-cache key (slug derived from the repo origin URL). Set
+    /// alongside `worktree_of`; locates the primary clone under
+    /// `OKTO_REPOS_DIR/<slug>` for `git worktree add/remove/prune`.
+    #[serde(default)]
+    pub repo_slug:      Option<String>,
+    /// Branch this worktree checked out. Stored so teardown can delete the
+    /// branch (`git branch -D`) even when the workspace dir is already gone.
+    #[serde(default)]
+    pub worktree_branch: Option<String>,
 }
 
 impl AgentRecord {

@@ -1947,6 +1947,9 @@ async fn exec_create_agent_for_parent(
                 provider:       None,
                 metadata:       serde_json::Value::Null,
                 parent:         parent.clone(),
+                worktree_of:     None,
+                repo_slug:       None,
+                worktree_branch: None,
             };
             let add_result = state.registry.lock().unwrap().add(record);
             if let Err(e) = add_result {
@@ -2256,6 +2259,9 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
             provider:       provider.clone(),
             metadata:       metadata.clone(),
             parent:         None,
+            worktree_of:     None,
+            repo_slug:       None,
+            worktree_branch: None,
         };
         if let Err(e) = state.registry.lock().unwrap().set(pending) {
             return format!("error inserting pending registry row: {e:#}");
@@ -2344,6 +2350,9 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
         provider,
         metadata,
         parent:         None,
+        worktree_of:     None,
+        repo_slug:       None,
+        worktree_branch: None,
     };
     if let Err(e) = state.registry.lock().unwrap().set(record) {
         error!("[lair/register_remote_agent] finalising registry row for '{name}' failed: {e:#}");
