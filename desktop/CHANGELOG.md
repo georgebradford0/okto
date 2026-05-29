@@ -5,6 +5,8 @@ Changes to the okto desktop (Tauri) app. Current version: see `package.json` /
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-29
+
 ### Changed
 
 - **Tool-call chips drop the `Running`/`Pending` text prefix.** The prefix
