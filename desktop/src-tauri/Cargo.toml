@@ -24,3 +24,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 okto-core = { path = "../../core" }
 
+# okto-core pulls git2 → openssl-sys. Build OpenSSL from source and link it
+# statically so the universal (x86_64 + aarch64) build cross-compiles cleanly
+# on the arm64 CI runner instead of hunting for a per-arch system OpenSSL.
+openssl-sys = { version = "0.9", features = ["vendored"] }
+
