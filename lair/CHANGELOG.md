@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-05-29
+
 ### Added
 
 - **`POST /tasks/:id/cancel` HTTP endpoint** (and `/agents/:name/tasks/:id/cancel` proxy) for stopping background tasks from outside the WS. Twin of the existing `cancel_task` WS frame — same `core_cancel_task` plumbing, returns `{"id":"…","fired":bool}`. Powers the new `okto tasks stop` CLI command.
