@@ -1,7 +1,7 @@
 //! Pre-flight work that used to live in the `docker-entrypoint*.sh` shell
 //! scripts. Both roles call into this module before they bind their HTTP
 //! listener: detecting the advertised public host, running the operator's
-//! `STARTUP_SCRIPT`, optionally cloning a git repo (agent role only), and
+//! `bootstrap.sh`, optionally cloning a git repo (agent role only), and
 //! rendering the connection QR code.
 
 use anyhow::{Context, Result};
@@ -48,21 +48,35 @@ pub async fn resolve_public_host(role_log_prefix: &str) -> Result<String> {
     Ok(host)
 }
 
-/// Run the operator-provided `STARTUP_SCRIPT` env var as a bash snippet, if set.
-/// Used to install ad-hoc tools / fetch credentials at container boot. Failure
-/// is surfaced as an error since whatever follows likely depends on the script
-/// having succeeded.
-pub async fn run_startup_script(role_log_prefix: &str) -> Result<()> {
-    let Ok(script) = std::env::var("STARTUP_SCRIPT") else { return Ok(()); };
-    if script.is_empty() { return Ok(()); }
-    info!("[{role_log_prefix}] running STARTUP_SCRIPT ({} chars)...", script.len());
-    let status = Command::new("bash").arg("-c").arg(&script).status().await
-        .context("spawn STARTUP_SCRIPT bash")?;
-    if !status.success() {
-        error!("[{role_log_prefix}] STARTUP_SCRIPT exited with {status}");
-        anyhow::bail!("STARTUP_SCRIPT exited with {status}");
+/// Run the operator-managed bootstrap script at `$OKTO_HOME/bootstrap.sh`
+/// (`~/.okto/bootstrap.sh` on the host, `/data/bootstrap.sh` in the container),
+/// if it exists, as a bash script. This is the single startup-customization
+/// hook: install ad-hoc tools, fetch credentials, set git config, etc.
+///
+/// Because every local agent runs inside lair's own container, anything this
+/// script installs into the shared filesystem (`apt-get install`, `npm i -g`,
+/// `uv tool install`, …) lands on every agent's `PATH`. So only the container's
+/// entrypoint process runs it — lair (`--role lair`), or a standalone remote
+/// agent (`--role agent` as its own container's entrypoint). Locally-spawned
+/// child agents inherit the result and never re-run it.
+///
+/// A missing file is a no-op. Failure aborts boot, since whatever follows
+/// likely depends on the script having succeeded.
+pub async fn run_bootstrap_script(role_log_prefix: &str) -> Result<()> {
+    let okto_home = std::env::var("OKTO_HOME").unwrap_or_else(|_| "/data".to_string());
+    let script = Path::new(&okto_home).join("bootstrap.sh");
+    if !script.exists() {
+        debug!("[{role_log_prefix}] no bootstrap script at {}; skipping", script.display());
+        return Ok(());
     }
-    info!("[{role_log_prefix}] STARTUP_SCRIPT complete");
+    info!("[{role_log_prefix}] running bootstrap script {}...", script.display());
+    let status = Command::new("bash").arg(&script).status().await
+        .with_context(|| format!("spawn bootstrap script {}", script.display()))?;
+    if !status.success() {
+        error!("[{role_log_prefix}] bootstrap script exited with {status}");
+        anyhow::bail!("bootstrap script {} exited with {status}", script.display());
+    }
+    info!("[{role_log_prefix}] bootstrap script complete");
     Ok(())
 }
 

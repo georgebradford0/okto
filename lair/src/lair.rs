@@ -909,7 +909,6 @@ async fn start_agent_by_name(state: &AppState, name: &str) -> Result<(), String>
         name:              &record.name,
         port:              record.port,
         git_url:           None,
-        startup_script:    None,
         startup_prompt:    None,
         anthropic_api_key: cfg.anthropic_api_key.as_deref(),
         openai_api_key:    cfg.openai_api_key.as_deref(),
@@ -1017,7 +1016,7 @@ async fn probe_agent_ready(client: &reqwest::Client, port: u16) -> bool {
 /// Block until a freshly-spawned local child answers `/health`, the pid dies,
 /// or `timeout` elapses. Called from `exec_create_agent_for_parent` so the
 /// create_agent tool doesn't claim success while the child is still doing
-/// `ensure_workspace` / `run_startup_script` / `init_mcp_pool` and hasn't yet
+/// `ensure_workspace` / `run_bootstrap_script` / `init_mcp_pool` and hasn't yet
 /// bound its loopback HTTP port.
 async fn wait_for_agent_ready(port: u16, pid: u32, timeout: Duration) -> Result<Duration, String> {
     let client = reqwest::Client::builder()
@@ -1587,12 +1586,12 @@ okto can host any kind of agent workload, not only coding agents — don't assum
 
 # Orchestration tools (lair-specific)
 - **`list_agents`** — every known agent (local + remote) with full registry row (name, pid, port, host, pubkey, status, binary_version, instance_id, provider, metadata). Cheap; call before guessing a name.
-- **`create_agent`** — args: `git_url?`, `name?`, `port?`, `startup_script?`, `startup_prompt?`. Spawns a new *local* child process.
+- **`create_agent`** — args: `git_url?`, `name?`, `port?`, `startup_prompt?`. Spawns a new *local* child process.
   - Omit `git_url` for a repo-less workload (default name `lair-workload`); otherwise default name is `lair-<repo-slug>`. `git_url` is a spawn-time argument only — it isn't persisted in the registry. The cloned repo lives in the agent's workspace dir and survives restarts.
   - `port` auto-assigns from 30100–30199 if omitted.
-  - `startup_script` runs before the child's HTTP server boots — good for `apt-get`, package installs, git config.
   - `startup_prompt` is sent as the child's first user message once it's ready and triggers a full agentic loop.
-  - **Never put secrets in `startup_script` or `startup_prompt`** — provider credentials are forwarded via env automatically; you don't need to bake them in.
+  - **Never put secrets in `startup_prompt`** — provider credentials are forwarded via env automatically; you don't need to bake them in.
+  - Need extra packages/tools? There are no per-agent startup scripts. Container startup runs `~/.okto/bootstrap.sh` (`/data/bootstrap.sh`) once if present — anything it installs into the shared filesystem (`apt-get`, `npm i -g`, `uv tool install`) is on every local agent's `PATH`. It's operator-managed on the host; it isn't an agent tool argument.
 - **`mint_bootstrap_userdata`** — args: `name`, `agent_purpose?`, `startup_script?`, `public_port?`, `lair_version?`, `image?`. Returns a cloud-init bash script for a **remote** agent. The userdata is **credentials-free** — it trusts lair's SSH key, installs Docker if absent, `docker pull`s the lair image, and writes a systemd unit that `docker run`s the image with `--role agent`. Hand the returned `userdata` to whichever provisioning MCP the user has configured (AWS, Hetzner, etc.). The MCP returns the new VM's IP → call `register_remote_agent`.
 - **`register_remote_agent`** — args: `name`, `host`, `provider?`, `instance_id?`, `git_url?`, `metadata?`. After the provisioning MCP returns the VM's IP, lair SSHes in and: (a) waits for the agent container to publish `/var/lib/okto/lair/agent-info.json` (the agent writes it inside the container; the host sees it via the bind mount), (b) drops `config.json` to `/var/lib/okto/config.json` with the API keys, (c) clones `git_url` into the workspace if given, (d) `systemctl restart`s the agent unit (which `docker run`s a fresh container, picking up the new config). Total timeout ~6 minutes. `name` must match what you passed to `mint_bootstrap_userdata`.
 - **`terminate_agent(name)`** — *destructive.* Kills the named agent **and every transitive descendant** (leaves-first), then deletes their per-agent data + workspace dirs. Sub-agents spawned by other agents are torn down automatically with their parent. For remote agents, returns instructions to terminate the VM via the provisioning MCP first, then call `forget_agent`. Always run `list_agents` first to confirm the exact name; confirm with the user before calling unless the request was unambiguous.
@@ -1654,7 +1653,7 @@ okto can host any kind of agent workload, not only coding agents — don't assum
 # Safety
 - Never commit or push git changes unless the user explicitly asked.
 - Confirm before `terminate_agent` or `restart_all_agents` unless the user just told you to.
-- If a request would put a secret into plaintext config (`startup_script`, `startup_prompt`, env), flag it and offer a safer alternative.
+- If a request would put a secret into plaintext config (`startup_prompt`, `bootstrap.sh`, env), flag it and offer a safer alternative.
 - Trust your judgment on small choices; only ask when ambiguity would actually change the outcome."#
 }
 
@@ -1682,10 +1681,6 @@ fn create_agent_tool() -> AnthropicTool {
                 "port": {
                     "type": "integer",
                     "description": "Optional loopback port (30100–30199). Auto-assigned if omitted."
-                },
-                "startup_script": {
-                    "type": "string",
-                    "description": "Optional shell script run inside the child before its HTTP server starts. Never include sensitive data — these are stored as plaintext env on the process."
                 },
                 "startup_prompt": {
                     "type": "string",
@@ -1781,7 +1776,7 @@ fn mint_bootstrap_userdata_tool() -> AnthropicTool {
                 },
                 "startup_script": {
                     "type": "string",
-                    "description": "Optional bash run inside the agent process at boot, before its HTTP server binds. Will not have access to API keys (they arrive later via SSH); use for package installs."
+                    "description": "Optional bash written to the remote host's /data/bootstrap.sh and run inside the agent container on startup, before its HTTP server binds. Will not have access to API keys (they arrive later via SSH); use for package installs."
                 },
                 "public_port": {
                     "type": "integer",
@@ -1954,7 +1949,6 @@ async fn exec_create_agent_for_parent(
         return Err(format!("agent '{child_name}' already exists"));
     }
 
-    let startup_script = input.get("startup_script").and_then(|v| v.as_str()).map(str::to_string);
     let startup_prompt = input.get("startup_prompt").and_then(|v| v.as_str()).map(str::to_string);
 
     let port: u16 = match input.get("port")
@@ -2035,7 +2029,6 @@ async fn exec_create_agent_for_parent(
         name:              &child_name,
         port,
         git_url:           git_url.as_deref(),
-        startup_script:    startup_script.as_deref(),
         startup_prompt:    startup_prompt.as_deref(),
         anthropic_api_key: cfg.anthropic_api_key.as_deref(),
         openai_api_key:    cfg.openai_api_key.as_deref(),
@@ -2167,8 +2160,24 @@ async fn exec_mint_bootstrap_userdata(state: Arc<AppState>, input: serde_json::V
         "OKTO_SKIP_SHELL_ENV=1".to_string(),
     ];
     if let Some(v) = &agent_purpose  { env_lines.push(format!("AGENT_PURPOSE={v}")); }
-    if let Some(v) = &startup_script { env_lines.push(format!("STARTUP_SCRIPT={v}")); }
     let env_content = env_lines.join("\n");
+
+    // Operator bootstrap script for the remote agent. We write it to the host's
+    // `/var/lib/okto/bootstrap.sh`, which the agent container sees at
+    // `/data/bootstrap.sh` via the bind mount and runs on startup (it's the
+    // container's entrypoint, so `OKTO_LOCAL_CHILD` is unset). Mirrors the
+    // local `~/.okto/bootstrap.sh` hook. Empty/absent = no script written.
+    let bootstrap_block = match startup_script.as_deref().filter(|s| !s.is_empty()) {
+        Some(script) => format!(
+            "\n# Operator bootstrap script — runs inside the agent container on \
+             startup (lands at /data/bootstrap.sh via the bind mount).\n\
+             umask 022\n\
+             cat > /var/lib/okto/bootstrap.sh <<'OKTO_BOOTSTRAP_EOF'\n{script}\n\
+             OKTO_BOOTSTRAP_EOF\n\
+             chmod +x /var/lib/okto/bootstrap.sh\n"
+        ),
+        None => String::new(),
+    };
 
     let userdata = format!(r#"#!/bin/bash
 set -eux
@@ -2201,7 +2210,7 @@ cat > /etc/okto/agent.env <<'OKTO_ENV_EOF'
 {env_content}
 OKTO_ENV_EOF
 umask 022
-
+{bootstrap_block}
 # 5. Pull the multi-arch lair image. The image hosts both --role lair and
 #    --role agent; we override the entrypoint below to pick the agent role.
 docker pull "{image}"
@@ -2832,7 +2841,6 @@ struct CreateAgentBody {
     name:           Option<String>,
     git_url:        Option<String>,
     port:           Option<u16>,
-    startup_script: Option<String>,
     startup_prompt: Option<String>,
     /// Optional MCP server list for the child. Absent = inherit lair's
     /// current mcp.json verbatim (the default). Empty array = explicitly
@@ -2859,7 +2867,6 @@ async fn cli_create_agent(
     if let Some(v) = body.name           { input.insert("name".into(),           serde_json::Value::String(v)); }
     if let Some(v) = body.git_url        { input.insert("git_url".into(),        serde_json::Value::String(v)); }
     if let Some(v) = body.port           { input.insert("port".into(),           serde_json::Value::Number(v.into())); }
-    if let Some(v) = body.startup_script { input.insert("startup_script".into(), serde_json::Value::String(v)); }
     if let Some(v) = body.startup_prompt { input.insert("startup_prompt".into(), serde_json::Value::String(v)); }
     if let Some(v) = body.mcp            { input.insert("mcp".into(),            v); }
     let out = exec_create_agent(state, serde_json::Value::Object(input)).await;
@@ -2937,7 +2944,6 @@ struct CreateChildAgentBody {
     name:           Option<String>,
     git_url:        Option<String>,
     port:           Option<u16>,
-    startup_script: Option<String>,
     startup_prompt: Option<String>,
     /// Same semantics as `CreateAgentBody.mcp` — omit to inherit lair's
     /// current `mcp.json` verbatim, pass `[]` for no MCP servers, or pass
@@ -2996,7 +3002,6 @@ async fn agent_create_child(
     if let Some(v) = body.name           { input.insert("name".into(),           serde_json::Value::String(v)); }
     if let Some(v) = body.git_url        { input.insert("git_url".into(),        serde_json::Value::String(v)); }
     if let Some(v) = body.port           { input.insert("port".into(),           serde_json::Value::Number(v.into())); }
-    if let Some(v) = body.startup_script { input.insert("startup_script".into(), serde_json::Value::String(v)); }
     if let Some(v) = body.startup_prompt { input.insert("startup_prompt".into(), serde_json::Value::String(v)); }
     if let Some(v) = body.mcp            { input.insert("mcp".into(),            v); }
 
@@ -3102,7 +3107,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
     let public_port: u16 = std::env::var("PUBLIC_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(noise_port);
     let http_port:  u16  = 8000;
     let public_host = crate::bootstrap::resolve_public_host("lair").await?;
-    crate::bootstrap::run_startup_script("lair").await?;
+    crate::bootstrap::run_bootstrap_script("lair").await?;
 
     info!("[lair] noise_pubkey={pubkey_b32} noise_port={noise_port} http_port={http_port} public_host={public_host}");
 

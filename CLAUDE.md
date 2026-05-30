@@ -52,7 +52,7 @@ One Rust binary, `lair`, two roles via `--role lair|agent`. It is built into a D
 - Operator runs `okto init`; the CLI shells out to `docker pull` + `docker run -d --name lair -v ~/.okto:/data -p 8443:8443 --env-file ~/.okto/lair-env <image>`.
 - The Rust code (both CLI and lair) **never imports a Docker SDK**. Every Docker interaction is a shell-out — either from `cli/src/service.rs` for lifecycle, or from the agentic loop's `bash` tool for inside-the-container diagnostics.
 - When lair creates a child agent, it spawns `lair --role agent` itself **inside the same container** (via `tokio::process::Command`), recording the child's pid in `/data/lair/agents.json`. There is no second container per agent.
-- `lair/src/bootstrap.rs` does the public-IP detection, optional git clone, and `STARTUP_SCRIPT` execution in Rust.
+- `lair/src/bootstrap.rs` does the public-IP detection, optional git clone, and runs the operator's `~/.okto/bootstrap.sh` (`/data/bootstrap.sh`) if present — the single startup-customization hook, run once by the container entrypoint (lair, or a standalone remote agent).
 
 Build:
 
@@ -88,6 +88,7 @@ Everything lives under `~/.okto/` on the host, bind-mounted at `/data` inside th
 - `~/.okto/config.json` ↔ `/data/config.json` — operator credentials (API keys, model). Read by every role via `okto_core::config_path()`. The Rust code resolves `OKTO_HOME=/data` to find this; the host CLI uses `$HOME/.okto`.
 - `~/.okto/lair-env` — KEY=VALUE lines passed to `docker --env-file` on every `start_lair`. Operator-managed via `okto env`. **Stays on the host, not bind-mounted** — only consumed at container-start time.
 - `~/.okto/lair-launch.json` — bookkeeping for `okto reload`: ports + last-used image reference.
+- `~/.okto/bootstrap.sh` ↔ `/data/bootstrap.sh` — optional operator-managed startup script. If present, the container entrypoint (lair, or a standalone remote agent) runs it once at boot via `bash` before binding its HTTP listener — the single hook for installing extra packages/tools into the shared container. Locally-spawned children skip it (`OKTO_LOCAL_CHILD=1`). Failure aborts boot.
 - `~/.okto/lair/` ↔ `/data/lair/` — lair's per-process data dir (`OKTO_DATA_DIR`). Holds `noise_key.bin`, `agents.json`, `mcp.json`, `messages.json`, `tasks.json`, `relay_signing_key.bin`, `known_hosts`. (No more `lair.pid` / `lair.log` — the container lifecycle is tracked by docker; `okto logs` shells out to `docker logs`.)
 - `~/.okto/.ssh/` ↔ `/data/.ssh/` — the **container-level** SSH keypair (`id_ed25519`, `id_ed25519.pub`). One key per container; lair generates it on startup and seeds every spawned agent's `~/.ssh/` from it, so the whole container shares one identity. Register the matching pubkey once on external services (Prime Intellect, GitHub, GPU pods, etc.) via `okto ssh pubkey`.
 - `~/.okto/agents/<name>/` ↔ `/data/agents/<name>/` — per-agent dirs. Each has `data/` (the agent's `OKTO_DATA_DIR`), `workspace/` (its `WORKSPACE_DIR`), and `.ssh/` (a copy of the container keypair, chowned to the agent's uid), plus an `agent.log` capture written by lair's supervisor. Agents with a git repo can also have a `worktrees/<id>/` dir per git worktree (see "Worktrees" below).
@@ -145,7 +146,7 @@ Lair listens on `NOISE_PORT` (default 8443 in prod) and forwards Noise traffic t
 Lair exposes a small management API on `127.0.0.1:8000` for the CLI:
 
 - `GET    /agents` — list registry rows.
-- `POST   /agents` — `{name?, git_url?, port?, startup_script?, startup_prompt?, mcp?}` — spawn a new child. Omit `mcp` to inherit lair's current `mcp.json` verbatim (the default); pass `[]` for no MCP servers, or a non-empty array (same schema as `mcp.json`) to override.
+- `POST   /agents` — `{name?, git_url?, port?, startup_prompt?, mcp?}` — spawn a new child. Omit `mcp` to inherit lair's current `mcp.json` verbatim (the default); pass `[]` for no MCP servers, or a non-empty array (same schema as `mcp.json`) to override.
 - `POST   /agents/:name/start` / `stop` — supervisor control.
 - `DELETE /agents/:name` — terminate + remove data dir.
 - `GET    /agents/:name/logs` — last 1 MB of the child's `agent.log`.
@@ -192,7 +193,8 @@ Set at `docker run` time by `cli/src/service.rs`:
 | `OKTO_DATA_DIR` | `~/.okto/agents/<name>/data` |
 | `WORKSPACE_DIR` | `~/.okto/agents/<name>/workspace` |
 | `GIT_URL` | Optional repo to clone (HTTPS needs `GH_TOKEN`) |
-| `AGENT_PURPOSE` / `STARTUP_SCRIPT` / `STARTUP_PROMPT` | Optional bootstrap knobs |
+| `AGENT_PURPOSE` / `STARTUP_PROMPT` | Optional bootstrap knobs |
+| `OKTO_LOCAL_CHILD` | Set to `1` for in-container children so they skip the shared `bootstrap.sh` (lair already ran it) |
 
 ### MCP inheritance (lair → child)
 

@@ -58,23 +58,20 @@ In general I'm on the fence about MCPs.  It's hard to find a situation where jus
 
 There are three operator-facing knobs for shaping what `lair` (and the agents it spawns) does at boot or on every turn:
 
-### `STARTUP_SCRIPT` (lair)
-A bash snippet run inside the lair container *before* the management API binds. Use it for one-time setup that needs root inside the container — installing extra apt packages, pre-cloning a shared repo into `/data`, configuring `git`, baking caches, etc.
+### `bootstrap.sh` (container startup)
+A bash script the container entrypoint runs *before* the management API binds. Use it for one-time setup that needs root inside the container — installing extra apt packages, pre-cloning a shared repo into `/data`, configuring `git`, baking caches, etc.
 
-It's just an env var on the container, so set it through `okto env`:
+It lives at `~/.okto/bootstrap.sh` on the host (mounted at `/data/bootstrap.sh` in the container). Drop the file in place and restart:
 ```sh
-okto env set STARTUP_SCRIPT="$(cat my-bootstrap.sh)"
+cp my-bootstrap.sh ~/.okto/bootstrap.sh
 okto reload
 ```
-The script runs every time the container starts; keep it idempotent.
+Because every local agent shares lair's container, anything the script installs into the shared filesystem (`apt-get install`, `npm i -g`, `uv tool install`, …) lands on every agent's `PATH`. So it runs **once**, on the container's entrypoint process — lair, or a standalone remote agent — and locally-spawned children inherit the result rather than re-running it. The script runs every time the container starts; keep it idempotent. A non-zero exit aborts boot.
 
-### `startup_script` / `startup_prompt` (per child agent)
-When you (or the model) creates a child agent — either via the mobile chat's `create_agent` tool or `POST /agents` on lair's management API — you can pass two optional fields:
+### `startup_prompt` (per child agent)
+When you (or the model) creates a child agent — either via the mobile chat's `create_agent` tool or `POST /agents` on lair's management API — you can pass an optional **`startup_prompt`**: sent as the child's first *user* message once it's healthy, triggering a full agentic turn. Use it to hand the agent its initial task ("clone X, run the tests, summarize what's failing").
 
-- **`startup_script`** — bash that runs in the child's workspace before its HTTP server comes up. Good for `npm install`, `cargo build`, language-specific tool setup, or extra git config. Runs as the non-root agent uid.
-- **`startup_prompt`** — sent as the child's first *user* message once it's healthy, triggering a full agentic turn. Use it to hand the agent its initial task ("clone X, run the tests, summarize what's failing").
-
-Never put secrets in either field — provider credentials are propagated through env automatically.
+Never put secrets in it — provider credentials are propagated through env automatically. There's no per-agent startup script: agents share lair's container, so package/tool installs belong in `bootstrap.sh` above.
 
 ### `--system-prompt-append` (lair's system prompt)
 Lair's built-in system prompt is hardcoded into the binary, but you can append free-form text to it without rebuilding. Use this for site-specific guidance the model should always see — house style, deployment conventions, project-specific commands, etc.

@@ -206,7 +206,6 @@ pub struct SpawnParams<'a> {
     /// registry. Lair proxies WS traffic to this port.
     pub port:              u16,
     pub git_url:           Option<&'a str>,
-    pub startup_script:    Option<&'a str>,
     pub startup_prompt:    Option<&'a str>,
     pub anthropic_api_key: Option<&'a str>,
     pub openai_api_key:    Option<&'a str>,
@@ -364,6 +363,10 @@ impl AgentSupervisor {
         // no need to bake credentials into env. Skip the login-shell env
         // bootstrap (we already have what we need from the parent's env).
         cmd.env("OKTO_SKIP_SHELL_ENV", "1");
+        // Mark this as a locally-spawned child so the agent role skips the
+        // container bootstrap script — lair already ran it for the shared
+        // container (see `bootstrap::run_bootstrap_script`).
+        cmd.env("OKTO_LOCAL_CHILD", "1");
         // The child runs as a non-root uid; give it a writable HOME so
         // npm/uvx/gh/git caches land somewhere it can actually write.
         cmd.env("HOME", &agent_dir);
@@ -371,7 +374,6 @@ impl AgentSupervisor {
             cmd.env("OKTO_DEV", "1");
         }
         if let Some(v) = p.git_url        { cmd.env("GIT_URL",         v); }
-        if let Some(v) = p.startup_script { cmd.env("STARTUP_SCRIPT",  v); }
         if let Some(v) = p.startup_prompt { cmd.env("STARTUP_PROMPT",  v); }
         if let Some(v) = p.agent_purpose  { cmd.env("AGENT_PURPOSE",   v); }
         // Forward provider creds via env so the child doesn't need to read

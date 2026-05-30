@@ -976,10 +976,6 @@ fn spawn_agent_tool() -> AnthropicTool {
                     "type": "string",
                     "description": "Optional logical name for the new child. Defaults to lair-<repo-slug> if git_url is set, else lair-workload."
                 },
-                "startup_script": {
-                    "type": "string",
-                    "description": "Optional shell script run inside the child before its HTTP server starts. Never include secrets."
-                },
                 "startup_prompt": {
                     "type": "string",
                     "description": "Optional first user message to the child's agentic loop once ready. Never include secrets."
@@ -1550,7 +1546,14 @@ pub async fn run() -> anyhow::Result<()> {
         gh_token.as_deref(),
     ).await?;
 
-    crate::bootstrap::run_startup_script("agent").await?;
+    // Local children share lair's container, which already ran the bootstrap
+    // script — re-running it per child would re-install everything. Only a
+    // standalone (remote) agent, which is its own container's entrypoint,
+    // runs it here. `OKTO_LOCAL_CHILD=1` is set by lair's supervisor when it
+    // spawns a child in-container (see `agent_proc.rs`).
+    if std::env::var("OKTO_LOCAL_CHILD").as_deref() != Ok("1") {
+        crate::bootstrap::run_bootstrap_script("agent").await?;
+    }
 
     // The container's shared SSH keypair has already been seeded into
     // `$HOME/.ssh/id_ed25519{,.pub}` by lair's `AgentSupervisor::spawn`

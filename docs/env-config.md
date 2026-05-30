@@ -73,13 +73,19 @@ OKTO_DATA_DIR=$HOME/.okto/agents/<name>/data
 WORKSPACE_DIR=$HOME/.okto/agents/<name>/workspace
 AGENT_PORT=<assigned, 30100–30199>
 OKTO_SKIP_SHELL_ENV=1
+OKTO_LOCAL_CHILD=1               # marks an in-container child; it skips the shared bootstrap.sh
 ```
 
 Plus the per-spawn arguments if the tool input included them:
 
 ```
-GIT_URL          STARTUP_SCRIPT   STARTUP_PROMPT   AGENT_PURPOSE
+GIT_URL          STARTUP_PROMPT   AGENT_PURPOSE
 ```
+
+There's no per-agent startup script: container-level setup (package installs,
+etc.) is the operator's `~/.okto/bootstrap.sh`, run once by lair at container
+startup. Because local children share lair's container, `OKTO_LOCAL_CHILD=1`
+tells the agent role to skip re-running it.
 
 Plus provider credentials, **explicitly forwarded** from lair's
 `okto_core::read_config()` call:
@@ -112,10 +118,14 @@ WORKSPACE_DIR=/var/lib/okto/workspace
 NOISE_KEY_FILE=/var/lib/okto/data/noise_key.bin
 OKTO_SKIP_SHELL_ENV=1
 AGENT_PURPOSE=…                 # optional
-STARTUP_SCRIPT=…                # optional
 ```
 
 Loaded by systemd via `EnvironmentFile=` in `/etc/systemd/system/okto-agent.service`.
+
+If `mint_bootstrap_userdata` was given a `startup_script`, the userdata also
+writes it to `/var/lib/okto/bootstrap.sh` (seen as `/data/bootstrap.sh` in the
+agent container) — the remote equivalent of the local `~/.okto/bootstrap.sh`
+hook, run by the agent container's entrypoint on startup.
 
 **Zero credentials in the userdata** by design — userdata ends up in
 cloud-provider audit logs / IMDS, and you don't want API keys there.
@@ -252,8 +262,8 @@ OKTO_DATA_DIR=$PWD/dev-data ./target/release/lair --role lair
 | `NOISE_KEY_FILE` | userdata (remote only) | Per-agent Noise keypair location |
 | `WORKSPACE_DIR` | Lair (children) / userdata (remote) | `bootstrap::ensure_workspace` |
 | `GIT_URL` | Per-spawn arg | `bootstrap::ensure_workspace` (initial clone) |
-| `STARTUP_SCRIPT` | Per-spawn arg | `bootstrap::run_startup_script` |
 | `STARTUP_PROMPT` | Per-spawn arg | Agent's first turn |
+| `OKTO_LOCAL_CHILD` | Lair (children only) | Skips `bootstrap::run_bootstrap_script` for in-container children |
 | `AGENT_PURPOSE` | Per-spawn arg | `build_agent_system_prompt` |
 | `OKTO_SKIP_SHELL_ENV` | All managed roles | `init_shell_env()` short-circuit |
 | `OKTO_DEV` | `./start_dev.sh` only | Pins dev Noise keypair + sets `PUBLIC_HOST=127.0.0.1` |
