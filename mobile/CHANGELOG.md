@@ -25,6 +25,11 @@ the git log.
 
 ### Fixed
 
+- iOS CocoaPods install (and the `ios.yml` build) no longer fails on a Reanimated/Worklets
+  version mismatch. `react-native-worklets` was capped at `^0.8.1`, which couldn't follow
+  `react-native-reanimated` up to 4.4.0 (it requires Worklets 0.9.x); bumped the pin to
+  `^0.9.0` and regenerated the root lockfile so the pair resolves to reanimated 4.4.0 +
+  worklets 0.9.1.
 - Deleted worktrees no longer reappear in the sidebar. The `useEffect` that fetches
   worktrees now aborts stale requests on cleanup, and `deleteWorktree` re-fetches the
   worktree list after the DELETE completes (matching the desktop pattern). Stale
