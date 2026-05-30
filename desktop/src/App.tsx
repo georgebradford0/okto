@@ -2118,11 +2118,18 @@ function InputBar({
           placeholder="Message…"
         />
         {streaming ? (
-          // The interrupt button; a Spinner alongside conveys the model is
-          // generating. Clicking sends an interrupt and locks the button at
-          // reduced opacity until the server's interrupt_ack (or 3 s fallback).
-          <div className="flex shrink-0 items-center gap-2 pb-0.5">
-            {!stopSent && <Spinner color="#0d9488" />}
+          // The interrupt button, encircled by a Spinner that conveys the
+          // model is generating. Clicking sends an interrupt and locks the
+          // button at reduced opacity until the server's interrupt_ack (or 3 s
+          // fallback).
+          <div className="relative flex h-9 w-9 shrink-0 items-center justify-center">
+            {!stopSent && (
+              <Spinner
+                color="#0d9488"
+                size={44}
+                className="pointer-events-none absolute -inset-1"
+              />
+            )}
             <button
               className={`flex h-9 w-9 items-center justify-center rounded-full bg-error-500 transition hover:bg-error-600 disabled:cursor-not-allowed ${stopSent ? 'opacity-50' : ''}`}
               onClick={onInterrupt}
