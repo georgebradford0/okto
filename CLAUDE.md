@@ -174,7 +174,7 @@ Baked into the image (see `lair/Dockerfile`):
 | `OKTO_LAIR_BINARY` | `/usr/local/bin/lair` (used to spawn children) |
 | `OKTO_SKIP_SHELL_ENV` | Always 1; suppresses the login-shell env sourcing |
 
-Tools baked into the image (besides `lair`): `aws` (AWS CLI v2), `buildah`, `fuse-overlayfs`, `gcc`, `git`, `gh`, `glab`, `jq`, `node`/`npm`, `openssh-client`, `qrencode`, `slirp4netns`, `uidmap`, `unzip`, `uv`/`uvx`. `/etc/subuid` + `/etc/subgid` are populated for every agent uid (10001, 10100..10199) so each can run `buildah` rootless; the image defaults to the `vfs` storage driver (configured via `/etc/containers/storage.conf`).
+Tools baked into the image (besides `lair`): `aws` (AWS CLI v2), `buildah`, `fuse-overlayfs`, `gcc`, `git`, `gh`, `glab`, `jq`, `node`/`npm`, `openssh-client`, `procps` (`ps`/`top`/`free`), `qrencode`, `slirp4netns`, `uidmap`, `unzip`, `uv`/`uvx`. `/etc/subuid` + `/etc/subgid` are populated for every agent uid (10001, 10100..10199) so each can run `buildah` rootless; the image defaults to the `vfs` storage driver (configured via `/etc/containers/storage.conf`).
 
 Set at `docker run` time by `cli/src/service.rs`:
 

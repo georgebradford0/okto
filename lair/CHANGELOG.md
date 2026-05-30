@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-05-29
+
+### Added
+
+- **`procps` baked into the image.** Provides `ps`, `top`, `free`, `uptime`, etc. so agents and lair can inspect process/memory state from the bash tool. (Debian Trixie's `procps` package.)
+
 ## [0.18.0] - 2026-05-29
 
 ### Added

@@ -88,6 +88,7 @@ RUN apt-get update && apt-get install -y ca-certificates curl git gpg && \
         libcap2-bin \
         nodejs \
         openssh-client \
+        procps \
         qrencode \
         slirp4netns \
         uidmap \
