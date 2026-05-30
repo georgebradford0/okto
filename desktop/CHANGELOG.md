@@ -5,6 +5,8 @@ Changes to the okto desktop (Tauri) app. Current version: see `package.json` /
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-30
+
 ### Fixed
 
 - During streaming, the activity-indicator spinner now encircles the interrupt
