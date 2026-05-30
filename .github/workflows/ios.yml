@@ -26,9 +26,11 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: mobile/package-lock.json
+          cache-dependency-path: package-lock.json
 
+      # npm workspaces: install from the repo root (single root lockfile).
       - name: Install JS dependencies
+        working-directory: ${{ github.workspace }}
         run: npm ci
 
       - name: Install xcpretty
@@ -84,9 +86,11 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: mobile/package-lock.json
+          cache-dependency-path: package-lock.json
 
+      # npm workspaces: install from the repo root (single root lockfile).
       - name: Install JS dependencies
+        working-directory: ${{ github.workspace }}
         run: npm ci
 
       - name: Install xcpretty

@@ -5,6 +5,19 @@ Changes to the okto desktop (Tauri) app. Current version: see `package.json` /
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-30
+
+### Changed
+
+- **Redesigned UI on a shared design system.** The desktop and mobile clients
+  now share one `@okto/ui` package (gluestack-ui v3 + NativeWind, consumed via a
+  new npm workspace) so both read as one product. Desktop's chat shell, connect
+  screen, sidebar, tasks drawer, and input bar were restyled to the shared design
+  tokens — a modern neutral palette with a teal brand accent and crisp slate
+  typography (replacing the warm-paper look). All connection/streaming/worktree
+  behaviour is unchanged; only the presentation layer and `App.css` (removed) were
+  touched. Rendered on react-native-web via Vite (`vite-plugin-rnw`).
+
 ## [0.3.0] - 2026-05-29
 
 ### Added

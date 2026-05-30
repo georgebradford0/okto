@@ -1,7 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from 'react'
 import {
-  ActivityIndicator,
   Alert,
   Animated,
   AppState,
@@ -42,6 +41,14 @@ import {
   encodeClientFrame,
   parseServerEvent,
 } from './src/wire'
+import {
+  GluestackUIProvider,
+  Spinner,
+  Button,
+  ButtonText,
+  Badge,
+  BadgeText,
+} from '@okto/ui'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -156,28 +163,31 @@ const MONO   = Platform.OS === 'ios' ? 'Menlo' : 'monospace'
 // neutral type ramp. Identity stays (cream + teal + ink), but tones are
 // softer and corners are rounded throughout the StyleSheet below.
 
+// Palette aligned with the shared @okto/ui design tokens (gluestack v3 theme):
+// modern-neutral surfaces, a teal brand accent, and a cool slate type ramp.
+// Mirrors the desktop theme so both clients read as one product.
 const C = {
-  bg:            '#FAF7F0',  // warm cream canvas (lifted)
+  bg:            '#F8FAFC',  // neutral near-white canvas (slate-50)
   bgElevated:    '#FFFFFF',  // cards, sheets, raised surfaces
-  surface:       '#F2EDE0',  // tonal hover / chip background
-  surfaceSoft:   '#FCFAF4',  // lifted paper for inputs
-  border:        '#E8E1CF',  // hairline divider (softened)
-  borderStrong:  '#D8CFB7',  // emphasis border
-  accent:        '#0F6E73',  // refined oceanic teal — "live" / accents
-  accentStrong:  '#0A5C60',  // pressed / strong accent
-  accentLight:   '#E3EEEC',  // teal-tinted cream (active rows, chips)
-  green:         '#2F7D32',  // proper green for "done" / success
-  greenLight:    '#DBEAD9',
-  yellow:        '#B0851D',  // refined goldenrod
-  yellowLight:   '#F6ECC6',
-  red:           '#B23B38',  // modern coral-red (less oxblood)
-  redLight:      '#F4DEDC',
-  userBlue:      '#2E6BE6',  // refined send button + user bubble blue
-  textPrimary:   '#1A2333',  // deep ink-navy
-  textSecondary: '#4F5763',  // body grey
-  textMuted:     '#8E8775',  // placeholders / status meta
-  textFaint:     '#B7B0A0',  // captions / hint level
-  inputBorder:   '#E8E1CF',
+  surface:       '#F1F5F9',  // tonal hover / chip background (slate-100)
+  surfaceSoft:   '#F8FAFC',  // lifted surface for inputs
+  border:        '#E2E8F0',  // hairline divider (slate-200)
+  borderStrong:  '#CBD5E1',  // emphasis border (slate-300)
+  accent:        '#0D9488',  // brand teal — "live" / accents (primary-600)
+  accentStrong:  '#0F766E',  // pressed / strong accent (teal-700)
+  accentLight:   '#CCFBF1',  // teal-tinted (active rows, chips) (primary-50)
+  green:         '#15803D',  // success / "done"
+  greenLight:    '#DCFCE7',
+  yellow:        '#B45309',  // warning / pending (amber-700)
+  yellowLight:   '#FEF3C7',
+  red:           '#DC2626',  // error / destructive (error-600)
+  redLight:      '#FEE2E2',
+  userBlue:      '#0D9488',  // user bubble + send button — brand teal
+  textPrimary:   '#0F172A',  // slate-900
+  textSecondary: '#475569',  // slate-600
+  textMuted:     '#64748B',  // slate-500 — placeholders / status meta
+  textFaint:     '#94A3B8',  // slate-400 — captions / hint level
+  inputBorder:   '#E2E8F0',  // slate-200
 }
 
 
@@ -421,7 +431,8 @@ function OrbitingArc({ size = 48, thickness = 3, durationMs = 1100 }: {
 
 function PaperPlane({ disabled = false }: { disabled?: boolean }) {
   const wingColor  = disabled ? C.textMuted : '#FFFFFF'
-  const notchColor = disabled ? C.surface  : '#4A90E2'
+  // Notch matches the send-button background so the V-cut reads (button is C.userBlue, now teal).
+  const notchColor = disabled ? C.surface  : C.userBlue
   return (
     <View style={s.paperPlaneWrap}>
       <View style={s.paperPlaneTilt}>
@@ -506,8 +517,8 @@ const MessageBubble = memo(function MessageBubble({
   if (message.role === 'error') {
     return (
       <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
-        <View style={[s.messageWrap, { marginBottom: bubbleBottomMargin, paddingLeft: 28 }]}>
-          <Text style={s.errorLine} selectable>⚠ {message.text}</Text>
+        <View className="px-4 pl-7" style={{ marginBottom: bubbleBottomMargin }}>
+          <Text selectable className="self-start overflow-hidden rounded-[10px] bg-error-50 px-3 py-2 font-sans text-[13px] font-medium leading-[19px] text-error-600">⚠ {message.text}</Text>
         </View>
       </Animated.View>
     )
@@ -515,8 +526,8 @@ const MessageBubble = memo(function MessageBubble({
   if (message.role === 'interrupted') {
     return (
       <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
-        <View style={[s.messageWrap, { marginBottom: bubbleBottomMargin, paddingLeft: 28 }]}>
-          <Text style={s.interruptedLine} selectable>■ interrupted</Text>
+        <View className="px-4 pl-7" style={{ marginBottom: bubbleBottomMargin }}>
+          <Text selectable className="text-[11px] font-bold uppercase leading-[18px] tracking-[1.6px] text-typography-500" style={{ fontFamily: MONO }}>■ interrupted</Text>
         </View>
       </Animated.View>
     )
@@ -529,8 +540,8 @@ const MessageBubble = memo(function MessageBubble({
     const marker = message.role === 'bg_progress' ? '◈' : '◇'
     return (
       <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
-        <View style={[s.messageWrap, { marginBottom: bubbleBottomMargin, paddingLeft: 28 }]}>
-          <Text style={s.bgCompleteLine} selectable>{marker} {firstLine}</Text>
+        <View className="px-4 pl-7" style={{ marginBottom: bubbleBottomMargin }}>
+          <Text selectable className="font-sans text-[12.5px] italic leading-[19px] text-typography-500">{marker} {firstLine}</Text>
         </View>
       </Animated.View>
     )
@@ -539,21 +550,21 @@ const MessageBubble = memo(function MessageBubble({
     return (
       <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
         <TouchableOpacity
-          style={[s.messageWrap, { marginBottom: 4 }]}
+          className="mb-1 px-4"
           onPress={() => setToolExpanded(v => !v)}
           activeOpacity={0.7}
         >
-          <View style={s.toolChip}>
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <View className="rounded-xl border border-l-[3px] border-outline-200 border-l-primary-600 bg-background-50 px-[14px] py-[10px]">
+            <View className="flex-row items-center">
               {message.running && <PulsingDot />}
               {!message.running && message.output === undefined && <QueuedDot />}
-              <Text style={[s.toolLine, { flex: 1 }]} selectable numberOfLines={toolExpanded ? undefined : 1} ellipsizeMode="tail">{message.text}</Text>
-              <Text style={[s.toolChevron, { transform: [{ rotate: toolExpanded ? '90deg' : '0deg' }] }]}>›</Text>
+              <Text className="flex-1 text-[13px] font-semibold tracking-[0.2px] text-primary-700" style={{ fontFamily: MONO }} selectable numberOfLines={toolExpanded ? undefined : 1} ellipsizeMode="tail">{message.text}</Text>
+              <Text className="ml-1.5 text-sm text-primary-600" style={{ transform: [{ rotate: toolExpanded ? '90deg' : '0deg' }] }}>›</Text>
             </View>
             {toolExpanded && message.output != null && (
-              <View style={s.toolOutputBlock}>
+              <View className="mt-2 border-t border-outline-200 pt-2">
                 <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled showsVerticalScrollIndicator={false}>
-                  <Text style={s.toolOutputText} selectable>{message.output}</Text>
+                  <Text className="text-xs leading-[18px] text-typography-600" style={{ fontFamily: MONO }} selectable>{message.output}</Text>
                 </ScrollView>
               </View>
             )}
@@ -565,8 +576,8 @@ const MessageBubble = memo(function MessageBubble({
   if (message.role === 'user') {
     return (
       <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
-        <View style={[s.messageWrap, s.messageWrapRight, { marginBottom: bubbleBottomMargin }]}>
-          <View style={s.userBubble}>
+        <View className="items-end px-4" style={{ marginBottom: bubbleBottomMargin }}>
+          <View className="max-w-[82%] rounded-[22px] rounded-br-md bg-primary-600 px-[15px] py-[10px]">
             {renderedText}
           </View>
         </View>
@@ -575,10 +586,10 @@ const MessageBubble = memo(function MessageBubble({
   }
   return (
     <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
-      <View style={[s.messageWrap, { marginBottom: bubbleBottomMargin }]}>
+      <View className="px-4" style={{ marginBottom: bubbleBottomMargin }}>
         {renderedText}
         {message.cost != null && (
-          <Text style={s.costLabel}>{formatCost(message.cost)}</Text>
+          <Text className="ml-0.5 mt-1.5 text-[10.5px] tracking-[0.4px] text-typography-400" style={{ fontFamily: MONO }}>{formatCost(message.cost)}</Text>
         )}
       </View>
     </Animated.View>
@@ -606,12 +617,12 @@ function TasksHeaderButton({ tasks, onPress }: { tasks: TaskRecord[]; onPress: (
   const runningCount = tasks.filter(t => t.status === 'running').length
   return (
     <TouchableOpacity
-      style={s.tasksBtn}
+      className="flex-row items-center gap-[7px] rounded-full border border-outline-200 bg-background-0 px-3 py-[5px]"
       onPress={onPress}
       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
     >
-      <View style={[s.tasksBtnDot, runningCount > 0 ? { backgroundColor: C.accent } : { backgroundColor: C.textMuted }]} />
-      <Text style={s.tasksBtnText}>
+      <View className={`h-[7px] w-[7px] rounded-full ${runningCount > 0 ? 'bg-primary-600' : 'bg-typography-500'}`} />
+      <Text className="font-sans text-[11px] font-bold tracking-[0.4px] text-typography-600">
         {runningCount > 0 ? `TASKS · ${runningCount}` : 'TASKS'}
       </Text>
     </TouchableOpacity>
@@ -622,41 +633,42 @@ const TaskRow = memo(function TaskRow({ task, cancelling, onCancel }: { task: Ta
   const [expanded, setExpanded] = useState(false)
   const isRunning = task.status === 'running'
   const ts = task.completed_at != null ? relativeTime(task.completed_at) : relativeTime(task.started_at)
+  const statusColor = taskStatusColor(task.status)
   return (
-    <View style={s.taskRow}>
-      <View style={s.taskRowHeader}>
-        <View style={[s.taskStatusTag, { borderColor: taskStatusColor(task.status) }]}>
-          <View style={[s.taskStatusDot, { backgroundColor: taskStatusColor(task.status) }]} />
-          <Text style={[s.taskStatusLabel, { color: taskStatusColor(task.status) }]}>
+    <View className="border-b border-outline-200 px-5 py-[14px]">
+      <View className="mb-2 flex-row items-center gap-2.5">
+        <View className="flex-row items-center gap-1.5 rounded-full border px-[9px] py-[3px]" style={{ borderColor: statusColor }}>
+          <View className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: statusColor }} />
+          <Text className="text-[10px] font-bold tracking-[1.2px]" style={{ color: statusColor, fontFamily: MONO }}>
             {task.status.toUpperCase()}
           </Text>
         </View>
         {task.wake_interval_secs != null && (
-          <Text style={[s.taskStatusLabel, { color: C.accent }]}>◈ MONITORED</Text>
+          <Text className="text-[10px] font-bold tracking-[1.2px] text-primary-600" style={{ fontFamily: MONO }}>◈ MONITORED</Text>
         )}
-        <Text style={s.taskTimestamp}>{ts}</Text>
+        <Text className="flex-1 text-[11px] tracking-[0.4px] text-typography-500" style={{ fontFamily: MONO }}>{ts}</Text>
         {isRunning && (
           <TouchableOpacity
-            style={[s.taskStopBtn, cancelling && { opacity: 0.4 }]}
+            className={`rounded-full border border-error-600 px-3 py-1 ${cancelling ? 'opacity-40' : ''}`}
             onPress={onCancel}
             disabled={cancelling}
             hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
           >
-            <Text style={s.taskStopText}>{cancelling ? 'STOPPING' : 'STOP'}</Text>
+            <Text className="font-sans text-[11px] font-bold tracking-[0.4px] text-error-600">{cancelling ? 'STOPPING' : 'STOP'}</Text>
           </TouchableOpacity>
         )}
       </View>
       <TouchableOpacity activeOpacity={0.7} onPress={() => setExpanded(v => !v)}>
-        <Text style={s.taskDescription} numberOfLines={expanded ? undefined : 2} selectable>
+        <Text className="font-sans text-[14.5px] leading-[21px] text-typography-900" numberOfLines={expanded ? undefined : 2} selectable>
           {task.command}
         </Text>
         {task.summary != null && task.summary.length > 0 && (
-          <Text style={s.taskSummary} numberOfLines={expanded ? undefined : 2} selectable>
+          <Text className="mt-1.5 font-sans text-[13px] leading-[19px] text-typography-600" numberOfLines={expanded ? undefined : 2} selectable>
             {task.summary}
           </Text>
         )}
         {task.cost_usd != null && task.cost_usd > 0 && (
-          <Text style={s.taskCost}>{formatCost(task.cost_usd)}</Text>
+          <Text className="mt-2 text-[10.5px] tracking-[0.3px] text-typography-400" style={{ fontFamily: MONO }}>{formatCost(task.cost_usd)}</Text>
         )}
       </TouchableOpacity>
     </View>
@@ -697,23 +709,24 @@ function TasksModal({ visible, tasks, cancellingIds, onClose, onCancel }: {
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
       <Animated.View
-        style={[s.tasksBackdrop, { opacity: slide }]}
+        className="bg-typography-950/40"
+        style={[StyleSheet.absoluteFill, { zIndex: 300, opacity: slide }]}
         pointerEvents={visible ? 'auto' : 'none'}
       >
         <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onClose} />
       </Animated.View>
       <Animated.View
-        style={[
-          s.tasksSheet,
-          { paddingBottom: insets.bottom + 16,
-            transform: [{ translateY: slide.interpolate({ inputRange: [0, 1], outputRange: [600, 0] }) }] },
-        ]}
+        className="absolute inset-x-0 bottom-0 z-[301] max-h-[78%] rounded-t-[22px] bg-background-0 pt-2.5"
+        style={{
+          paddingBottom: insets.bottom + 16,
+          transform: [{ translateY: slide.interpolate({ inputRange: [0, 1], outputRange: [600, 0] }) }],
+        }}
       >
-        <View style={s.tasksHandle} />
-        <View style={s.tasksHeader}>
-          <Text style={s.tasksHeaderTitle}>Background Tasks</Text>
+        <View className="mb-2.5 h-[5px] w-10 self-center rounded-full bg-outline-300 opacity-60" />
+        <View className="flex-row items-center justify-between border-b border-outline-200 px-5 py-[14px]">
+          <Text className="font-sans text-[17px] font-bold text-typography-900">Background Tasks</Text>
           <TouchableOpacity onPress={onClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Text style={s.sidebarCloseIcon}>✕</Text>
+            <Text className="text-base font-light text-typography-600">✕</Text>
           </TouchableOpacity>
         </View>
         <ScrollView
@@ -722,8 +735,8 @@ function TasksModal({ visible, tasks, cancellingIds, onClose, onCancel }: {
           showsVerticalScrollIndicator={false}
         >
           {sorted.length === 0 ? (
-            <View style={s.tasksEmptyWrap}>
-              <Text style={s.tasksEmptyText}>No background tasks</Text>
+            <View className="items-center py-[60px]">
+              <Text className="font-sans text-[13px] italic text-typography-500">No background tasks</Text>
             </View>
           ) : sorted.map(t => (
             <TaskRow
@@ -1651,24 +1664,24 @@ const ChatPane = memo(function ChatPane({
   ), [])
 
   return (
-    <View style={s.pane}>
-      <View style={{ flex: 1 }}>
+    <View className="flex-1 bg-background-50">
+      <View className="flex-1">
         <FlatList
           ref={listRef}
           data={messages}
           keyExtractor={m => m.id}
           renderItem={renderMessageItem}
           contentContainerStyle={[
-            s.messageListContent,
+            { paddingVertical: 18 },
             { paddingBottom: inputAreaH + 8 },
             status === 'error' && { paddingTop: 34 },
           ]}
-          style={s.messageList}
+          style={{ flex: 1 }}
           ListEmptyComponent={
-            <View style={s.emptyStateWrap}>
+            <View className="mt-[88px] items-center gap-2">
               <AppIcon />
-              <View style={s.emptyStateRule} />
-              <Text style={s.emptyStateTagline}>Awaiting Instructions</Text>
+              <View className="mt-1 h-0.5 w-8 rounded-full bg-primary-600 opacity-60" />
+              <Text className="mt-2 text-[11px] font-semibold uppercase tracking-[1.8px] text-typography-500" style={{ fontFamily: MONO }}>Awaiting Instructions</Text>
             </View>
           }
           onContentSizeChange={(_, h) => {
@@ -1698,26 +1711,28 @@ const ChatPane = memo(function ChatPane({
 
         {completions.length > 0 && (
           <ScrollView
-            style={[s.completionList, { bottom: inputAreaH }]}
+            className="absolute inset-x-2 z-10 max-h-[180px] overflow-hidden rounded-[14px] border border-outline-200 bg-background-0"
+            style={{ bottom: inputAreaH }}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
             {completions.map(c => (
-              <TouchableOpacity key={c} style={s.completionItem} onPress={() => applyCompletion(c)}>
-                <Text style={s.completionText}>{c}</Text>
+              <TouchableOpacity key={c} className="border-b border-outline-200 px-4 py-[11px]" onPress={() => applyCompletion(c)}>
+                <Text className="text-[13.5px] text-typography-900" style={{ fontFamily: MONO }}>{c}</Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
         )}
-        <View style={s.inputFloat} onLayout={e => setInputAreaH(e.nativeEvent.layout.height)}>
-          <View style={s.inputRow}>
+        <View className="absolute inset-x-0 bottom-0 border-t border-outline-200 bg-background-50 px-3 pb-3 pt-2.5" onLayout={e => setInputAreaH(e.nativeEvent.layout.height)}>
+          <View className="flex-row items-end gap-2.5">
             <TextInput
               // Lock height to one line when empty so a `setInput('')` on send
               // collapses the box immediately — without this, iOS keeps the
               // previous multiline intrinsic size for ~a second. With a value
               // present we omit `height` so RN's intrinsic sizing handles
-              // multiline auto-grow (clamped by minHeight/maxHeight in s.input).
-              style={[s.input, !input && { height: 56 }]}
+              // multiline auto-grow (clamped by min/max height classes).
+              className="max-h-[140px] min-h-[56px] flex-1 rounded-[22px] border border-outline-200 bg-background-0 px-[18px] py-[15px] font-sans text-base leading-[22px] text-typography-900"
+              style={!input ? { height: 56 } : undefined}
               value={input}
               onChangeText={setInput}
               placeholder="message…"
@@ -1730,10 +1745,10 @@ const ChatPane = memo(function ChatPane({
               // (single dot orbiting). Tapping issues an interrupt and locks
               // the button at reduced opacity until the server's
               // interrupt_ack (or the 3 s timeout fallback in stopAckTimerRef).
-              <View style={s.inputBtnSlot}>
+              <View className="h-14 w-14 items-center justify-center">
                 <OrbitingArc size={56} thickness={3} />
                 <TouchableOpacity
-                  style={[s.stopBtnInline, stopSent && { opacity: 0.4 }]}
+                  className={`h-[50px] w-[50px] items-center justify-center rounded-[25px] bg-error-500 ${stopSent ? 'opacity-40' : ''}`}
                   disabled={stopSent}
                   onPress={() => {
                     if (!sendFrame({ type: 'interrupt' })) return
@@ -1746,12 +1761,12 @@ const ChatPane = memo(function ChatPane({
                   }}
                   activeOpacity={0.7}
                 >
-                  <Text style={s.stopBtnInlineIcon}>■</Text>
+                  <Text className="text-[18px] font-bold text-typography-0">■</Text>
                 </TouchableOpacity>
               </View>
             ) : (
               <TouchableOpacity
-                style={[s.sendBtn, !input.trim() && s.sendBtnDisabled]}
+                className={`h-14 w-14 items-center justify-center rounded-[22px] ${!input.trim() ? 'border border-outline-200 bg-background-100' : 'bg-primary-600'}`}
                 onPress={() => sendMessageRef.current()}
                 disabled={!input.trim()}
                 activeOpacity={0.75}
@@ -1763,9 +1778,9 @@ const ChatPane = memo(function ChatPane({
         </View>
 
         {showScrollBtn && (
-          <View style={[s.scrollBtnWrap, { bottom: inputAreaH }]} pointerEvents="box-none">
+          <View className="absolute inset-x-0 items-center" style={{ bottom: inputAreaH }} pointerEvents="box-none">
             <TouchableOpacity
-              style={s.scrollBtn}
+              className="mb-3 h-9 w-9 items-center justify-center rounded-full border border-outline-200 bg-background-0"
               onPress={() => {
                 isAtBottomRef.current = true
                 setShowScrollBtn(false)
@@ -1774,14 +1789,14 @@ const ChatPane = memo(function ChatPane({
               }}
               activeOpacity={0.75}
             >
-              <Text style={s.scrollBtnIcon}>↓</Text>
+              <Text className="text-base font-bold text-typography-900" style={{ fontFamily: ARIMO }}>↓</Text>
             </TouchableOpacity>
           </View>
         )}
 
         {status === 'error' && (
-          <View style={[s.reconnectBanner, { backgroundColor: C.surface, borderBottomColor: C.red }]} pointerEvents="none">
-            <Text style={[s.reconnectText, { color: C.red }]}>Connection error</Text>
+          <View className="absolute inset-x-0 top-0 z-10 flex-row items-center justify-center border-b border-error-600 bg-background-100 py-[7px]" pointerEvents="none">
+            <Text className="text-[11px] font-bold uppercase tracking-[1.4px] text-error-600" style={{ fontFamily: MONO }}>Connection error</Text>
           </View>
         )}
       </View>
@@ -1813,27 +1828,29 @@ function ConnectionErrorModal({ visible, onDismiss }: { visible: boolean; onDism
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
       <Animated.View
-        style={[s.connErrorBackdrop, { opacity: slide }]}
+        className="bg-typography-950/50"
+        style={[StyleSheet.absoluteFill, { zIndex: 400, opacity: slide }]}
         pointerEvents={visible ? 'auto' : 'none'}
       >
         <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onDismiss} />
       </Animated.View>
       <Animated.View
-        style={[
-          s.connErrorCard,
-          { transform: [{ scale: slide.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] }) }],
-            opacity: slide },
-        ]}
+        className="absolute items-center rounded-[18px] bg-background-0 p-7"
+        style={{
+          top: '38%', left: '12%', right: '12%', zIndex: 401,
+          transform: [{ scale: slide.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] }) }],
+          opacity: slide,
+        }}
         pointerEvents={visible ? 'auto' : 'none'}
       >
-        <View style={s.connErrorIconCircle}>
-          <Text style={s.connErrorIcon}>!</Text>
+        <View className="mb-3.5 h-[52px] w-[52px] items-center justify-center rounded-full bg-error-50">
+          <Text className="font-brand text-[28px] font-bold text-error-600">!</Text>
         </View>
-        <Text style={s.connErrorTitle}>Connection Lost</Text>
-        <Text style={s.connErrorBody}>Reconnecting automatically…{'\n'}Tap to dismiss.</Text>
-        <TouchableOpacity style={s.connErrorDismissBtn} onPress={onDismiss} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Text style={s.connErrorDismissText}>Dismiss</Text>
-        </TouchableOpacity>
+        <Text className="mb-1.5 font-brand text-[18px] font-bold text-typography-900">Connection Lost</Text>
+        <Text className="mb-5 text-center font-sans text-sm leading-5 text-typography-500">Reconnecting automatically…{'\n'}Tap to dismiss.</Text>
+        <Button action="primary" onPress={onDismiss} className="rounded-full px-7">
+          <ButtonText>Dismiss</ButtonText>
+        </Button>
       </Animated.View>
     </View>
   )
@@ -1877,34 +1894,34 @@ function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, o
     // No SafeAreaView here: this screen is rendered as an overlay inside
     // AppInner's SafeAreaView, so applying the top inset again would push
     // the header down by double the status-bar height.
-    <View style={s.safe}>
-      <View style={s.paneArea}>
-        <View style={s.header}>
-          <View style={s.headerLeft}>
+    <View className="flex-1 bg-background-50">
+      <View className="flex-1">
+        <View className="flex-row items-center justify-between border-b border-outline-200 bg-background-50 px-4 py-3">
+          <View className="flex-1 flex-row items-center gap-2.5">
             <TouchableOpacity
-              style={s.hamburgerBtn}
+              className="mr-1 px-1.5 py-2"
               onPress={onOpenSidebar}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <View style={s.hamburgerBars}>
-                <View style={s.hamburgerBar} />
-                <View style={s.hamburgerBar} />
-                <View style={s.hamburgerBar} />
+              <View className="h-3 w-[18px] justify-between">
+                <View className="h-0.5 rounded-full bg-typography-900" />
+                <View className="h-0.5 rounded-full bg-typography-900" />
+                <View className="h-0.5 rounded-full bg-typography-900" />
               </View>
             </TouchableOpacity>
-            <Text style={s.headerTitle}>
+            <Text className="font-sans text-[15px] font-bold tracking-[0.2px] text-typography-900">
               {containerDisplayName(child.name)}{worktree ? ` / ${worktree.branch}` : ''}
             </Text>
           </View>
-          <View style={s.headerRight}>
+          <View className="flex-row items-center gap-2">
             <TasksHeaderButton tasks={tasks} onPress={() => { Keyboard.dismiss(); setShowTasksModal(true) }} />
             <TouchableOpacity
-              style={s.clearBtn}
+              className="rounded-full border border-outline-200 bg-background-0 px-3 py-[5px]"
               onPress={() => clearRef.current()}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               disabled={chatStatus !== 'ready'}
             >
-              <Text style={[s.clearBtnText, chatStatus !== 'ready' && { opacity: 0.3 }]}>clear</Text>
+              <Text className={`font-sans text-[11px] font-semibold tracking-[0.4px] text-typography-600 ${chatStatus !== 'ready' ? 'opacity-30' : ''}`}>clear</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1925,8 +1942,8 @@ function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, o
             onCancelAck={handleCancelAck}
           />
         ) : tunnelError ? (
-          <View style={s.setupCenter}>
-            <Text style={[s.setupError, { color: C.red }]}>{tunnelError}</Text>
+          <View className="flex-1 items-center justify-center gap-3.5 px-10">
+            <Text className="overflow-hidden rounded-xl bg-error-50 px-3.5 py-2.5 text-center font-sans text-[13px] leading-[19px] text-error-600">{tunnelError}</Text>
           </View>
         ) : null}
 
@@ -2425,14 +2442,14 @@ function AppInner() {
   // ── Connection error screen ──────────────────────────────────────────────────
   if (conn && !tunnelPort && tunnelError) {
     return (
-      <SafeAreaView style={s.setupSafe} edges={['top', 'bottom']}>
-        <View style={s.setupCenter}>
+      <SafeAreaView className="flex-1 bg-background-50" edges={['top', 'bottom']}>
+        <View className="flex-1 items-center justify-center gap-3.5 px-10">
           <AppIcon />
-          <Text style={s.setupTitle}>OCTO</Text>
-          <View style={s.setupRule} />
-          <Text style={s.setupError}>{tunnelError}</Text>
-          <TouchableOpacity style={s.setupBtn} onPress={() => setConn(null)}>
-            <Text style={s.setupBtnText}>back</Text>
+          <Text className="mt-5 pl-2 font-brand text-[40px] font-extrabold tracking-[8px] text-typography-900">OCTO</Text>
+          <View className="my-1.5 h-0.5 w-9 rounded-full bg-primary-600 opacity-70" />
+          <Text className="overflow-hidden rounded-xl bg-error-50 px-3.5 py-2.5 text-center font-sans text-[13px] leading-[19px] text-error-600">{tunnelError}</Text>
+          <TouchableOpacity className="mt-4 rounded-[14px] bg-typography-900 px-10 py-3.5" onPress={() => setConn(null)}>
+            <Text className="font-sans text-[12px] font-bold uppercase tracking-[1.8px] text-typography-0">back</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -2442,19 +2459,20 @@ function AppInner() {
   // ── No master connection yet ─────────────────────────────────────────────────
   if (!conn) {
     return (
-      <SafeAreaView style={s.setupSafe} edges={['top', 'bottom']}>
+      <SafeAreaView className="flex-1 bg-background-50" edges={['top', 'bottom']}>
         <Reanimated.View style={[{ flex: 1 }, setupKeyboardLift]}>
-          <View style={s.setupCenter}>
+          <View className="flex-1 items-center justify-center gap-3.5 px-10">
             <TouchableOpacity onPress={requestCameraAndScan} activeOpacity={0.85}>
               <AppIcon pulse />
             </TouchableOpacity>
-            <Text style={s.setupTitle}>OCTO</Text>
-            <View style={s.setupRule} />
-            <Text style={s.setupSubtitle}>Distributed Coding Agents</Text>
-            <Text style={s.setupTagline}>Tap the mark to scan your session QR code.</Text>
-            <Text style={s.setupOr}>or paste a connect string</Text>
+            <Text className="mt-5 pl-2 font-brand text-[40px] font-extrabold tracking-[8px] text-typography-900">OCTO</Text>
+            <View className="my-1.5 h-0.5 w-9 rounded-full bg-primary-600 opacity-70" />
+            <Text className="text-[10.5px] font-semibold uppercase tracking-[2.4px] text-typography-500" style={{ fontFamily: MONO }}>Distributed Coding Agents</Text>
+            <Text className="mt-3.5 max-w-[300px] text-center font-sans text-sm leading-[22px] text-typography-600">Tap the mark to scan your session QR code.</Text>
+            <Text className="mt-5 text-[10.5px] font-semibold uppercase tracking-[2.4px] text-typography-500" style={{ fontFamily: MONO }}>or paste a connect string</Text>
             <TextInput
-              style={s.setupInput}
+              className="mt-1.5 w-full max-w-[340px] rounded-[14px] border border-outline-200 bg-background-0 px-4 py-3.5 text-[13.5px] text-typography-900"
+              style={{ fontFamily: MONO }}
               value={manualConn}
               onChangeText={(t) => { setManualConn(t); if (manualError) setManualError(null) }}
               onSubmitEditing={handleManualConnect}
@@ -2466,13 +2484,13 @@ function AppInner() {
               spellCheck={false}
               returnKeyType="go"
             />
-            {manualError ? <Text style={s.setupError}>{manualError}</Text> : null}
+            {manualError ? <Text className="overflow-hidden rounded-xl bg-error-50 px-3.5 py-2.5 text-center font-sans text-[13px] leading-[19px] text-error-600">{manualError}</Text> : null}
             <TouchableOpacity
-              style={[s.setupBtn, !manualConn.trim() && s.setupBtnDisabled]}
+              className={`mt-4 rounded-[14px] px-10 py-3.5 ${!manualConn.trim() ? 'bg-typography-900 opacity-35' : 'bg-typography-900'}`}
               onPress={handleManualConnect}
               disabled={!manualConn.trim()}
             >
-              <Text style={s.setupBtnText}>connect</Text>
+              <Text className="font-sans text-[12px] font-bold uppercase tracking-[1.8px] text-typography-0">connect</Text>
             </TouchableOpacity>
           </View>
         </Reanimated.View>
@@ -2493,32 +2511,32 @@ function AppInner() {
 
   // ── Master chat UI ───────────────────────────────────────────────────────────
   return (
-    <SafeAreaView style={s.safe} edges={['top']}>
-      <View style={s.paneArea}>
+    <SafeAreaView className="flex-1 bg-background-50" edges={['top']}>
+      <View className="flex-1">
         <Animated.View style={[{ flex: 1, transform: [{ translateX: masterTranslateX }] }]}>
-          <View style={s.header}>
-            <View style={s.headerLeft}>
+          <View className="flex-row items-center justify-between border-b border-outline-200 bg-background-50 px-4 py-3">
+            <View className="flex-1 flex-row items-center gap-2.5">
               <TouchableOpacity
-                style={s.hamburgerBtn}
+                className="mr-1 px-1.5 py-2"
                 onPress={openSidebar}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
-                <View style={s.hamburgerBars}>
-                  <View style={s.hamburgerBar} />
-                  <View style={s.hamburgerBar} />
-                  <View style={s.hamburgerBar} />
+                <View className="h-3 w-[18px] justify-between">
+                  <View className="h-0.5 rounded-full bg-typography-900" />
+                  <View className="h-0.5 rounded-full bg-typography-900" />
+                  <View className="h-0.5 rounded-full bg-typography-900" />
                 </View>
               </TouchableOpacity>
             </View>
-            <View style={s.headerRight}>
+            <View className="flex-row items-center gap-2">
               <TasksHeaderButton tasks={masterTasks} onPress={() => { Keyboard.dismiss(); setShowTasksModal(true) }} />
               <TouchableOpacity
-                style={s.clearBtn}
+                className="rounded-full border border-outline-200 bg-background-0 px-3 py-[5px]"
                 onPress={() => clearChatRef.current()}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 disabled={chatStatus !== 'ready'}
               >
-                <Text style={[s.clearBtnText, chatStatus !== 'ready' && { opacity: 0.3 }]}>clear</Text>
+                <Text className={`font-sans text-[11px] font-semibold tracking-[0.4px] text-typography-600 ${chatStatus !== 'ready' ? 'opacity-30' : ''}`}>clear</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -2602,34 +2620,35 @@ function AppInner() {
         )}
 
         {startingContainerId !== null && (
-          <View style={s.startingOverlay}>
+          <View className="absolute inset-0 items-center justify-center gap-[18px] bg-background-50 px-8">
             {startingError ? (
               <>
-                <Text style={s.startingErrorText}>Failed to start container</Text>
-                <Text style={s.startingErrorDetail}>{startingError}</Text>
+                <Text className="text-center font-sans text-[13px] font-bold uppercase tracking-[1.6px] text-error-600">Failed to start container</Text>
+                <Text className="text-center font-sans text-[13px] leading-[19px] text-typography-600">{startingError}</Text>
               </>
             ) : (
               <>
-                <ActivityIndicator color={C.accent} size="large" />
-                <Text style={s.startingText}>Starting container...</Text>
+                <Spinner size="large" color={C.accent} />
+                <Text className="text-[11px] font-semibold uppercase tracking-[1.8px] text-typography-600" style={{ fontFamily: MONO }}>Starting container...</Text>
               </>
             )}
             <TouchableOpacity
-              style={s.startingCancelBtn}
+              className="mt-2.5 rounded-xl border border-outline-200 bg-background-0 px-8 py-3"
               onPress={() => {
                 startingContainerIdRef.current = null
                 setStartingContainerId(null)
                 setStartingError(null)
               }}
             >
-              <Text style={s.startingCancelText}>{startingError ? 'dismiss' : 'cancel'}</Text>
+              <Text className="font-sans text-[12px] font-bold uppercase tracking-[1.8px] text-typography-900">{startingError ? 'dismiss' : 'cancel'}</Text>
             </TouchableOpacity>
           </View>
         )}
         {showSidebar && (
           <>
             <Animated.View
-              style={[StyleSheet.absoluteFillObject, s.sidebarBackdrop, { opacity: sidebarAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] }) }]}
+              className="bg-typography-950/40"
+              style={[StyleSheet.absoluteFillObject, { zIndex: 200, opacity: sidebarAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] }) }]}
               pointerEvents="box-none"
             >
               <TouchableOpacity
@@ -2638,14 +2657,17 @@ function AppInner() {
                 onPress={closeSidebar}
               />
             </Animated.View>
-            <Animated.View style={[s.sidebar, { transform: [{ translateX: sidebarAnim.interpolate({ inputRange: [0, 1], outputRange: [-280, 0] }) }] }]}>
-              <View style={s.sidebarHeader}>
+            <Animated.View
+              className="absolute bottom-0 left-0 top-0 z-[201] w-[308px] flex-col overflow-hidden rounded-r-[22px] bg-background-50"
+              style={{ transform: [{ translateX: sidebarAnim.interpolate({ inputRange: [0, 1], outputRange: [-280, 0] }) }] }}
+            >
+              <View className="flex-row items-center justify-between border-b border-outline-200 px-5 py-5">
                 <View>
-                  <Text style={s.sidebarBrand}>OCTO</Text>
-                  <Text style={s.sidebarBrandSub}>Agent Console</Text>
+                  <Text className="pl-[5px] font-brand text-[22px] font-extrabold tracking-[5px] text-typography-900">OCTO</Text>
+                  <Text className="mt-1.5 text-[10px] font-semibold uppercase tracking-[1.8px] text-typography-500" style={{ fontFamily: MONO }}>Agent Console</Text>
                 </View>
                 <TouchableOpacity onPress={closeSidebar} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                  <Text style={s.sidebarCloseIcon}>✕</Text>
+                  <Text className="text-base font-light text-typography-600">✕</Text>
                 </TouchableOpacity>
               </View>
               <ScrollView
@@ -2655,24 +2677,24 @@ function AppInner() {
                 showsVerticalScrollIndicator={false}
               >
                 <TouchableOpacity
-                  style={[s.containerMenuItem, !childMounted && s.menuItemActive]}
+                  className={`flex-row items-center gap-3 border-b border-outline-200 py-3.5 ${!childMounted ? 'border-l-[3px] border-l-primary-600 bg-primary-50 pl-[17px] pr-5' : 'px-5'}`}
                   onPress={goToMaster}
                   activeOpacity={0.7}
                 >
-                  <View style={[s.containerDot, { backgroundColor: C.green }]} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.containerMenuItemName}>LAIR</Text>
+                  <View className="h-2 w-2 rounded-full" style={{ backgroundColor: C.green }} />
+                  <View className="flex-1">
+                    <Text className="font-sans text-[14.5px] font-semibold text-typography-900">LAIR</Text>
                   </View>
-                  <Text style={s.containerMenuItemStatus}>main</Text>
+                  <Text className="text-[10px] font-bold uppercase tracking-[1.2px] text-typography-500" style={{ fontFamily: MONO }}>main</Text>
                 </TouchableOpacity>
 
-                <View style={s.sidebarSection}>
-                  <Text style={s.settingsMenuSectionTitle}>Agents</Text>
+                <View className="px-5 pb-2 pt-5">
+                  <Text className="text-[10.5px] font-bold uppercase tracking-[1.6px] text-typography-500" style={{ fontFamily: MONO }}>Agents</Text>
                 </View>
 
                 {containers.length === 0 && (
-                  <View style={s.containerMenuItem}>
-                    <Text style={s.containerMenuItemStatus}>No agents</Text>
+                  <View className="flex-row items-center gap-3 border-b border-outline-200 px-5 py-3.5">
+                    <Text className="text-[10px] font-bold uppercase tracking-[1.2px] text-typography-500" style={{ fontFamily: MONO }}>No agents</Text>
                   </View>
                 )}
                 {containers.map(c => {
@@ -2681,7 +2703,7 @@ function AppInner() {
                   return (
                   <React.Fragment key={c.id}>
                   <TouchableOpacity
-                    style={[s.containerMenuItem, active && s.menuItemActive]}
+                    className={`flex-row items-center gap-3 border-b border-outline-200 py-3.5 ${active ? 'border-l-[3px] border-l-primary-600 bg-primary-50 pl-[17px] pr-5' : 'px-5'}`}
                     onPress={() => {
                       if (c.status === 'running') {
                         setShowSidebar(false)
@@ -2695,17 +2717,17 @@ function AppInner() {
                     delayLongPress={500}
                     activeOpacity={0.7}
                   >
-                    <View style={[s.containerDot, { backgroundColor: c.status === 'running' ? C.green : C.textMuted }]} />
-                    <View style={{ flex: 1 }}>
-                      <Text style={s.containerMenuItemName}>{containerDisplayName(c.name)}</Text>
-                      {c.kind === 'remote' ? <Text style={s.containerMenuItemUrl} numberOfLines={1}>remote</Text> : null}
+                    <View className="h-2 w-2 rounded-full" style={{ backgroundColor: c.status === 'running' ? C.green : C.textMuted }} />
+                    <View className="flex-1">
+                      <Text className="font-sans text-[14.5px] font-semibold text-typography-900">{containerDisplayName(c.name)}</Text>
+                      {c.kind === 'remote' ? <Text className="mt-0.5 text-[11.5px] text-typography-500" style={{ fontFamily: MONO }} numberOfLines={1}>remote</Text> : null}
                     </View>
                     {c.status === 'running' && (
                       <TouchableOpacity
                         hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                         onPress={() => { setCreatingWtFor(prev => prev === c.name ? null : c.name); setNewBranchDraft('') }}
                       >
-                        <Text style={s.worktreeAddBtn}>＋</Text>
+                        <Text className="px-1 text-[18px] font-semibold text-typography-500">＋</Text>
                       </TouchableOpacity>
                     )}
                   </TouchableOpacity>
@@ -2715,7 +2737,7 @@ function AppInner() {
                     return (
                       <TouchableOpacity
                         key={`${c.id}::${wt.id}`}
-                        style={[s.containerMenuItem, s.worktreeMenuItem, wtActive && s.menuItemActive]}
+                        className={`flex-row items-center gap-2.5 border-b border-outline-200 bg-background-0 py-3.5 pl-[34px] ${wtActive ? 'border-l-[3px] border-l-primary-600 bg-primary-50 pr-5' : 'pr-5'}`}
                         onPress={() => { setShowSidebar(false); sidebarAnim.setValue(0); openChild(c, wt) }}
                         onLongPress={() => Alert.alert(
                           'Delete worktree?',
@@ -2728,19 +2750,20 @@ function AppInner() {
                         delayLongPress={500}
                         activeOpacity={0.7}
                       >
-                        <Text style={s.worktreeGlyph}>⌥</Text>
-                        <View style={{ flex: 1 }}>
-                          <Text style={s.worktreeMenuItemName} numberOfLines={1}>{wt.branch}</Text>
+                        <Text className="w-3 text-[13px] font-bold text-typography-500">⌥</Text>
+                        <View className="flex-1">
+                          <Text className="font-sans text-[13.5px] font-medium text-typography-600" numberOfLines={1}>{wt.branch}</Text>
                         </View>
-                        <Text style={s.containerMenuItemStatus}>worktree</Text>
+                        <Text className="text-[10px] font-bold uppercase tracking-[1.2px] text-typography-500" style={{ fontFamily: MONO }}>worktree</Text>
                       </TouchableOpacity>
                     )
                   })}
 
                   {creatingWtFor === c.name && (
-                    <View style={[s.containerMenuItem, s.worktreeMenuItem]}>
+                    <View className="flex-row items-center gap-2.5 border-b border-outline-200 bg-background-0 py-3.5 pl-[34px] pr-5">
                       <TextInput
-                        style={s.worktreeBranchInput}
+                        className="flex-1 rounded-md border border-outline-200 bg-background-50 px-2 py-1 text-[13px] text-typography-900"
+                        style={{ fontFamily: MONO }}
                         autoFocus
                         placeholder="new branch name…"
                         placeholderTextColor={C.textMuted}
@@ -2758,9 +2781,9 @@ function AppInner() {
                   )
                 })}
               </ScrollView>
-              <View style={s.settingsMenuDivider} />
-              <TouchableOpacity style={s.sidebarExitBtn} onPress={handleLogout}>
-                <Text style={s.settingsMenuLogoutText}>exit</Text>
+              <View className="h-px bg-outline-200" />
+              <TouchableOpacity className="px-5 py-4" onPress={handleLogout}>
+                <Text className="font-sans text-[13px] font-bold tracking-[0.4px] text-error-600">exit</Text>
               </TouchableOpacity>
             </Animated.View>
           </>
@@ -2775,11 +2798,13 @@ function AppInner() {
 export default function App() {
   return (
     <ErrorBoundary>
-      <KeyboardProvider>
-        <SafeAreaProvider>
-          <AppInner />
-        </SafeAreaProvider>
-      </KeyboardProvider>
+      <GluestackUIProvider mode="light">
+        <KeyboardProvider>
+          <SafeAreaProvider>
+            <AppInner />
+          </SafeAreaProvider>
+        </KeyboardProvider>
+      </GluestackUIProvider>
     </ErrorBoundary>
   )
 }
@@ -2787,34 +2812,32 @@ export default function App() {
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const s = StyleSheet.create({
-  // ── Setup / connection ───────────────────────────────────────────────────────
-  setupSafe:     { flex: 1, backgroundColor: C.bg },
-  setupCenter:   { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 40, gap: 14 },
-  setupTitle:    { fontSize: 40, fontWeight: '800', color: C.textPrimary, letterSpacing: 8, fontFamily: NUNITO, marginTop: 20, paddingLeft: 8 },
-  setupSubtitle: { fontSize: 10.5, color: C.textMuted, letterSpacing: 2.4, textTransform: 'uppercase', fontFamily: MONO, fontWeight: '600' },
-  setupRule:     { width: 36, height: 2, borderRadius: 999, backgroundColor: C.accent, marginVertical: 6, opacity: 0.7 },
-  setupTagline:  { fontSize: 14, color: C.textSecondary, textAlign: 'center', lineHeight: 22, fontFamily: ARIMO, marginTop: 14, maxWidth: 300 },
-  setupDesc:     { fontSize: 14, color: C.textSecondary, textAlign: 'center', lineHeight: 22, fontFamily: ARIMO },
-  setupStatus:   { fontSize: 11, color: C.textMuted, textAlign: 'center', fontFamily: MONO, letterSpacing: 1.4, textTransform: 'uppercase' },
-  setupError:    { fontSize: 13, color: C.red, textAlign: 'center', lineHeight: 19, fontFamily: ARIMO, backgroundColor: C.redLight, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, overflow: 'hidden' },
-  setupBtn:      { borderRadius: 14, borderWidth: 0, paddingVertical: 14, paddingHorizontal: 40, marginTop: 16, backgroundColor: C.textPrimary, shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
-  setupBtnDisabled: { opacity: 0.35, shadowOpacity: 0, elevation: 0 },
-  setupBtnText:  { color: '#FFFFFF', fontWeight: '700', fontSize: 12, letterSpacing: 1.8, textTransform: 'uppercase', fontFamily: ARIMO },
-  setupOr:       { fontSize: 10.5, color: C.textMuted, letterSpacing: 2.4, textTransform: 'uppercase', fontFamily: MONO, fontWeight: '600', marginTop: 22 },
-  setupInput:    { width: '100%', maxWidth: 340, backgroundColor: C.bgElevated, borderWidth: 1, borderColor: C.border, borderRadius: 14, paddingHorizontal: 16, paddingVertical: 14, color: C.textPrimary, fontSize: 13.5, fontFamily: MONO, marginTop: 6, shadowColor: '#0E1A24', shadowOpacity: 0.04, shadowRadius: 4, shadowOffset: { width: 0, height: 1 } },
+  // Only the styles that remain hard to express as utility classes:
+  // markdown text rendering (renderText), the dark QR-scanner overlay, and the
+  // geometric paper-plane / orbiting-arc marks. Everything else moved to
+  // NativeWind className utilities driven by the shared @okto/ui tokens.
+
+  // ── Markdown text (renderText) ───────────────────────────────────────────────
+  textBlock:          { color: '#FFFFFF', fontSize: 15.5, lineHeight: 23, fontWeight: '400', fontFamily: ARIMO },
+  assistantTextBlock: { color: C.textPrimary, fontSize: 15.5, lineHeight: 24, fontWeight: '400', fontFamily: ARIMO },
+  inlineCode:         { fontFamily: MONO, fontSize: 12.5, color: C.textPrimary, backgroundColor: C.surface, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border },
+  codeBlock:          { backgroundColor: C.surfaceSoft, borderRadius: 12, padding: 14, marginVertical: 8, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border },
+  codeBlockText:      { fontFamily: MONO, fontSize: 12.5, color: C.textPrimary, lineHeight: 19 },
+  codeBlockLang:      { fontSize: 10, color: C.textMuted, fontFamily: MONO, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1.2, fontWeight: '600' },
 
   // ── App icon mark ────────────────────────────────────────────────────────────
   creatureImg:        { width: 116, height: 116, borderRadius: 28, marginBottom: 10 },
 
-  // ── Inline transition overlays (starting / reconnecting) ─────────────────────
-  startingOverlay:    { ...StyleSheet.absoluteFillObject, backgroundColor: C.bg, alignItems: 'center', justifyContent: 'center', gap: 18, paddingHorizontal: 32 },
-  startingText:       { fontSize: 11, color: C.textSecondary, fontFamily: MONO, letterSpacing: 1.8, textTransform: 'uppercase', fontWeight: '600' },
-  startingErrorText:  { fontSize: 13, fontWeight: '700', color: C.red, fontFamily: ARIMO, textAlign: 'center', letterSpacing: 1.6, textTransform: 'uppercase' },
-  startingErrorDetail:{ fontSize: 13, color: C.textSecondary, fontFamily: ARIMO, textAlign: 'center', lineHeight: 19 },
-  startingCancelBtn:  { marginTop: 10, paddingVertical: 12, paddingHorizontal: 32, borderRadius: 12, borderWidth: 1, borderColor: C.border, backgroundColor: C.bgElevated },
-  startingCancelText: { fontSize: 12, color: C.textPrimary, fontFamily: ARIMO, letterSpacing: 1.8, textTransform: 'uppercase', fontWeight: '700' },
+  // ── Paper-plane send icon ────────────────────────────────────────────────────
+  paperPlaneWrap:  { width: 24, height: 24, alignItems: 'center', justifyContent: 'center' },
+  paperPlaneTilt:  { transform: [{ rotate: '-22deg' }], marginLeft: 1 },
+  paperPlaneWing:  { width: 0, height: 0, borderTopWidth: 8, borderBottomWidth: 8, borderLeftWidth: 19, borderTopColor: 'transparent', borderBottomColor: 'transparent' },
+  paperPlaneNotch: { position: 'absolute', top: 8, left: 0, width: 0, height: 0, borderTopWidth: 5, borderLeftWidth: 11, borderTopColor: 'transparent' },
 
-  // ── QR scanner ───────────────────────────────────────────────────────────────
+  // ── Orbiting arc (streaming stop button) ─────────────────────────────────────
+  orbitArc:        { position: 'absolute', borderColor: 'transparent', borderTopColor: C.accent },
+
+  // ── QR scanner (intentionally a dark, high-contrast camera surface) ──────────
   scannerFull:       { ...StyleSheet.absoluteFillObject, backgroundColor: '#0A0E12', zIndex: 100 },
   scannerOverlay:    { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'space-between', paddingVertical: 80 },
   scannerTopBar:     { alignItems: 'center', gap: 6, paddingHorizontal: 32 },
@@ -2830,149 +2853,4 @@ const s = StyleSheet.create({
   scannerCancel:     { borderWidth: 1, borderColor: 'rgba(244,239,227,0.45)', borderRadius: 999, paddingVertical: 12, paddingHorizontal: 40 },
   scannerCancelText: { color: '#F4EFE3', fontSize: 12, fontWeight: '700', fontFamily: ARIMO, letterSpacing: 1.8, textTransform: 'uppercase' },
   scannerError:      { color: '#FF9A8A', fontSize: 13, textAlign: 'center', marginBottom: 24, fontFamily: ARIMO, letterSpacing: 0.2 },
-
-  // ── Chat layout ──────────────────────────────────────────────────────────────
-  safe:         { flex: 1, backgroundColor: C.bg },
-  paneArea:     { flex: 1 },
-
-  // ── Header ───────────────────────────────────────────────────────────────────
-  header:          { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border, backgroundColor: C.bg },
-  headerLeft:      { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
-  clearBtn:        { paddingVertical: 5, paddingHorizontal: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderRadius: 999, backgroundColor: C.bgElevated },
-  clearBtnText:    { fontSize: 11, color: C.textSecondary, fontWeight: '600', fontFamily: ARIMO, letterSpacing: 0.4 },
-  headerTitle:     { fontSize: 15, fontWeight: '700', color: C.textPrimary, fontFamily: ARIMO, letterSpacing: 0.2 },
-  // Status as a small pill — round dot, restrained mono label, soft pill border
-
-
-  // ── Chat pane ────────────────────────────────────────────────────────────────
-  pane:               { flex: 1, backgroundColor: C.bg },
-  messageList:        { flex: 1 },
-  messageListContent: { paddingVertical: 18 },
-  emptyStateWrap:     { alignItems: 'center', marginTop: 88, gap: 8 },
-  emptyStateBrand:    { fontSize: 32, color: C.textPrimary, fontWeight: '800', letterSpacing: 7, fontFamily: NUNITO, marginTop: 8, paddingLeft: 7 },
-  emptyStateRule:     { width: 32, height: 2, borderRadius: 999, backgroundColor: C.accent, opacity: 0.6, marginTop: 4 },
-  emptyStateTagline:  { fontSize: 11, color: C.textMuted, fontFamily: MONO, letterSpacing: 1.8, textTransform: 'uppercase', marginTop: 8, fontWeight: '600' },
-  reconnectBanner:    { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 7, borderBottomWidth: StyleSheet.hairlineWidth, zIndex: 10 },
-  reconnectText:      { fontSize: 11, fontWeight: '700', fontFamily: MONO, letterSpacing: 1.4, textTransform: 'uppercase' },
-
-  // ── Scroll-to-bottom — soft floating pill ────────────────────────────────────
-  scrollBtnWrap:     { position: 'absolute', left: 0, right: 0, alignItems: 'center', pointerEvents: 'box-none' },
-  scrollBtn:         { backgroundColor: C.bgElevated, borderRadius: 999, width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, marginBottom: 12, shadowColor: '#0E1A24', shadowOpacity: 0.12, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 6 },
-  scrollBtnIcon:     { fontSize: 16, color: C.textPrimary, lineHeight: 18, fontFamily: ARIMO, fontWeight: '700' },
-
-  // ── Messages ─────────────────────────────────────────────────────────────────
-  messageWrap:         { paddingHorizontal: 16, marginBottom: 14 },
-  messageWrapRight:    { alignItems: 'flex-end' },
-  // User bubble — iMessage feel, refined blue with subtle glow shadow
-  userBubble:          { backgroundColor: C.userBlue, borderRadius: 22, borderBottomRightRadius: 6, paddingHorizontal: 15, paddingVertical: 10, maxWidth: '82%', shadowColor: C.userBlue, shadowOpacity: 0.22, shadowRadius: 10, shadowOffset: { width: 0, height: 3 }, elevation: 3 },
-  textBlock:           { color: '#FFFFFF', fontSize: 15.5, lineHeight: 23, fontWeight: '400', fontFamily: ARIMO },
-  assistantTextBlock:  { color: C.textPrimary, fontSize: 15.5, lineHeight: 24, fontWeight: '400', fontFamily: ARIMO },
-  inlineCode:          { fontFamily: MONO, fontSize: 12.5, color: C.textPrimary, backgroundColor: C.surface, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border },
-  codeBlock:           { backgroundColor: C.surfaceSoft, borderRadius: 12, padding: 14, marginVertical: 8, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border },
-  codeBlockText:       { fontFamily: MONO, fontSize: 12.5, color: C.textPrimary, lineHeight: 19 },
-  codeBlockLang:       { fontSize: 10, color: C.textMuted, fontFamily: MONO, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1.2, fontWeight: '600' },
-  questionMark:        { color: C.yellow, fontWeight: '700', fontSize: 15, marginBottom: 2, fontFamily: ARIMO },
-  costLabel:           { fontSize: 10.5, color: C.textFaint, marginTop: 6, marginLeft: 2, fontFamily: MONO, letterSpacing: 0.4 },
-  // Tool chip — softer card with accent stripe, less terminal
-  toolChip:            { backgroundColor: C.surfaceSoft, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderLeftWidth: 3, borderLeftColor: C.accent, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10 },
-  toolLine:            { fontSize: 13, color: C.accentStrong, fontFamily: MONO, letterSpacing: 0.2, fontWeight: '600' },
-  toolChevron:         { fontSize: 14, color: C.accent, marginLeft: 6, fontWeight: '400' },
-  toolOutputBlock:     { marginTop: 8, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border },
-  toolOutputText:      { fontSize: 12, color: C.textSecondary, fontFamily: MONO, lineHeight: 18 },
-  interruptedLine:     { fontSize: 11, lineHeight: 18, color: C.textMuted, fontFamily: MONO, letterSpacing: 1.6, textTransform: 'uppercase', fontWeight: '700' },
-  bgCompleteLine:      { fontSize: 12.5, lineHeight: 19, color: C.textMuted, fontFamily: ARIMO, fontStyle: 'italic' },
-  errorLine:           { fontSize: 13, lineHeight: 19, color: C.red, fontFamily: ARIMO, fontWeight: '500', backgroundColor: C.redLight, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, overflow: 'hidden', alignSelf: 'flex-start' },
-
-  // ── Input bar ────────────────────────────────────────────────────────────────
-  completionList:  { position: 'absolute', left: 8, right: 8, maxHeight: 180, borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, backgroundColor: C.bgElevated, zIndex: 10, elevation: 12, shadowColor: '#0E1A24', shadowOpacity: 0.12, shadowRadius: 16, shadowOffset: { width: 0, height: 6 }, overflow: 'hidden' },
-  completionItem:  { paddingHorizontal: 16, paddingVertical: 11, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
-  completionText:  { fontSize: 13.5, color: C.textPrimary, fontFamily: MONO },
-  inputFloat:      { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: 12, paddingBottom: 12, paddingTop: 10, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border, backgroundColor: C.bg },
-  inputRow:        { flexDirection: 'row', alignItems: 'flex-end', gap: 10 },
-  // Input — white elevated surface, soft rounded, gentle shadow
-  input:           { flex: 1, backgroundColor: C.bgElevated, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderRadius: 22, paddingHorizontal: 18, paddingVertical: 15, color: C.textPrimary, fontSize: 16, lineHeight: 22, minHeight: 56, maxHeight: 140, fontFamily: ARIMO, shadowColor: '#0E1A24', shadowOpacity: 0.04, shadowRadius: 6, shadowOffset: { width: 0, height: 2 } },
-  // Send button — blue, soft glow, rounded
-  sendBtn:         { width: 56, height: 56, borderRadius: 22, backgroundColor: C.userBlue, alignItems: 'center', justifyContent: 'center', marginBottom: 0, shadowColor: C.userBlue, shadowOpacity: 0.36, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 6 },
-  sendBtnDisabled: { backgroundColor: C.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, shadowOpacity: 0, elevation: 0 },
-  sendBtnIcon:     { fontSize: 22, color: '#FFFFFF', fontWeight: '700', lineHeight: 24, fontFamily: ARIMO },
-  // Paper-plane send icon — built from two border-triangles.
-  paperPlaneWrap:  { width: 24, height: 24, alignItems: 'center', justifyContent: 'center' },
-  paperPlaneTilt:  { transform: [{ rotate: '-22deg' }], marginLeft: 1 },
-  paperPlaneWing:  { width: 0, height: 0, borderTopWidth: 8, borderBottomWidth: 8, borderLeftWidth: 19, borderTopColor: 'transparent', borderBottomColor: 'transparent' },
-  paperPlaneNotch: { position: 'absolute', top: 8, left: 0, width: 0, height: 0, borderTopWidth: 5, borderLeftWidth: 11, borderTopColor: 'transparent' },
-  // Streaming-state stop button — same footprint as sendBtn so the layout
-  // doesn't shift between idle and streaming. An OrbitingArc sits behind
-  // the stop button and circles around its perimeter.
-  inputBtnSlot:       { width: 56, height: 56, marginBottom: 0, alignItems: 'center', justifyContent: 'center' },
-  orbitArc:           { position: 'absolute', borderColor: 'transparent', borderTopColor: C.accent },
-  stopBtnInline:      { width: 50, height: 50, borderRadius: 25, backgroundColor: '#E84843', alignItems: 'center', justifyContent: 'center', shadowColor: '#C8332E', shadowOpacity: 0.36, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 6 },
-  stopBtnInlineIcon:  { fontSize: 18, color: '#FFFFFF', fontWeight: '700', lineHeight: 20 },
-
-  // ── Header right buttons ─────────────────────────────────────────────────────
-  headerRight:              { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  // Tasks header button — soft pill with a round status dot
-  tasksBtn:                 { flexDirection: 'row', alignItems: 'center', gap: 7, paddingVertical: 5, paddingHorizontal: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderRadius: 999, backgroundColor: C.bgElevated },
-  tasksBtnDot:              { width: 7, height: 7, borderRadius: 999 },
-  tasksBtnText:             { fontSize: 11, color: C.textSecondary, fontWeight: '700', fontFamily: ARIMO, letterSpacing: 0.4 },
-
-  // ── Tasks slide-up modal ─────────────────────────────────────────────────────
-  tasksBackdrop:            { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(14,26,36,0.42)', zIndex: 300 },
-  tasksSheet:               { position: 'absolute', left: 0, right: 0, bottom: 0, maxHeight: '78%', backgroundColor: C.bgElevated, zIndex: 301, borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingTop: 10, shadowColor: '#000', shadowOpacity: 0.22, shadowRadius: 28, shadowOffset: { width: 0, height: -8 }, elevation: 22 },
-  tasksHandle:              { alignSelf: 'center', width: 40, height: 5, borderRadius: 999, backgroundColor: C.borderStrong, marginBottom: 10, opacity: 0.55 },
-  tasksHeader:              { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
-  tasksHeaderTitle:         { fontSize: 17, fontWeight: '700', color: C.textPrimary, fontFamily: ARIMO, letterSpacing: 0 },
-  tasksEmptyWrap:           { paddingVertical: 60, alignItems: 'center' },
-  tasksEmptyText:           { fontSize: 13, color: C.textMuted, fontFamily: ARIMO, fontStyle: 'italic' },
-
-  // ── A single task row inside the modal ───────────────────────────────────────
-  taskRow:                  { paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
-  taskRowHeader:            { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 },
-  taskStatusTag:            { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 9, paddingVertical: 3, borderWidth: StyleSheet.hairlineWidth, borderRadius: 999 },
-  taskStatusDot:            { width: 6, height: 6, borderRadius: 999 },
-  taskStatusLabel:          { fontSize: 10, fontWeight: '700', fontFamily: MONO, letterSpacing: 1.2 },
-  taskTimestamp:            { fontSize: 11, color: C.textMuted, fontFamily: MONO, letterSpacing: 0.4, flex: 1 },
-  taskStopBtn:              { borderWidth: 1, borderColor: C.red, paddingVertical: 4, paddingHorizontal: 12, borderRadius: 999 },
-  taskStopText:             { fontSize: 11, color: C.red, fontWeight: '700', fontFamily: ARIMO, letterSpacing: 0.4 },
-  taskDescription:          { fontSize: 14.5, color: C.textPrimary, fontFamily: ARIMO, lineHeight: 21 },
-  taskSummary:              { fontSize: 13, color: C.textSecondary, fontFamily: ARIMO, lineHeight: 19, marginTop: 6 },
-  taskCost:                 { fontSize: 10.5, color: C.textFaint, fontFamily: MONO, marginTop: 8, letterSpacing: 0.3 },
-  // Hamburger as three deliberate bars
-  hamburgerBtn:             { paddingVertical: 8, paddingHorizontal: 6, marginRight: 4 },
-  hamburgerBars:            { width: 18, height: 12, justifyContent: 'space-between' },
-  hamburgerBar:             { height: 2, borderRadius: 999, backgroundColor: C.textPrimary },
-  hamburgerBtnText:         { fontSize: 18, color: C.textPrimary, fontFamily: ARIMO, fontWeight: '700' },
-  containerDot:             { width: 8, height: 8, borderRadius: 999 },
-
-  // ── Connection error modal ─────────────────────────────────────────────────
-  connErrorBackdrop:        { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(14,26,36,0.5)', zIndex: 400 },
-  connErrorCard:            { position: 'absolute', top: '38%', left: '12%', right: '12%', backgroundColor: C.bgElevated, borderRadius: 18, padding: 28, alignItems: 'center', zIndex: 401, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 20, shadowOffset: { width: 0, height: 8 }, elevation: 24 },
-  connErrorIconCircle:      { width: 52, height: 52, borderRadius: 999, backgroundColor: C.red + '18', alignItems: 'center', justifyContent: 'center', marginBottom: 14 },
-  connErrorIcon:            { fontSize: 28, fontWeight: '700', color: C.red, fontFamily: NUNITO },
-  connErrorTitle:           { fontSize: 18, fontWeight: '700', color: C.textPrimary, fontFamily: NUNITO, marginBottom: 6 },
-  connErrorBody:            { fontSize: 14, color: C.textMuted, textAlign: 'center', lineHeight: 20, marginBottom: 20 },
-  connErrorDismissBtn:      { paddingVertical: 10, paddingHorizontal: 28, borderRadius: 999, backgroundColor: C.accent },
-  connErrorDismissText:     { fontSize: 15, fontWeight: '600', color: '#fff', fontFamily: ARIMO },
-
-  // ── Sidebar — drawer ─────────────────────────────────────────────────────────
-  sidebarBackdrop:          { backgroundColor: 'rgba(14,26,36,0.36)', zIndex: 200 },
-  sidebar:                  { position: 'absolute', top: 0, left: 0, bottom: 0, width: 308, backgroundColor: C.bg, zIndex: 201, borderTopRightRadius: 22, borderBottomRightRadius: 22, shadowColor: '#000', shadowOpacity: 0.20, shadowRadius: 28, shadowOffset: { width: 6, height: 0 }, elevation: 22, flexDirection: 'column', overflow: 'hidden' },
-  sidebarSection:           { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 8 },
-  sidebarHeader:            { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 20, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
-  sidebarBrand:             { fontSize: 22, fontWeight: '800', color: C.textPrimary, letterSpacing: 5, fontFamily: NUNITO, paddingLeft: 5 },
-  sidebarBrandSub:          { fontSize: 10, fontWeight: '600', color: C.textMuted, letterSpacing: 1.8, fontFamily: MONO, textTransform: 'uppercase', marginTop: 6 },
-  sidebarCloseIcon:         { fontSize: 16, color: C.textSecondary, fontFamily: ARIMO, fontWeight: '300' },
-  sidebarExitBtn:           { paddingHorizontal: 20, paddingVertical: 16 },
-  settingsMenuSectionTitle: { fontSize: 10.5, fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: 1.6, fontFamily: MONO },
-  settingsMenuDivider:      { height: StyleSheet.hairlineWidth, backgroundColor: C.border },
-  settingsMenuLogoutText:   { fontSize: 13, color: C.red, fontFamily: ARIMO, fontWeight: '700', letterSpacing: 0.4 },
-  containerMenuItem:        { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border },
-  menuItemActive:           { backgroundColor: C.accentLight, borderLeftWidth: 3, borderLeftColor: C.accent, paddingLeft: 17 },
-  containerMenuItemName:    { fontSize: 14.5, fontWeight: '600', color: C.textPrimary, fontFamily: ARIMO, letterSpacing: 0 },
-  containerMenuItemUrl:     { fontSize: 11.5, color: C.textMuted, fontFamily: MONO, marginTop: 3, letterSpacing: 0.2 },
-  containerMenuItemStatus:  { fontSize: 10, color: C.textMuted, fontFamily: MONO, letterSpacing: 1.2, textTransform: 'uppercase', fontWeight: '700' },
-  worktreeAddBtn:           { fontSize: 18, color: C.textMuted, fontWeight: '600', paddingHorizontal: 4 },
-  worktreeMenuItem:         { paddingLeft: 34, gap: 10, backgroundColor: C.bgElevated },
-  worktreeGlyph:            { fontSize: 13, color: C.textMuted, fontWeight: '700', width: 12 },
-  worktreeMenuItemName:     { fontSize: 13.5, fontWeight: '500', color: C.textSecondary, fontFamily: ARIMO },
-  worktreeBranchInput:      { flex: 1, fontSize: 13, color: C.textPrimary, fontFamily: MONO, paddingVertical: 4, paddingHorizontal: 8, borderWidth: StyleSheet.hairlineWidth, borderColor: C.border, borderRadius: 6, backgroundColor: C.bg },
 })

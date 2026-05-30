@@ -1,0 +1,14 @@
+{
+  "name": "okto-frontends",
+  "version": "0.0.0",
+  "private": true,
+  "description": "npm workspace root for okto's JS frontends (mobile, desktop) and shared @okto/ui.",
+  "workspaces": [
+    "packages/*",
+    "mobile",
+    "desktop"
+  ],
+  "engines": {
+    "node": ">= 22.11.0"
+  }
+}

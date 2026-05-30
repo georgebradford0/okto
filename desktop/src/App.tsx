@@ -7,7 +7,7 @@ import {
   encodeClientFrame, parseServerEvent,
   type AgentInfo, type ServerEvent, type TaskRecord, type WorktreeMeta,
 } from './wire'
-import './App.css'
+import { Spinner } from '@okto/ui'
 
 // The pseudo-id we use for lair itself in the sidebar list. Children's ids are
 // their names (per AgentInfo.id); 'lair' is reserved so it can never collide.
@@ -1298,7 +1298,10 @@ function App() {
   })()
 
   return (
-    <div className="shell" style={{ gridTemplateColumns: `${sidebarWidth}px 1fr` }}>
+    <div
+      className="relative grid h-screen w-screen overflow-hidden bg-background-50 font-sans text-typography-900"
+      style={{ gridTemplateColumns: `${sidebarWidth}px 1fr` }}
+    >
       <Sidebar
         agents={agents}
         activeAgent={activeAgent}
@@ -1313,23 +1316,23 @@ function App() {
         onDeleteWt={deleteWorktree}
       />
       <div
-        className="resizer"
-        style={{ left: sidebarWidth - 14 }}
+        className="absolute top-0 bottom-0 z-10 w-[12px] cursor-col-resize hover:bg-primary-100/40"
+        style={{ left: sidebarWidth - 6 }}
         onMouseDown={startSidebarResize}
         title="Drag to resize sidebar"
       />
-      <div className="main">
-        <div className="main-head">
-          <h1 className="chat-title">{activeLabel}</h1>
+      <div className="flex min-w-0 flex-col bg-background-0">
+        <div className="flex items-center gap-2.5 border-b border-outline-100 px-5 py-3">
+          <h1 className="min-w-0 flex-1 truncate text-base font-semibold tracking-tight text-typography-900">{activeLabel}</h1>
           <button
-            className="btn-ghost danger disconnect-btn"
+            className="rounded-md px-2.5 py-1 text-xs font-medium text-error-600 transition hover:bg-error-50"
             onClick={disconnect}
           >
             Disconnect
           </button>
           <StatusPill status={connStatus} />
           <button
-            className="clear-btn"
+            className="rounded-md border border-outline-200 px-2.5 py-1 text-xs font-medium text-typography-600 transition hover:bg-background-100 disabled:cursor-not-allowed disabled:opacity-40"
             onClick={clearChat}
             disabled={connStatus !== 'ready' || items.length === 0}
             title="Clear chat history"
@@ -1344,13 +1347,13 @@ function App() {
           />
         </div>
 
-        <div className="chat" ref={chatRef}>
+        <div className="flex-1 overflow-y-auto px-5 py-4" ref={chatRef}>
           {items.length === 0 && historyReady[activeAgent] && (
             // Only show the "empty conversation" prompt once /history has
             // confirmed the agent really has no messages — otherwise the
             // text flashes for the duration of the GET /history while the
             // chat is just waiting on the server's authoritative reply.
-            <div className="chat-empty">Awaiting your first message</div>
+            <div className="mt-12 text-center text-sm text-typography-400">Awaiting your first message</div>
           )}
           {items.map(item => <Row key={item.id} item={item} />)}
         </div>
@@ -1425,33 +1428,35 @@ function ConnectScreen({
     }
   }
   return (
-    <div className="connect">
-      <h1 className="connect-brand">OKTO</h1>
-      <div className="connect-rule" />
-      <p className="connect-sub">Desktop · v0.1</p>
-      <p className="connect-tagline">
-        Paste the session QR payload printed by lair on startup.
-      </p>
-      <textarea
-        className="connect-textarea"
-        value={qrInput}
-        onChange={(e) => setQrInput(e.currentTarget.value)}
-        onKeyDown={onKey}
-        placeholder="2:1.2.3.4:9000:ABCDEF…"
-        spellCheck={false}
-        autoCapitalize="off"
-        autoCorrect="off"
-      />
-      <button
-        className="btn-flat"
-        onClick={onConnect}
-        disabled={connecting || !qrInput.trim()}
-      >
-        {connecting ? 'Connecting…' : 'Connect'}
-      </button>
-      {status.kind === 'error' && (
-        <p className="connect-error">{status.message}</p>
-      )}
+    <div className="flex h-screen w-screen items-center justify-center bg-background-50 font-sans">
+      <div className="w-full max-w-md rounded-2xl border border-outline-100 bg-background-0 p-9 shadow-soft-2">
+        <h1 className="text-2xl font-bold tracking-tight text-typography-900">okto</h1>
+        <div className="mt-3 h-px w-10 bg-primary-500" />
+        <p className="mt-3 text-xs font-medium uppercase tracking-wider text-typography-400">Desktop</p>
+        <p className="mt-4 text-sm leading-relaxed text-typography-500">
+          Paste the session QR payload printed by lair on startup.
+        </p>
+        <textarea
+          className="mt-5 h-24 w-full resize-none rounded-lg border border-outline-200 bg-background-50 px-3.5 py-3 font-mono text-sm text-typography-800 outline-none transition focus:border-primary-500 focus:bg-background-0"
+          value={qrInput}
+          onChange={(e) => setQrInput(e.currentTarget.value)}
+          onKeyDown={onKey}
+          placeholder="2:1.2.3.4:9000:ABCDEF…"
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+        />
+        <button
+          className="mt-4 w-full rounded-lg bg-primary-500 py-2.5 text-sm font-semibold text-typography-0 transition hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-40"
+          onClick={onConnect}
+          disabled={connecting || !qrInput.trim()}
+        >
+          {connecting ? 'Connecting…' : 'Connect'}
+        </button>
+        {status.kind === 'error' && (
+          <p className="mt-3 text-sm text-error-600">{status.message}</p>
+        )}
+      </div>
     </div>
   )
 }
@@ -1474,77 +1479,78 @@ function Sidebar({
   onDeleteWt: (agentName: string, wtId: string) => void
 }) {
   return (
-    <aside className="sidebar">
-      <div className="sidebar-section sidebar-agents sidebar-section-first">
-        <ul className="agent-list">
-          <AgentRow
-            id={LAIR_ID}
-            name="Lair"
-            statusText="main"
-            statusKind="ready"
-            active={activeAgent === LAIR_ID}
-            onSelect={onSelect}
-          />
-        </ul>
-      </div>
+    <aside className="flex flex-col overflow-y-auto border-r border-outline-100 bg-background-50 px-2.5 py-3">
+      <ul className="flex flex-col gap-0.5">
+        <AgentRow
+          id={LAIR_ID}
+          name="Lair"
+          statusText="main"
+          statusKind="ready"
+          active={activeAgent === LAIR_ID}
+          onSelect={onSelect}
+        />
+      </ul>
 
-      <div className="sidebar-section sidebar-agents">
-        <p className="sidebar-section-title">Agents</p>
-        <ul className="agent-list">
-          {agents.length === 0 && (
-            <li className="agent-empty">No child agents</li>
-          )}
-          {agents.map(a => {
-            const worktrees = worktreesByAgent[a.id] ?? []
-            return (
-              <Fragment key={a.id}>
+      <p className="mb-1 mt-5 px-2 text-[11px] font-semibold uppercase tracking-wider text-typography-400">Agents</p>
+      <ul className="flex flex-col gap-0.5">
+        {agents.length === 0 && (
+          <li className="px-2 py-1.5 text-xs text-typography-400">No child agents</li>
+        )}
+        {agents.map(a => {
+          const worktrees = worktreesByAgent[a.id] ?? []
+          return (
+            <Fragment key={a.id}>
+              <AgentRow
+                id={a.id}
+                name={a.name}
+                statusText={a.status}
+                statusKind={agentStatusKind(a.status)}
+                active={activeAgent === a.id}
+                onSelect={onSelect}
+                onAddWorktree={() => onStartCreateWt(a.id)}
+              />
+              {worktrees.map(wt => (
                 <AgentRow
-                  id={a.id}
-                  name={a.name}
-                  statusText={a.status}
-                  statusKind={agentStatusKind(a.status)}
-                  active={activeAgent === a.id}
+                  key={`${a.id}${WT_SEP}${wt.id}`}
+                  id={worktreeKey(a.id, wt.id)}
+                  name={wt.branch}
+                  statusText="worktree"
+                  statusKind="ready"
+                  active={activeAgent === worktreeKey(a.id, wt.id)}
                   onSelect={onSelect}
-                  onAddWorktree={() => onStartCreateWt(a.id)}
+                  worktree
+                  onDelete={() => onDeleteWt(a.id, wt.id)}
                 />
-                {worktrees.map(wt => (
-                  <AgentRow
-                    key={`${a.id}${WT_SEP}${wt.id}`}
-                    id={worktreeKey(a.id, wt.id)}
-                    name={wt.branch}
-                    statusText="worktree"
-                    statusKind="ready"
-                    active={activeAgent === worktreeKey(a.id, wt.id)}
-                    onSelect={onSelect}
-                    worktree
-                    onDelete={() => onDeleteWt(a.id, wt.id)}
+              ))}
+              {creatingWtFor === a.id && (
+                <li className="px-2 py-1">
+                  <input
+                    className="w-full rounded-md border border-outline-200 bg-background-0 px-2 py-1 text-xs text-typography-800 outline-none focus:border-primary-500"
+                    autoFocus
+                    placeholder="new branch name…"
+                    value={newBranchDraft}
+                    onChange={(e) => onChangeBranchDraft(e.currentTarget.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') onSubmitWt(a.id)
+                      if (e.key === 'Escape') onCancelCreateWt()
+                    }}
+                    onBlur={onCancelCreateWt}
                   />
-                ))}
-                {creatingWtFor === a.id && (
-                  <li className="worktree-create">
-                    <input
-                      className="worktree-branch-input"
-                      autoFocus
-                      placeholder="new branch name…"
-                      value={newBranchDraft}
-                      onChange={(e) => onChangeBranchDraft(e.currentTarget.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') onSubmitWt(a.id)
-                        if (e.key === 'Escape') onCancelCreateWt()
-                      }}
-                      onBlur={onCancelCreateWt}
-                    />
-                  </li>
-                )}
-              </Fragment>
-            )
-          })}
-        </ul>
-      </div>
-
-      <div className="sidebar-spacer" />
+                </li>
+              )}
+            </Fragment>
+          )
+        })}
+      </ul>
     </aside>
   )
+}
+
+// Status dot color by kind — shared by the sidebar rows.
+const DOT_CLASS: Record<'ready' | 'pending' | 'error', string> = {
+  ready:   'bg-success-500',
+  pending: 'bg-warning-500',
+  error:   'bg-error-500',
 }
 
 function AgentRow({
@@ -1564,31 +1570,33 @@ function AgentRow({
   return (
     <li>
       <button
-        className={`agent-row ${active ? 'active' : ''} ${worktree ? 'worktree-row' : ''}`}
+        className={`group flex w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left text-sm transition ${
+          active ? 'bg-primary-50 font-medium text-primary-800' : 'text-typography-700 hover:bg-background-100'
+        } ${worktree ? 'pl-5' : 'pl-2'}`}
         onClick={() => onSelect(id)}
       >
-        <span className={`agent-dot dot-${statusKind}`} />
-        <span className="agent-name">
-          {worktree && <span className="worktree-glyph">⌥&nbsp;</span>}
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT_CLASS[statusKind]}`} />
+        <span className="min-w-0 flex-1 truncate">
+          {worktree && <span className="text-typography-400">⌥&nbsp;</span>}
           {name}
         </span>
-        <span className="agent-trailing">
+        <span className="flex shrink-0 items-center">
           {onAddWorktree && (
             <span
-              className="agent-action"
+              className="rounded px-1 text-typography-400 opacity-0 transition hover:text-primary-600 group-hover:opacity-100"
               title="Add worktree"
               onClick={(e) => { e.stopPropagation(); onAddWorktree() }}
             >＋</span>
           )}
           {onDelete && (
             <span
-              className="agent-action danger"
+              className="rounded px-1 text-typography-400 opacity-0 transition hover:text-error-600 group-hover:opacity-100"
               title="Delete worktree (and its branch)"
               onClick={(e) => { e.stopPropagation(); onDelete() }}
             >✕</span>
           )}
           {!onAddWorktree && !onDelete && (
-            <span className="agent-status">{statusText}</span>
+            <span className="text-[11px] text-typography-400">{statusText}</span>
           )}
         </span>
       </button>
@@ -1608,11 +1616,15 @@ function TasksButton({ tasks, onClick }: { tasks: TaskRecord[]; onClick: () => v
   const running = tasks.filter(t => t.status === 'running').length
   return (
     <button
-      className={`tasks-btn ${running > 0 ? 'tasks-btn-active' : ''}`}
+      className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition ${
+        running > 0
+          ? 'border-primary-200 bg-primary-50 text-primary-700'
+          : 'border-outline-200 text-typography-600 hover:bg-background-100'
+      }`}
       onClick={onClick}
       title="Background tasks"
     >
-      <span className={`tasks-btn-dot ${running > 0 ? 'tasks-btn-dot-live' : ''}`} />
+      <span className={`h-1.5 w-1.5 rounded-full ${running > 0 ? 'bg-primary-500' : 'bg-typography-300'}`} />
       {running > 0 ? `Tasks · ${running}` : 'Tasks'}
     </button>
   )
@@ -1639,7 +1651,7 @@ function UpdateButton({
   if (state.kind === 'available') {
     return (
       <button
-        className="update-btn update-btn-available"
+        className="rounded-md bg-primary-500 px-2.5 py-1 text-xs font-semibold text-typography-0 transition hover:bg-primary-600"
         onClick={onInstall}
         title={`Download and install v${state.version}, then restart`}
       >
@@ -1649,7 +1661,7 @@ function UpdateButton({
   }
   if (state.kind === 'downloading') {
     return (
-      <button className="update-btn" disabled title="Downloading update…">
+      <button className="rounded-md border border-outline-200 px-2.5 py-1 text-xs font-medium text-typography-400" disabled title="Downloading update…">
         Updating…
       </button>
     )
@@ -1661,7 +1673,7 @@ function UpdateButton({
     : 'Check for updates'
   return (
     <button
-      className="update-btn"
+      className="rounded-md border border-outline-200 px-2.5 py-1 text-xs font-medium text-typography-600 transition hover:bg-background-100 disabled:opacity-50"
       onClick={onCheck}
       disabled={state.kind === 'checking'}
       title={state.kind === 'error' ? state.message : 'Check for a newer version'}
@@ -1700,23 +1712,23 @@ function TasksDrawer({
   return (
     <>
       <div
-        className={`tasks-drawer-backdrop ${visible ? 'open' : ''}`}
+        className={`fixed inset-0 z-40 bg-typography-950/20 transition-opacity duration-200 ${visible ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
         onClick={onClose}
       />
       <aside
-        className={`tasks-drawer ${visible ? 'open' : ''}`}
+        className={`fixed right-0 top-0 z-50 flex h-screen w-[380px] flex-col border-l border-outline-100 bg-background-0 shadow-soft-3 transition-transform duration-200 ${visible ? 'translate-x-0' : 'translate-x-full'}`}
         aria-hidden={!visible}
       >
-        <div className="tasks-drawer-head">
+        <div className="flex items-start justify-between border-b border-outline-100 px-5 py-4">
           <div>
-            <div className="tasks-drawer-title">Background Tasks</div>
-            <div className="tasks-drawer-sub">{agentLabel}</div>
+            <div className="text-sm font-semibold text-typography-900">Background Tasks</div>
+            <div className="text-xs text-typography-400">{agentLabel}</div>
           </div>
-          <button className="tasks-drawer-close" onClick={onClose} title="Close (Esc)">✕</button>
+          <button className="rounded p-1 text-typography-400 transition hover:bg-background-100 hover:text-typography-700" onClick={onClose} title="Close (Esc)">✕</button>
         </div>
-        <div className="tasks-drawer-body">
+        <div className="flex-1 space-y-2.5 overflow-y-auto px-4 py-3">
           {sorted.length === 0 ? (
-            <div className="tasks-empty">No background tasks</div>
+            <div className="mt-8 text-center text-sm text-typography-400">No background tasks</div>
           ) : (
             sorted.map(t => (
               <TaskRow
@@ -1747,19 +1759,19 @@ function TaskRow({
     : relativeTime(task.started_at)
   const statusKind = taskStatusKind(task.status)
   return (
-    <div className="task-row">
-      <div className="task-row-head">
-        <span className={`task-status-tag task-status-${statusKind}`}>
-          <span className={`task-status-dot dot-${statusKind}`} />
-          <span className="task-status-label">{task.status.toUpperCase()}</span>
+    <div className="rounded-lg border border-outline-100 bg-background-50 p-3">
+      <div className="flex items-center gap-2">
+        <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${TASK_TAG_CLASS[statusKind]}`}>
+          <span className={`h-1.5 w-1.5 rounded-full ${TASK_DOT_CLASS[statusKind]}`} />
+          <span>{task.status.toUpperCase()}</span>
         </span>
         {task.wake_interval_secs != null && (
-          <span className="task-monitored">◈ MONITORED</span>
+          <span className="text-[10px] font-medium uppercase tracking-wide text-primary-600">◈ Monitored</span>
         )}
-        <span className="task-timestamp">{ts}</span>
+        <span className="text-[11px] text-typography-400">{ts}</span>
         {isRunning && (
           <button
-            className={`task-stop-btn ${cancelling ? 'cancelling' : ''}`}
+            className="ml-auto rounded-md bg-error-50 px-2 py-0.5 text-[11px] font-semibold text-error-600 transition hover:bg-error-100 disabled:opacity-50"
             onClick={onCancel}
             disabled={cancelling}
           >
@@ -1768,20 +1780,34 @@ function TaskRow({
         )}
       </div>
       <button
-        className="task-body"
+        className="mt-2 w-full text-left"
         onClick={() => setExpanded(v => !v)}
         title={expanded ? 'Collapse' : 'Expand'}
       >
-        <div className={`task-command ${expanded ? '' : 'task-clamp'}`}>{task.command}</div>
+        <div className={`font-mono text-xs text-typography-800 ${expanded ? '' : 'line-clamp-2'}`}>{task.command}</div>
         {task.summary && task.summary.length > 0 && (
-          <div className={`task-summary ${expanded ? '' : 'task-clamp'}`}>{task.summary}</div>
+          <div className={`mt-1 text-xs text-typography-500 ${expanded ? '' : 'line-clamp-2'}`}>{task.summary}</div>
         )}
         {task.cost_usd != null && task.cost_usd > 0 && (
-          <div className="task-cost">{formatCost(task.cost_usd)}</div>
+          <div className="mt-1 text-[11px] text-typography-400">{formatCost(task.cost_usd)}</div>
         )}
       </button>
     </div>
   )
+}
+
+// Background-task status tag/dot palette.
+const TASK_TAG_CLASS: Record<'running' | 'done' | 'cancelled' | 'error', string> = {
+  running:   'bg-primary-50 text-primary-700',
+  done:      'bg-success-50 text-success-700',
+  cancelled: 'bg-background-100 text-typography-500',
+  error:     'bg-error-50 text-error-700',
+}
+const TASK_DOT_CLASS: Record<'running' | 'done' | 'cancelled' | 'error', string> = {
+  running:   'bg-primary-500',
+  done:      'bg-success-500',
+  cancelled: 'bg-typography-300',
+  error:     'bg-error-500',
 }
 
 function taskStatusKind(status: TaskRecord['status']): 'running' | 'done' | 'cancelled' | 'error' {
@@ -1803,6 +1829,19 @@ function formatCost(usd: number): string {
   return usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`
 }
 
+const STATUS_PILL_CLASS: Record<ConnStatus, string> = {
+  ready:     'bg-success-50 text-success-700',
+  streaming: 'bg-primary-50 text-primary-700',
+  error:     'bg-error-50 text-error-700',
+  pending:   'bg-warning-50 text-warning-700',
+}
+const STATUS_DOT_CLASS: Record<ConnStatus, string> = {
+  ready:     'bg-success-500',
+  streaming: 'bg-primary-500',
+  error:     'bg-error-500',
+  pending:   'bg-warning-500',
+}
+
 function StatusPill({ status }: { status: ConnStatus }) {
   const label = useMemo(() => {
     if (status === 'ready')      return 'Ready'
@@ -1811,9 +1850,9 @@ function StatusPill({ status }: { status: ConnStatus }) {
     return 'Connecting'
   }, [status])
   return (
-    <span className={`status-pill status-${status}`}>
-      <span className={`dot dot-${status}`} />
-      <span className="label">{label}</span>
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${STATUS_PILL_CLASS[status]}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${STATUS_DOT_CLASS[status]}`} />
+      <span>{label}</span>
     </span>
   )
 }
@@ -1837,7 +1876,7 @@ function renderInlineSpans(text: string, baseKey: number): ReactNode[] {
     else if (m[2] != null) out.push(<strong key={k}>{m[2]}</strong>)
     else if (m[3] != null) out.push(<em key={k}>{m[3]}</em>)
     else if (m[4] != null) out.push(<s key={k}>{m[4]}</s>)
-    else if (m[5] != null) out.push(<code key={k}>{m[5]}</code>)
+    else if (m[5] != null) out.push(<code key={k} className="rounded bg-background-100 px-1 py-0.5 font-mono text-[0.85em] text-typography-800">{m[5]}</code>)
     last = m.index + m[0].length
   }
   if (last < text.length) out.push(<Fragment key={`${baseKey}-${i++}`}>{text.slice(last)}</Fragment>)
@@ -1858,8 +1897,8 @@ function MarkdownText({ text }: { text: string }) {
       let lang = ''
       const body = seg.slice(3, -3).replace(/^([a-zA-Z0-9_+-]+)\n/, (_, l) => { lang = l; return '' })
       out.push(
-        <pre key={`md-${k++}`} className="code-block">
-          {lang && <span className="code-block-lang">{lang}</span>}
+        <pre key={`md-${k++}`} className="my-2 overflow-x-auto rounded-lg border border-outline-100 bg-background-50 p-3 font-mono text-xs leading-relaxed text-typography-800">
+          {lang && <span className="mb-1 block text-[10px] uppercase tracking-wide text-typography-400">{lang}</span>}
           <code>{body}</code>
         </pre>
       )
@@ -1879,24 +1918,26 @@ function ToolRow({ item }: { item: Message }) {
   const [expanded, setExpanded] = useState(false)
   const hasOutput = item.output != null && item.output.length > 0
   return (
-    <div className="row">
-      <div className={'tool-chip' + (item.running ? ' tool-running' : (!hasOutput ? ' tool-queued' : ''))}>
+    <div className="mb-2">
+      <div className={`overflow-hidden rounded-lg border border-outline-100 border-l-2 ${
+        item.running ? 'border-l-primary-500 bg-primary-50/40' : 'border-l-outline-300 bg-background-50'
+      }`}>
         <button
           type="button"
-          className="tool-line"
+          className="flex w-full items-center gap-2 px-3 py-2 text-left disabled:cursor-default"
           onClick={() => { if (hasOutput) setExpanded(e => !e) }}
           disabled={!hasOutput}
           aria-expanded={hasOutput ? expanded : undefined}
         >
-          {item.running && <span className="tool-dot-pulse" />}
-          {!item.running && item.output === undefined && <span className="tool-dot-queued" />}
-          <span className="tool-line-text">{item.text}</span>
+          {item.running && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary-500" />}
+          {!item.running && item.output === undefined && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-typography-300" />}
+          <span className="min-w-0 flex-1 truncate font-mono text-xs text-typography-700">{item.text}</span>
           {hasOutput && (
-            <span className={'tool-chevron' + (expanded ? ' tool-chevron-open' : '')} aria-hidden="true">▸</span>
+            <span className={`shrink-0 text-typography-400 transition-transform ${expanded ? 'rotate-90' : ''}`} aria-hidden="true">▸</span>
           )}
         </button>
         {expanded && hasOutput && (
-          <div className="tool-output">{truncate(item.output!, 4000)}</div>
+          <div className="whitespace-pre-wrap break-words border-t border-outline-100 px-3 py-2 font-mono text-[11px] leading-relaxed text-typography-600">{truncate(item.output!, 4000)}</div>
         )}
       </div>
     </div>
@@ -1907,8 +1948,8 @@ function Row({ item }: { item: Message }) {
   switch (item.role) {
     case 'user':
       return (
-        <div className="row right">
-          <div className="user-bubble">{item.text}</div>
+        <div className="mb-3 flex justify-end">
+          <div className="max-w-[78%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-primary-500 px-3.5 py-2 text-sm text-typography-0">{item.text}</div>
         </div>
       )
     case 'assistant':
@@ -1916,11 +1957,11 @@ function Row({ item }: { item: Message }) {
       // assistant message at done/interrupted — render it as a small label
       // below the text. Mirrors mobile's MessageBubble assistant branch.
       return (
-        <div className="row">
-          <div className="assistant-text">
+        <div className="mb-3">
+          <div className="max-w-[80%] whitespace-pre-wrap break-words text-sm leading-relaxed text-typography-800">
             <MarkdownText text={item.text} />
             {item.cost != null && (
-              <div className="cost-label">${item.cost.toFixed(4)}</div>
+              <div className="mt-1 text-[11px] text-typography-400">${item.cost.toFixed(4)}</div>
             )}
           </div>
         </div>
@@ -1930,9 +1971,9 @@ function Row({ item }: { item: Message }) {
     case 'interrupted':
       // Cost (if any) lives on the preceding assistant message — this row is
       // just the standalone "● Interrupted" marker.
-      return <div className="row"><span className="interrupted-line">● Interrupted</span></div>
+      return <div className="mb-2 text-xs font-medium text-warning-600">● Interrupted</div>
     case 'error':
-      return <div className="row"><span className="error-line">● {item.text}</span></div>
+      return <div className="mb-2 text-xs font-medium text-error-600">● {item.text}</div>
     case 'bg_complete':
     case 'bg_progress': {
       // Take just the first line — the persisted body is prefixed with a
@@ -1941,7 +1982,7 @@ function Row({ item }: { item: Message }) {
       // the chip. Marker differs so the user can spot progress vs. final.
       const firstLine = item.text.split('\n', 1)[0] || item.text
       const marker = item.role === 'bg_progress' ? '◈' : '◇'
-      return <div className="row"><span className="bg-line">{marker} {firstLine}</span></div>
+      return <div className="mb-2 text-xs text-typography-500">{marker} {firstLine}</div>
     }
   }
 }
@@ -2051,13 +2092,13 @@ function InputBar({
   }
 
   return (
-    <div className="input-bar">
+    <div className="border-t border-outline-100 px-4 pb-3 pt-3">
       {completions.length > 0 && (
-        <div className="completion-list">
+        <div className="mb-2 max-h-48 overflow-y-auto rounded-lg border border-outline-200 bg-background-0 shadow-soft-2">
           {completions.map((c, i) => (
             <div
               key={c}
-              className={`completion-item ${i === selectedIdx ? 'selected' : ''}`}
+              className={`cursor-pointer px-3 py-1.5 font-mono text-xs ${i === selectedIdx ? 'bg-primary-50 text-primary-800' : 'text-typography-700 hover:bg-background-100'}`}
               onMouseDown={(e) => { e.preventDefault(); applyCompletion(c) }}
               onMouseEnter={() => setSelectedIdx(i)}
             >
@@ -2066,45 +2107,45 @@ function InputBar({
           ))}
         </div>
       )}
-      <div className="input-row">
+      <div className="flex items-end gap-2">
         <textarea
           ref={taRef}
-          className="chat-input"
+          className="max-h-[200px] min-h-[40px] flex-1 resize-none rounded-xl border border-outline-200 bg-background-50 px-3.5 py-2.5 text-sm text-typography-800 outline-none transition placeholder:text-typography-400 focus:border-primary-500 focus:bg-background-0"
           value={draft}
           onChange={(e) => setDraft(e.currentTarget.value)}
           onKeyDown={onKey}
           rows={1}
+          placeholder="Message…"
         />
         {streaming ? (
-          // Mirrors mobile's stop-button-with-orbit: the OrbitingArc spins
-          // around the red stop button while the model is generating;
-          // clicking sends an interrupt and locks the button at reduced
-          // opacity until the server's interrupt_ack (or our 3 s fallback).
-          <div className={`input-btn-slot ${stopSent ? 'stop-sent' : ''}`}>
-            <span className="orbit-arc" />
+          // The interrupt button; a Spinner alongside conveys the model is
+          // generating. Clicking sends an interrupt and locks the button at
+          // reduced opacity until the server's interrupt_ack (or 3 s fallback).
+          <div className="flex shrink-0 items-center gap-2 pb-0.5">
+            {!stopSent && <Spinner color="#0d9488" />}
             <button
-              className="stop-btn"
+              className={`flex h-9 w-9 items-center justify-center rounded-full bg-error-500 transition hover:bg-error-600 disabled:cursor-not-allowed ${stopSent ? 'opacity-50' : ''}`}
               onClick={onInterrupt}
               disabled={stopSent}
               title={stopSent ? 'Interrupt sent…' : 'Interrupt'}
             >
-              <span className="stop-icon" />
+              <span className="h-2.5 w-2.5 rounded-[2px] bg-typography-0" />
             </button>
           </div>
         ) : (
           <button
-            className="send-btn"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-500 text-sm text-typography-0 transition hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-40"
             onClick={onSend}
             disabled={!draft.trim()}
             title="Send"
           >
-            <span className="send-btn-icon">➤</span>
+            ➤
           </button>
         )}
       </div>
-      <div className="input-footer">
-        <span className="input-model" title={model || undefined}>{model}</span>
-      </div>
+      {model && (
+        <div className="mt-1.5 text-right text-[11px] text-typography-400" title={model}>{model}</div>
+      )}
     </div>
   )
 }

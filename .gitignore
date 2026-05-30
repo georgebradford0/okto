@@ -19,3 +19,7 @@ dev-data.env
 dev-data/
 # Repo-root dev credentials consumed by start_dev.sh (mirrors ~/.octo/config.json).
 /config.json
+
+# JS workspace deps (root-hoisted by npm workspaces)
+node_modules/
+**/node_modules/

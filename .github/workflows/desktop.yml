@@ -57,12 +57,15 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: desktop/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install Rust targets (universal)
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
+      # npm workspaces: install from the repo root (single root lockfile installs
+      # all workspaces, hoisting deps to <root>/node_modules).
       - name: Install JS dependencies
+        working-directory: ${{ github.workspace }}
         run: npm ci
 
       - name: Write notarization API key
