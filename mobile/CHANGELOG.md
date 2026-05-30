@@ -25,12 +25,27 @@ the git log.
 
 ### Fixed
 
-- iOS CocoaPods install (and the `ios.yml` build) no longer fails on a Reanimated/Worklets
-  version mismatch. `react-native-worklets` was capped at `^0.8.1`, which couldn't follow
-  `react-native-reanimated` up to 4.4.0 (it requires Worklets 0.9.x); bumped the pin to
-  `^0.9.0` and regenerated the root lockfile so the pair resolves to reanimated 4.4.0 +
-  worklets 0.9.1.
-- Deleted worktrees no longer reappear in the sidebar. The `useEffect` that fetches
+- Pinned `react-native-reanimated` to `~4.3.0` and `react-native-worklets` to `~0.8.1`
+  (resolving to reanimated 4.3.1 + worklets 0.8.3). The previous `^4.3.0`/`^0.8.1` ranges
+  drifted apart — reanimated floated to 4.4.0 (which requires Worklets 0.9.x) while worklets
+  stayed on 0.8.x, breaking the iOS CocoaPods install. A brief attempt to fix forward
+  (worklets `^0.9.0` + reanimated 4.4.0) built but crashed at runtime on RN 0.84.1, so both
+  are now pinned to the compatible 4.3.x/0.8.x pair (reanimated 4.3.x peer-requires Worklets
+  0.8.x). Root lockfile regenerated to match.
+- Fixed an "Invalid hook call / more than one copy of React" runtime crash (null hooks
+  dispatcher in `useSharedValue` under `KeyboardProvider`). In the npm workspace, desktop's
+  `react: ^19.1.0` floated React/React-DOM to a newer patch (19.2.6) that npm hoisted to the
+  workspace root, where the root-hoisted `react-native` bound its Fabric renderer to it —
+  while the mobile app resolved its own pinned 19.2.3, yielding two React instances. Added a
+  root `overrides` forcing `react`/`react-dom` to a single version (19.2.3, satisfying
+  `react-native@0.84.1`'s `^19.2.3` peer), so Metro resolves one React copy across the app,
+  react-native, reanimated, and worklets.
+- Added `react-dom@19.2.3` to mobile. `react-aria` (pulled in transitively by gluestack-ui)
+  statically `require`s `react-dom`, which only resolved before because an incidental copy
+  was hoisted to the workspace root; once the React override removed it from the root, Metro
+  could no longer resolve it. `react-dom` is dead code on native but must resolve at bundle
+  time. Verified end-to-end: clean Metro bundle + native build + simulator launch with no
+  runtime crash. The `useEffect` that fetches
   worktrees now aborts stale requests on cleanup, and `deleteWorktree` re-fetches the
   worktree list after the DELETE completes (matching the desktop pattern). Stale
   worktree entries for removed agents are also pruned.
