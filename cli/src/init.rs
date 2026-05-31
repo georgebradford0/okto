@@ -35,6 +35,10 @@ pub struct InitOptions<'a> {
     /// Image reference to `docker run`. `None` falls back to
     /// `$OKTO_LAIR_IMAGE` or `service::DEFAULT_LAIR_IMAGE`.
     pub image:      Option<&'a str>,
+    /// How long to wait for `/health` after `docker run`. See
+    /// `service::DEFAULT_READY_TIMEOUT_SECS` for the rationale on the
+    /// default; bump this when a heavy `bootstrap.sh` needs more time.
+    pub ready_timeout: std::time::Duration,
 }
 
 pub struct McpSeed {
@@ -191,8 +195,11 @@ pub async fn run(opts: InitOptions<'_>) -> Result<()> {
         image:      Some(image.clone()),
     })?;
 
-    println!("Waiting for lair to be ready...");
-    service::wait_for_health(opts.http_port, std::time::Duration::from_secs(60)).await?;
+    println!(
+        "Waiting for lair to be ready (up to {}s)...",
+        opts.ready_timeout.as_secs(),
+    );
+    service::wait_for_health(opts.http_port, opts.ready_timeout).await?;
     info!("[init] lair is healthy on http port {}", opts.http_port);
 
     // If we seeded an mcp.json, verify every server actually connected
@@ -382,9 +389,12 @@ pub fn serialize_env_file(entries: &[(String, String)]) -> String {
 }
 
 /// Stop + respawn the lair container with the persisted launch record. Used
-/// by `okto reload` and `okto env set/unset`.
-pub async fn restart_lair(reason: &str) -> Result<()> {
-    info!("[init] restarting lair (reason: {reason})");
+/// by `okto reload`, `okto lair update`, and `okto env set/unset`. The
+/// `ready_timeout` controls how long the CLI waits for `/health` after the
+/// container starts — keep it generous when `bootstrap.sh` installs heavy
+/// packages on a fresh image pull (apt cache is cold the first time).
+pub async fn restart_lair(reason: &str, ready_timeout: std::time::Duration) -> Result<()> {
+    info!("[init] restarting lair (reason: {reason}, ready_timeout={:?})", ready_timeout);
     let rec = service::read_launch().ok_or_else(|| {
         error!("[init] cannot restart lair: ~/.okto/lair-launch.json is missing");
         anyhow::anyhow!(
@@ -404,8 +414,8 @@ pub async fn restart_lair(reason: &str) -> Result<()> {
     };
     println!("Restarting lair ({reason})...");
     service::start_lair(&launch)?;
-    println!("Waiting for lair to be ready...");
-    service::wait_for_health(rec.http_port, std::time::Duration::from_secs(60)).await?;
+    println!("Waiting for lair to be ready (up to {}s)...", ready_timeout.as_secs());
+    service::wait_for_health(rec.http_port, ready_timeout).await?;
     info!("[init] lair restart complete (reason: {reason})");
     println!("lair ready.");
     Ok(())

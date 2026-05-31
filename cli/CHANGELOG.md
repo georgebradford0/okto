@@ -7,6 +7,15 @@ the git log.
 
 ## [Unreleased]
 
+### Added
+- **`--ready-timeout <SECS>` on `okto init` and `okto reload`** to control
+  how long the CLI waits for `/health` after `docker run` / `docker restart`.
+  Defaults to **180s** (up from the previous hard-coded 60s) so containers
+  with heavy `~/.okto/bootstrap.sh` scripts — e.g. apt-installing Proton
+  Bridge (~216 MB) — don't trip a spurious "lair did not become ready" on
+  fresh image pulls when the apt cache is cold. `okto lair update`,
+  `okto env set`, and `okto env unset` also pick up the 180s default.
+
 ## [0.7.0] - 2026-05-31
 
 ### Added

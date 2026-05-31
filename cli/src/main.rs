@@ -113,6 +113,13 @@ enum Command {
         /// OKTO_RELAY_URL && okto reload`.
         #[arg(long)]
         disable_push: bool,
+
+        /// How long (seconds) to wait for `/health` after `docker run`. Bump
+        /// this when your `~/.okto/bootstrap.sh` does heavy work like
+        /// `apt-get install` of large packages, especially on a fresh image
+        /// pull when the apt cache is cold. Default 180s.
+        #[arg(long, value_name = "SECS", default_value_t = service::DEFAULT_READY_TIMEOUT_SECS)]
+        ready_timeout: u64,
     },
 
     /// Manage child agents
@@ -137,6 +144,10 @@ enum Command {
         /// Repeatable.
         #[arg(long = "env", short = 'e', value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
         env: Vec<String>,
+        /// How long (seconds) to wait for `/health` after restart. Default
+        /// 180s — bump it for heavy `bootstrap.sh` installs.
+        #[arg(long, value_name = "SECS", default_value_t = service::DEFAULT_READY_TIMEOUT_SECS)]
+        ready_timeout: u64,
     },
 
     /// Print the QR code mobile clients scan to connect to this lair
@@ -632,7 +643,7 @@ async fn update_lair(image_override: Option<String>) -> Result<()> {
     }
 
     if service::is_running() {
-        init::restart_lair("lair update").await?;
+        init::restart_lair("lair update", std::time::Duration::from_secs(service::DEFAULT_READY_TIMEOUT_SECS)).await?;
         let new_version = service::lair_binary_version().ok();
         match (old_version.as_deref(), new_version.as_deref()) {
             (Some(old), Some(new)) if old != new => {
@@ -771,8 +782,8 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Command::Init { env, noise_port, http_port, image, mcp_config, system_prompt_append, disable_push } => {
-            info!("[cli] init starting (noise_port={noise_port}, http_port={http_port}, disable_push={disable_push})");
+        Command::Init { env, noise_port, http_port, image, mcp_config, system_prompt_append, disable_push, ready_timeout } => {
+            info!("[cli] init starting (noise_port={noise_port}, http_port={http_port}, disable_push={disable_push}, ready_timeout={ready_timeout}s)");
             let mut extra_env = init::parse_extra_env(&env)?;
             if disable_push {
                 // Reject the contradictory combo up front so the operator
@@ -870,6 +881,7 @@ async fn main() -> Result<()> {
                 mcp_seed,
                 extra_env:  &extra_env,
                 image:      image.as_deref(),
+                ready_timeout: std::time::Duration::from_secs(ready_timeout),
             }).await?;
             info!("[cli] init complete");
         }
@@ -930,8 +942,8 @@ async fn main() -> Result<()> {
             }
         }
 
-        Command::Reload { agents: agent_targets, env } => {
-            info!("[cli] reload starting (agent_targets={}, env_pairs={})", agent_targets.len(), env.len());
+        Command::Reload { agents: agent_targets, env, ready_timeout } => {
+            info!("[cli] reload starting (agent_targets={}, env_pairs={}, ready_timeout={ready_timeout}s)", agent_targets.len(), env.len());
             if !env.is_empty() {
                 let new_pairs = init::parse_extra_env(&env)?;
                 let path = service::env_file_path();
@@ -949,7 +961,7 @@ async fn main() -> Result<()> {
                 }
                 init::write_secret_file(&path, &init::serialize_env_file(&entries))?;
             }
-            init::restart_lair("reload").await?;
+            init::restart_lair("reload", std::time::Duration::from_secs(ready_timeout)).await?;
 
             let names: Vec<String> = if agent_targets.is_empty() {
                 let path = service::lair_data_dir().join("agents.json");
@@ -1088,7 +1100,7 @@ async fn main() -> Result<()> {
                     }
                     debug!("[cli] writing env file {} ({} entries)", path.display(), entries.len());
                     init::write_secret_file(&path, &init::serialize_env_file(&entries))?;
-                    init::restart_lair("env set").await?;
+                    init::restart_lair("env set", std::time::Duration::from_secs(service::DEFAULT_READY_TIMEOUT_SECS)).await?;
                 }
                 EnvAction::Unset { keys } => {
                     if keys.is_empty() {
@@ -1106,7 +1118,7 @@ async fn main() -> Result<()> {
                     } else {
                         debug!("[cli] env unset: removed {} key(s); writing {}", before - entries.len(), path.display());
                         init::write_secret_file(&path, &init::serialize_env_file(&entries))?;
-                        init::restart_lair("env unset").await?;
+                        init::restart_lair("env unset", std::time::Duration::from_secs(service::DEFAULT_READY_TIMEOUT_SECS)).await?;
                     }
                 }
             }

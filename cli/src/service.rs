@@ -23,6 +23,13 @@ use tracing::{debug, error, info, warn};
 pub const LAIR_DEFAULT_HTTP_PORT:  u16 = 8000;
 pub const LAIR_DEFAULT_NOISE_PORT: u16 = 8443;
 
+/// Default deadline for `wait_for_health` after `docker run`/`docker restart`.
+/// Set to 3 minutes so the container has time to apt-install heavy packages
+/// in `~/.okto/bootstrap.sh` (e.g. Proton Bridge ≈ 216 MB unpacked) on a
+/// fresh image pull, when the apt cache is cold. Override per-invocation
+/// with `okto init --ready-timeout <SECS>` or `okto reload --ready-timeout`.
+pub const DEFAULT_READY_TIMEOUT_SECS: u64 = 180;
+
 /// Container name the CLI uses for the lair instance on this host. Used as
 /// the `--name` flag on `docker run` and as the target for every subsequent
 /// `docker rm`, `docker inspect`, `docker logs`, etc.
