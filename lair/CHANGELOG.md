@@ -3,9 +3,20 @@
 ## [Unreleased]
 
 ### Added
+- **Push notifications can now be disabled end-to-end** via `OKTO_RELAY_URL=`
+  (empty) in the container env, typically set by `okto init --disable-push`.
+  When disabled, both lair and child agents omit the `send_notification` and
+  `ask_question` tools from the model's tool list (instead of letting the
+  model call them and get a "push disabled" stub back), `/info` advertises an
+  empty `relay_url`, and the mobile client's relay registration becomes a
+  no-op.
 - **End-to-end test suite for the lair binary** (`tests/` crate). Spawns the real `lair --role lair` process on a temp data dir with ephemeral ports, drives it over the Noise tunnel exactly like the mobile client, and asserts streamed `ChatEvent` frames + on-disk state — with an in-process Anthropic-SSE mock LLM, so the tests are fully offline (no API spend, no Docker). Covers boot/transport, a full chat turn, history persistence, `/clear`, mid-turn interrupt, and real `bash`-tool execution. Run with `cargo test -p okto-tests`.
 
 ### Changed
+- **`OKTO_RELAY_URL=""` (explicit empty) now disables push** instead of
+  silently falling back to the default relay. Unset still falls back; only the
+  explicit-empty form turns push off. This is what `okto init --disable-push`
+  writes into `lair-env`.
 - **`OKTO_HTTP_PORT` env override** for lair's loopback HTTP port (still defaults to 8000). Lets multiple lair processes run side by side; used by the e2e suite for port isolation.
 - **`ANTHROPIC_API_URL` env override** (in `okto-core`) for the Anthropic `/v1/messages` endpoint (defaults to the real API). Lets the e2e suite point the production request path at a mock server.
 - **Tool results now stream to clients.** The live chat loop (`okto_core::send_message`) now emits a `tool_result` frame after each tool finishes, matching the wire schema desktop/mobile already implement. Previously only the (unused) startup loop did this, so the desktop UI had to infer tool completion from `done`/`interrupted`; per-tool "running" state now clears correctly.

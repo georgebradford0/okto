@@ -939,14 +939,27 @@ fn make_extra_tools() -> Vec<AnthropicTool> {
         run_command_in_background_tool(),
         monitor_process_tool(),
         stop_monitor_tool(),
-        send_notification_tool(),
-        okto_core::relay::ask_question_tool(),
     ];
+    // Mirror lair's gating (see `lair_extra_tools` in lair.rs). The agent
+    // process inherits `OKTO_RELAY_URL` from lair via docker `--env-file`, so
+    // an explicit empty value (set by `okto init --disable-push`) silences
+    // both sides; unset falls back to lair's default relay → push enabled.
+    if push_enabled() {
+        tools.push(send_notification_tool());
+        tools.push(okto_core::relay::ask_question_tool());
+    }
     if has_spawn_capability() {
         tools.push(spawn_agent_tool());
         tools.push(terminate_agent_tool());
     }
     tools
+}
+
+/// Push is disabled iff `OKTO_RELAY_URL` is set and empty. Unset means the
+/// operator left lair on its default relay; any non-empty value is a custom
+/// relay URL. Either way, push is on.
+fn push_enabled() -> bool {
+    !matches!(std::env::var("OKTO_RELAY_URL"), Ok(v) if v.is_empty())
 }
 
 /// True when lair handed this child a capability token at spawn time. Only

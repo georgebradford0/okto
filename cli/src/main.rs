@@ -103,6 +103,16 @@ enum Command {
         /// restarting the container.
         #[arg(long, value_name = "TEXT|@PATH")]
         system_prompt_append: Option<String>,
+
+        /// Disable push notifications end-to-end. Persists `OKTO_RELAY_URL=`
+        /// (explicit empty) into `~/.okto/lair-env`, which (a) drops the
+        /// `send_notification` and `ask_question` tools from the LLM's tool
+        /// list in both lair and child agents and (b) causes the mobile
+        /// client to skip registering for pushes (lair's `/info` advertises
+        /// an empty relay URL). To re-enable later: `okto env unset
+        /// OKTO_RELAY_URL && okto reload`.
+        #[arg(long)]
+        disable_push: bool,
     },
 
     /// Manage child agents
@@ -761,9 +771,23 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Command::Init { env, noise_port, http_port, image, mcp_config, system_prompt_append } => {
-            info!("[cli] init starting (noise_port={noise_port}, http_port={http_port})");
-            let extra_env = init::parse_extra_env(&env)?;
+        Command::Init { env, noise_port, http_port, image, mcp_config, system_prompt_append, disable_push } => {
+            info!("[cli] init starting (noise_port={noise_port}, http_port={http_port}, disable_push={disable_push})");
+            let mut extra_env = init::parse_extra_env(&env)?;
+            if disable_push {
+                // Reject the contradictory combo up front so the operator
+                // doesn't have to guess which one won.
+                if let Some((k, _)) = extra_env.iter().find(|(k, _)| k == "OKTO_RELAY_URL") {
+                    error!("[init] --disable-push conflicts with --env {k}=...");
+                    eprintln!("error: --disable-push conflicts with --env OKTO_RELAY_URL=...; pass one or the other.");
+                    std::process::exit(1);
+                }
+                // Empty value is the on-wire signal to lair (see
+                // `OKTO_RELAY_URL` parsing in lair/src/lair.rs).
+                extra_env.push(("OKTO_RELAY_URL".to_string(), String::new()));
+                info!("[init] --disable-push set; will persist OKTO_RELAY_URL= in lair-env");
+                println!("Push notifications disabled (OKTO_RELAY_URL= written to lair-env).");
+            }
 
             // Resolve `--system-prompt-append` up front so a bad `@path`
             // fails before we mutate anything on disk.

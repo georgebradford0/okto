@@ -494,7 +494,7 @@ fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
 
         state.stream_state.lock().unwrap().buffer.clear();
 
-        let extra_tools = build_tools_with_mcp(&state.mcp_pool, &lair_extra_tools()).await;
+        let extra_tools = build_tools_with_mcp(&state.mcp_pool, &lair_extra_tools(!state.relay_url.is_empty())).await;
         let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), lair_extra_executor(Arc::clone(&state)));
 
         tokio::spawn(async move {
@@ -1846,8 +1846,8 @@ fn forget_agent_tool() -> AnthropicTool {
     }
 }
 
-fn lair_extra_tools() -> Vec<AnthropicTool> {
-    vec![
+fn lair_extra_tools(push_enabled: bool) -> Vec<AnthropicTool> {
+    let mut tools = vec![
         list_agents_tool(),
         create_agent_tool(),
         mint_bootstrap_userdata_tool(),
@@ -1858,9 +1858,16 @@ fn lair_extra_tools() -> Vec<AnthropicTool> {
         run_command_in_background_tool(),
         monitor_process_tool(),
         stop_monitor_tool(),
-        send_notification_tool(),
-        relay_client::ask_question_tool(),
-    ]
+    ];
+    // `send_notification` / `ask_question` both reach the operator through the
+    // push relay; without a relay configured (`okto init --disable-push`)
+    // they would only ever return a "push disabled" message to the model, so
+    // we drop them from the tool list entirely to keep the LLM's view honest.
+    if push_enabled {
+        tools.push(send_notification_tool());
+        tools.push(relay_client::ask_question_tool());
+    }
+    tools
 }
 
 fn lair_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_json::Value)
@@ -3236,11 +3243,21 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
         let relay_signer  = Arc::new(RelaySigner::load_or_generate(
             &dir.join(RELAY_SIGNING_KEY_FILE).to_string_lossy(),
         ));
+        // OKTO_RELAY_URL semantics:
+        //   - unset           → fall back to DEFAULT_RELAY_URL (push enabled)
+        //   - set to a URL    → use that URL
+        //   - set to ""       → push disabled (operator passed `okto init --disable-push`)
+        // Downstream code in this file (`/internal/notify`, `/info`, the push
+        // tools, etc.) all gate on `state.relay_url.is_empty()`, and the agent
+        // child process inherits this env var so its tool list matches.
         let relay_url_str = std::env::var("OKTO_RELAY_URL")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| DEFAULT_RELAY_URL.to_string());
-        info!("[lair] relay_signing_pubkey={} relay_url={}", relay_signer.pubkey_b32(), relay_url_str);
+            .unwrap_or_else(|_| DEFAULT_RELAY_URL.to_string());
+        let push_enabled = !relay_url_str.is_empty();
+        if push_enabled {
+            info!("[lair] relay_signing_pubkey={} relay_url={}", relay_signer.pubkey_b32(), relay_url_str);
+        } else {
+            info!("[lair] push notifications disabled (OKTO_RELAY_URL is empty)");
+        }
 
         // Management API token — read once at startup, then removed from
         // the in-memory env. `/proc/1/environ` still holds the originally
