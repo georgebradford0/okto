@@ -11,6 +11,10 @@ Changes to the okto desktop (Tauri) app. Current version: see `package.json` /
 
 - Send button now uses the Lucide `Send` icon (`lucide-react-native`) instead of the `➤` glyph.
 
+### Fixed
+
+- Resolved the TypeScript build errors from the Tamagui migration (the `tsc` gate failed CI): text-style props (`fontSize`/`color`/`fontFamily`/`textAlign`) moved off `View`/`Touchable` onto `Text`, DOM-only attrs (`title`/`type`) removed, `overflow="auto"`→`"scroll"`, Spinner numeric `size`→`"large"`, and chat ref typing. Runtime unchanged.
+
 ## [0.4.2] - 2026-05-30
 
 ### Changed

@@ -76,6 +76,7 @@ const darkTheme = buildTheme(dark, darkSpecial)
 // Fonts: brand=Nunito (headings), body=Arimo, mono=platform monospace.
 // On web the brand fonts aren't loaded (no @font-face), so without a fallback the browser
 // drops to Times serif. Append a system sans stack on web; mobile keeps its bundled families.
+declare const process: { env: Record<string, string | undefined> }
 const IS_WEB = process.env.TAMAGUI_TARGET === 'web'
 const sans = (f: string) =>
   IS_WEB ? `${f}, -apple-system, system-ui, "Segoe UI", Roboto, sans-serif` : f
@@ -102,7 +103,6 @@ const monoFont = createFont({
 const tokens = createTokens({
   ...defaultConfig.tokens,
   color: {
-    ...defaultConfig.tokens.color,
     // Light values as theme-independent token fallbacks (themes override at runtime).
     ...Object.fromEntries(Object.entries(lightTheme).map(([k, v]) => [k, v])),
   },
