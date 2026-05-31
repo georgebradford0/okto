@@ -5,6 +5,8 @@ Changes to the okto desktop (Tauri) app. Current version: see `package.json` /
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-05-30
+
 ### Changed
 
 - Send button now uses the Lucide `Send` icon (`lucide-react-native`) instead of the `➤` glyph.
