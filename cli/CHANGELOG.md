@@ -7,6 +7,8 @@ the git log.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-05-31
+
 ### Added
 - `okto config set --cost-input1m <USD> --cost-output1m <USD>` sets the
   per-1M-token input/output prices (config keys `cost_input1M` /

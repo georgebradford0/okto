@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.21.2] - 2026-05-31
+
 ### Added
 - **Cost reporting for OpenAI-compatible backends.** Optional
   `cost_input1M` / `cost_output1M` fields in `~/.okto/config.json` set the
