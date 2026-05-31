@@ -1722,7 +1722,7 @@ function TasksDrawer({
         position="absolute" right={0} top={0} zIndex={50} height="100%" width={380} flexDirection="column" borderLeftWidth={1} borderColor="$outline100" backgroundColor="$background0" x={visible ? 0 : 380}
         aria-hidden={!visible}
       >
-        <View alignItems="flex-start" justifyContent="space-between" borderBottomWidth={1} borderColor="$outline100" paddingHorizontal={20} paddingVertical={16}>
+        <View flexDirection="row" alignItems="flex-start" justifyContent="space-between" borderBottomWidth={1} borderColor="$outline100" paddingHorizontal={20} paddingVertical={16}>
           <View>
             <View fontSize={14} fontWeight="600" color="$typography900">Background Tasks</View>
             <View fontSize={12} color="$typography400">{agentLabel}</View>
@@ -1951,7 +1951,7 @@ function Row({ item }: { item: Message }) {
   switch (item.role) {
     case 'user':
       return (
-        <View marginBottom={12} justifyContent="flex-end">
+        <View marginBottom={12} alignItems="flex-end">
           <View maxWidth="78%" borderRadius={16} borderBottomRightRadius={6} backgroundColor="$primary500" paddingHorizontal={14} paddingVertical={8} fontSize={14} color="$typography0">{item.text}</View>
         </View>
       )
