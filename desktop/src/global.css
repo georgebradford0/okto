@@ -1,5 +1,12 @@
 /* Tamagui injects component styles at runtime; this just establishes the full-height
-   flex root so 100vh / flex-1 layouts fill the window. */
+   flex root so 100vh / flex-1 layouts fill the window, plus a border-box reset for the
+   raw DOM elements (textarea/input) we keep — Tailwind's preflight reset is gone. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 html,
 body,
 #root {

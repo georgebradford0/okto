@@ -1437,7 +1437,7 @@ function ConnectScreen({
           Paste the session QR payload printed by lair on startup.
         </Text>
         <textarea
-          style={{ marginTop: 20, height: 96, width: '100%', resize: 'none', borderRadius: 8, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: 'rgb(246,246,246)', paddingLeft: 14, paddingRight: 14, paddingTop: 12, paddingBottom: 12, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 14, color: 'rgb(30,41,59)', outline: 'none' }}
+          style={{ marginTop: 20, height: 96, width: '100%', resize: 'none', boxSizing: 'border-box', borderRadius: 8, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: 'rgb(246,246,246)', paddingLeft: 14, paddingRight: 14, paddingTop: 12, paddingBottom: 12, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 14, color: 'rgb(30,41,59)', outline: 'none' }}
           value={qrInput}
           onChange={(e) => setQrInput(e.currentTarget.value)}
           onKeyDown={onKey}
@@ -1525,7 +1525,7 @@ function Sidebar({
               {creatingWtFor === a.id && (
                 <View paddingHorizontal={8} paddingVertical={4}>
                   <input
-                    style={{ width: '100%', borderRadius: 6, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: '#fff', paddingLeft: 8, paddingRight: 8, paddingTop: 4, paddingBottom: 4, fontSize: 12, color: 'rgb(30,41,59)', outline: 'none' }}
+                    style={{ width: '100%', boxSizing: 'border-box', borderRadius: 6, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: '#fff', paddingLeft: 8, paddingRight: 8, paddingTop: 4, paddingBottom: 4, fontSize: 12, color: 'rgb(30,41,59)', outline: 'none' }}
                     autoFocus
                     placeholder="new branch name…"
                     value={newBranchDraft}
@@ -2113,7 +2113,7 @@ function InputBar({
       <View flexDirection="row" alignItems="flex-end" gap={8}>
         <textarea
           ref={taRef}
-          style={{ maxHeight: 200, minHeight: 40, flex: 1, resize: 'none', borderRadius: 12, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: 'rgb(246,246,246)', paddingLeft: 14, paddingRight: 14, paddingTop: 10, paddingBottom: 10, fontSize: 14, color: 'rgb(30,41,59)', outline: 'none' }}
+          style={{ maxHeight: 200, minHeight: 40, flex: 1, resize: 'none', boxSizing: 'border-box', borderRadius: 12, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: 'rgb(246,246,246)', paddingLeft: 14, paddingRight: 14, paddingTop: 10, paddingBottom: 10, fontSize: 14, color: 'rgb(30,41,59)', outline: 'none' }}
           value={draft}
           onChange={(e) => setDraft(e.currentTarget.value)}
           onKeyDown={onKey}
