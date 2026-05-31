@@ -21,11 +21,39 @@ There is **no root changelog**. Each app keeps its own `CHANGELOG.md` (Keep-a-Ch
 
 When you make a user-facing change to an app, **add an entry under that app's `## [Unreleased]`** in the matching `### Added/Changed/Fixed/Removed/Security` subsection. When you bump an app's version, rename its `## [Unreleased]` heading to `## [<version>] - <YYYY-MM-DD>` and start a fresh empty `## [Unreleased]` above it. A change that spans apps gets an entry in each affected app's changelog.
 
+## Testing
+
+There is **no unit/integration layer by design** — the only tests are **end-to-end** tests that drive the real `lair` binary as a black box. They live in the `tests/` crate (`okto-tests`):
+
+```sh
+cargo test -p okto-tests
+```
+
+Each test spawns a real `lair --role lair` process on a temp `OKTO_HOME` with ephemeral ports, drives it over the Noise tunnel exactly like the mobile client, and asserts the streamed `ChatEvent` frames + on-disk state. They are **fully offline** — an in-process Anthropic-SSE mock LLM stands in for the real API, so there is **no API spend, no network, and no Docker**. The harness builds the `lair` binary automatically.
+
+- `tests/tests/boot.rs` — boot, Noise handshake, `/health`, `/info`, `/agents`.
+- `tests/tests/chat.rs` — a chat turn (`ready → text → done`), history persistence, `/clear`, mid-turn interrupt.
+- `tests/tests/tools.rs` — the builtin `bash` tool, asserting the streamed `tool_use`/`tool_result` frames **and** the real filesystem side effect.
+- `tests/tests/connection.rs` — lower-level Noise handshake/proxy tests.
+- `tests/tests/common/` — the shared harness: `mock_llm.rs` (mock LLM), `lair_proc.rs` (spawns/owns the lair process), `tunnel.rs` (Noise transport + HTTP/WS client).
+
+When you change lair's observable behavior (routes, the agentic loop in `okto_core::send_message`, the wire protocol, transport, or boot sequence), **add or update an e2e test to cover it**. Two prod-only env seams exist purely for these tests and default to production behavior: `OKTO_HTTP_PORT` (lair's loopback HTTP port) and `ANTHROPIC_API_URL` (the Anthropic endpoint in `okto-core`).
+
+**`cargo test -p okto-tests` must pass before cutting a lair image release** (see "Platform").
+
 ## Platform
 
 Linux only — x86_64 and aarch64. macOS and Windows are out of scope for the runtime host. The `okto` CLI is built per-Linux-arch and published via the `cli.yml` GitHub Actions workflow; the lair runtime ships exclusively as a multi-arch Docker image (`ghcr.io/georgebradford0/lair`).
 
-Image releases are cut by the **`lair.yml`** GitHub Actions workflow (manual dispatch) after each `lair/Cargo.toml` version bump:
+Image releases are cut by the **`lair.yml`** GitHub Actions workflow (manual dispatch) after each `lair/Cargo.toml` version bump.
+
+**Prerequisite — the e2e suite must pass first.** Before bumping the version or dispatching `lair.yml`, run the end-to-end tests and confirm they are green (see "Testing"). Do not move forward with the lair release workflow on a red suite:
+
+```sh
+cargo test -p okto-tests   # must pass before bumping the version or cutting a release
+```
+
+Then dispatch the build:
 
 ```sh
 gh workflow run lair.yml --ref main
