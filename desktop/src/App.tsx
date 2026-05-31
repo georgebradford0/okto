@@ -2115,7 +2115,7 @@ function InputBar({
       <View flexDirection="row" alignItems="flex-end" gap={8}>
         <textarea
           ref={taRef}
-          style={{ maxHeight: 200, minHeight: 40, flex: 1, resize: 'none', boxSizing: 'border-box', borderRadius: 12, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: 'rgb(246,246,246)', paddingLeft: 14, paddingRight: 14, paddingTop: 10, paddingBottom: 10, fontSize: 14, color: 'rgb(30,41,59)', outline: 'none' }}
+          style={{ maxHeight: 200, minHeight: 40, flex: 1, resize: 'none', boxSizing: 'border-box', borderRadius: 12, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: 'rgb(246,246,246)', paddingLeft: 18, paddingRight: 18, paddingTop: 11, paddingBottom: 11, fontSize: 14, color: 'rgb(30,41,59)', outline: 'none' }}
           value={draft}
           onChange={(e) => setDraft(e.currentTarget.value)}
           onKeyDown={onKey}
@@ -2156,7 +2156,7 @@ function InputBar({
         )}
       </View>
       {model && (
-        <View marginTop={6} fontSize={11} color="$typography400" style={{ textAlign: 'right', paddingRight: 12 }} title={model}>{model}</View>
+        <View marginTop={6} fontSize={11} color="$typography400" style={{ paddingLeft: 6 }} title={model}>{model}</View>
       )}
     </View>
   )
