@@ -9,6 +9,17 @@ the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- TestFlight uploads no longer fail export-compliance check 90592: set
+  `ITSAppUsesNonExemptEncryption` to `false` (okto uses only standard, published
+  algorithms — X25519/ChaCha20-Poly1305/SHA-256 for the Noise tunnel, Ed25519 SSH,
+  TLS — which qualify for the encryption exemption). The previous `true` declared
+  non-exempt encryption, which requires a compliance code that doesn't exist.
+- De-flaked the "connection-lost modal" mobile e2e test: its dismissal `waitFor`
+  raced the modal's deferred exit-animation unmount under jest, intermittently
+  failing the iOS build's Jest gate on slower CI runners.
+
 ### Changed
 
 - Send button now uses the Lucide `Send` icon (`lucide-react-native`) instead of the hand-drawn paper-plane.
