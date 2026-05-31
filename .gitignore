@@ -23,3 +23,7 @@ dev-data/
 # JS workspace deps (root-hoisted by npm workspaces)
 node_modules/
 **/node_modules/
+
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store
