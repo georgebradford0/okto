@@ -47,10 +47,10 @@ Linux only — x86_64 and aarch64. macOS and Windows are out of scope for the ru
 
 Image releases are cut by the **`lair.yml`** GitHub Actions workflow (manual dispatch) after each `lair/Cargo.toml` version bump.
 
-**Prerequisite — the e2e suite must pass first.** Before bumping the version or dispatching `lair.yml`, run the end-to-end tests and confirm they are green (see "Testing"). Do not move forward with the lair release workflow on a red suite:
+**Prerequisite — the e2e suite must pass first.** `lair.yml` now enforces this itself: its `build` job `needs:` a `test` job that runs `cargo test -p okto-tests`, so a red suite blocks the image. Still run it locally before bumping the version or dispatching, to fail fast rather than burning a CI run:
 
 ```sh
-cargo test -p okto-tests   # must pass before bumping the version or cutting a release
+cargo test -p okto-tests   # CI gates on this too; run locally to fail fast
 ```
 
 Then dispatch the build:
@@ -248,7 +248,7 @@ Inheritance is a snapshot at create time — subsequent edits to lair's `mcp.jso
 |----------|--------------|
 | `cli.yml` | Runs the CLI e2e suites (the `cli_*` tests, gate), then builds the `okto` CLI per-target and uploads as Release assets. The `build` job `needs:` the `test` job, so a failing test blocks the release. |
 | `relay.yml` | Builds `okto-relay` per-Linux-arch and uploads as assets on `relay-v<version>` (read from `relay/Cargo.toml`). |
-| `lair.yml` | Builds the multi-arch lair Docker image (native amd64 + arm64 runners) and pushes `ghcr.io/georgebradford0/lair:<version>` + `:latest` (version from `lair/Cargo.toml`). |
+| `lair.yml` | Runs the full e2e suite (`cargo test -p okto-tests`, gate), then builds the multi-arch lair Docker image (native amd64 + arm64 runners) and pushes `ghcr.io/georgebradford0/lair:<version>` + `:latest` (version from `lair/Cargo.toml`). The `build` job `needs:` the `test` job, so a red suite blocks the image. |
 | `desktop.yml` | Builds the Tauri desktop app as a Universal macOS DMG, signs + notarizes, attaches to the `desktop-v<version>` release. |
 | `android.yml` | Builds AAB via fastlane, uploads to Google Play. |
 | `ios.yml` | Builds on macOS runner, optionally uploads to TestFlight. |
