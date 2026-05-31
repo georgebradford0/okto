@@ -67,7 +67,13 @@ test('sending on a dead socket surfaces the connection-lost modal', async () => 
   await act(async () => {
     fireEvent.press(screen.getByText('Dismiss'))
   })
-  await waitFor(() => expect(screen.queryByText('Connection Lost')).toBeNull())
+  // The modal unmounts after its 200ms exit animation. Under jest the
+  // animation's completion callback (which clears `mounted`) only flushes on a
+  // later event-loop turn rather than at the 200ms mark, so the default 1000ms
+  // waitFor races that flush and is flaky on slower CI runners. The dismissal
+  // is one-way here — status stays 'error', so the modal never re-shows — so a
+  // generous timeout is safe.
+  await waitFor(() => expect(screen.queryByText('Connection Lost')).toBeNull(), { timeout: 5000 })
 })
 
 test('logout wipes the session and returns to the setup screen', async () => {
