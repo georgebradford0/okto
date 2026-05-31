@@ -135,7 +135,7 @@ For remote agents an MCP for AWS/Azure/GCP is necessary (any provider is fine as
 As per the local case, remote agents also run in an unpriveleged docker container and any agents added will be in the same container. 
 
 ## GPU Instances (RunPod, Lambda, Prime Intellect etc)
-Many GPU providers do not use VM-based systems for managing compute but instead use containers.  This makes it very difficult to setup a `lair` container on the GPU instance.  For this reason, agents should typically not be created in instances on typical GPU cloud providers.  Each GPU platform will likely have an MCP which can be used for provisioning compute (with API key) but not connecting to the instance itself.  To allow agents to connect just add SSH pubkey created in `lair` to your preferred GPU platform.  The pubkey can be found by using CLI command
+Many GPU providers do not use VM-based systems for managing compute but instead use containers.  This makes it very difficult to setup a `lair` container on the GPU instance.  Each GPU platform will likely have an MCP which can be used for provisioning compute (with API key) but not connecting to the instance itself.  To allow agents to connect just add SSH pubkey created in `lair` to your preferred GPU platform.  The pubkey can be found by using CLI command
 ```
 okto ssh pubkey
 ```
