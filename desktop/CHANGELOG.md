@@ -5,6 +5,15 @@ Changes to the okto desktop (Tauri) app. Current version: see `package.json` /
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-05-31
+
+### Fixed
+- The activity ring around the composer stop button is now concentric with the
+  button. It previously used tamagui's `Spinner` positioned with a 4-sided
+  inset, but the fixed-size spinner couldn't stretch to the inset box and
+  anchored off-center; it's now a CSS orbiting arc explicitly sized and
+  centered on the button (mirroring mobile's `OrbitingArc`).
+
 ## [0.4.4] - 2026-05-31
 
 ### Added

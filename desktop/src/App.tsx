@@ -7,7 +7,7 @@ import {
   encodeClientFrame, parseServerEvent,
   type AgentInfo, type ServerEvent, type TaskRecord, type WorktreeMeta,
 } from './wire'
-import { Spinner, View, Text, Touchable } from '@okto/ui'
+import { View, Text, Touchable } from '@okto/ui'
 import { Send } from 'lucide-react-native'
 
 // The pseudo-id we use for lair itself in the sidebar list. Children's ids are
@@ -2223,17 +2223,13 @@ function InputBar({
           placeholder="Message…"
         />
         {streaming ? (
-          // The interrupt button, encircled by a Spinner that conveys the
+          // The interrupt button, encircled by an orbiting arc that conveys the
           // model is generating. Clicking sends an interrupt and locks the
           // button at reduced opacity until the server's interrupt_ack (or 3 s
           // fallback).
           <View position="relative" height={40} width={40} flexShrink={0} alignItems="center" justifyContent="center">
             {!stopSent && (
-              <Spinner
-                color="#0d9488"
-                size="large"
-                pointerEvents="none" position="absolute" top={-4} left={-4} right={-4} bottom={-4}
-              />
+              <div className="okto-orbit-arc" aria-hidden="true" />
             )}
             <Touchable
               data-testid="composer-stop"
