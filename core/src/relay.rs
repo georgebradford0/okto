@@ -27,6 +27,12 @@ use crate::AnthropicTool;
 /// relay / mobile client can treat operator-addressed messages differently.
 pub const NOTIFY_CATEGORY_AGENT_MESSAGE: &str = "agent_message";
 
+/// Category passed to the relay for `ask_question` pushes — the model is
+/// blocked on the operator and needs an answer before it can continue. Kept
+/// distinct from `agent_message` so the mobile client can later treat
+/// questions differently (e.g. a louder alert or a dedicated action).
+pub const NOTIFY_CATEGORY_QUESTION: &str = "question";
+
 /// Build the `AnthropicTool` spec for `send_notification`. The tool itself is
 /// role-specific in execution — lair signs and POSTs to the relay directly,
 /// while a child agent forwards to lair — but the schema is identical, so both
@@ -58,6 +64,44 @@ pub fn send_notification_tool() -> AnthropicTool {
             "required": ["title", "body"]
         }),
         display_label: Some("Sending notification".into()),
+    }
+}
+
+/// Build the `AnthropicTool` spec for `ask_question`. Like `send_notification`
+/// the schema is shared across roles (lair signs + POSTs directly; a child
+/// agent forwards to lair), but the intent is narrower: the model has a
+/// question for the operator and cannot proceed until they answer. Execution
+/// sends an alert push and then tells the model to end its turn and wait — the
+/// operator's reply arrives as their next chat message.
+pub fn ask_question_tool() -> AnthropicTool {
+    AnthropicTool {
+        name: "ask_question".to_string(),
+        description: "Ask the operator a question when you are genuinely blocked \
+                      and cannot make a sound decision without their input — an \
+                      ambiguous requirement, a destructive/irreversible action that \
+                      needs sign-off, or a fork where the wrong guess wastes real \
+                      work. Calling this sends a push notification to the \
+                      operator's phone so they're alerted even if they've stepped \
+                      away, then you MUST stop and wait: end your turn after this \
+                      call and do not take further actions. The operator's answer \
+                      arrives as their next message. Also state the question in your \
+                      visible reply so it shows in the chat. Do NOT use this for \
+                      routine progress, rhetorical questions, or anything you can \
+                      reasonably decide yourself. Delivery is best-effort: if no \
+                      relay is configured the push is a no-op but you should still \
+                      stop and wait."
+            .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The question for the operator, phrased so it stands alone in a phone notification. Keep it under ~200 characters; mobile OSes truncate beyond that. If there are concrete choices, list them."
+                }
+            },
+            "required": ["question"]
+        }),
+        display_label: Some("Asking the operator".into()),
     }
 }
 

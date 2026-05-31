@@ -940,6 +940,7 @@ fn make_extra_tools() -> Vec<AnthropicTool> {
         monitor_process_tool(),
         stop_monitor_tool(),
         send_notification_tool(),
+        okto_core::relay::ask_question_tool(),
     ];
     if has_spawn_capability() {
         tools.push(spawn_agent_tool());
@@ -1036,6 +1037,7 @@ fn make_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
                 "spawn_agent"               => exec_spawn_agent(input).await,
                 "terminate_agent"           => exec_terminate_agent(input).await,
                 "send_notification"         => exec_send_notification(input).await,
+                "ask_question"              => exec_ask_question(input).await,
                 other => format!("unknown tool: {other}"),
             }
         })
@@ -1131,6 +1133,25 @@ async fn exec_terminate_agent(input: serde_json::Value) -> String {
         warn!("[agent/terminate_agent] termination of '{name}' rejected ({status})");
         format!("error ({status}): {body}")
     }
+}
+
+/// `ask_question` tool — the child is blocked on the operator. Children hold
+/// no relay signing key, so this forwards to lair (which signs + pushes) just
+/// like `exec_send_notification`, but with the distinct `question` category.
+/// Returns immediately telling the model to stop and wait; the operator's
+/// answer arrives as their next chat message — there is no blocking round-trip.
+async fn exec_ask_question(input: serde_json::Value) -> String {
+    let question = input.get("question").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if question.is_empty() {
+        return "error: 'question' is required".to_string();
+    }
+    forward_notify_to_lair(
+        okto_core::relay::NOTIFY_CATEGORY_QUESTION, "okto has a question", question,
+    ).await;
+    "Your question was pushed to the operator's device. Stop here and wait for \
+     their reply — it will arrive as their next message. Do not continue or take \
+     other actions until they answer."
+        .to_string()
 }
 
 /// Forward a push-notification request to lair. Child agents hold no relay

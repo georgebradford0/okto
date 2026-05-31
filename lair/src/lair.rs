@@ -1859,6 +1859,7 @@ fn lair_extra_tools() -> Vec<AnthropicTool> {
         monitor_process_tool(),
         stop_monitor_tool(),
         send_notification_tool(),
+        relay_client::ask_question_tool(),
     ]
 }
 
@@ -1881,6 +1882,7 @@ fn lair_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
                 "monitor_process"           => exec_monitor_process(state, input).await,
                 "stop_monitor"              => exec_stop_monitor(state, input).await,
                 "send_notification"         => exec_send_notification(state, input).await,
+                "ask_question"              => exec_ask_question(state, input).await,
                 other => format!("unknown tool: {other}"),
             }
         })
@@ -1912,6 +1914,34 @@ async fn exec_send_notification(state: Arc<AppState>, input: serde_json::Value) 
     ).await;
     info!("[lair/send_notification] dispatched push to relay");
     "Notification dispatched to the operator's device.".to_string()
+}
+
+/// `ask_question` tool — the model is blocked on the operator. Lair holds the
+/// relay signing key, so it pushes the question alert directly (same path as
+/// `exec_send_notification`, but a distinct `question` category), then returns
+/// a result instructing the model to end its turn and wait. The operator's
+/// answer arrives as their next chat message — there is no blocking round-trip.
+async fn exec_ask_question(state: Arc<AppState>, input: serde_json::Value) -> String {
+    let question = input.get("question").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if question.is_empty() {
+        return "error: 'question' is required".to_string();
+    }
+    if state.relay_url.is_empty() {
+        warn!("[lair/ask_question] no relay configured — alert not pushed");
+        return "No relay is configured, so the operator was not pushed an alert. \
+                Make sure your question is in your visible reply, then stop and wait \
+                for the operator's next message before doing anything else."
+            .to_string();
+    }
+    relay_client::notify(
+        &state.relay_url, &state.relay_signer,
+        relay_client::NOTIFY_CATEGORY_QUESTION, Some("okto has a question"), Some(question),
+    ).await;
+    info!("[lair/ask_question] pushed question alert to operator");
+    "Your question was pushed to the operator's device. Stop here and wait for \
+     their reply — it will arrive as their next message. Do not continue or take \
+     other actions until they answer."
+        .to_string()
 }
 
 async fn exec_create_agent(state: Arc<AppState>, input: serde_json::Value) -> String {

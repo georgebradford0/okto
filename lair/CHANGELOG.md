@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **`ask_question` tool.** Both the lair and agent agentic loops now expose an `ask_question` tool the model calls when it is blocked needing operator input. It sends a push notification to the operator's phone (distinct `question` relay category) and then stops and waits for the operator's reply as their next message. Lair signs and POSTs to the relay itself; child agents forward to lair's `/internal/notify`.
+
 ## [0.19.0] - 2026-05-29
 
 ### Added
