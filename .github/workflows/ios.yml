@@ -9,9 +9,15 @@ on:
         default: true
 
 jobs:
+  # Gate: the mobile jest suite must pass before any iOS build/release runs.
+  test:
+    name: Mobile tests
+    uses: ./.github/workflows/mobile-test.yml
+
   build:
     name: Build iOS (Simulator)
     runs-on: macos-26
+    needs: test
 
     defaults:
       run:

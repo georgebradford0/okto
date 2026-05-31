@@ -12,9 +12,15 @@ on:
         default: closed
 
 jobs:
+  # Gate: the mobile jest suite must pass before any Android build/release runs.
+  test:
+    name: Mobile tests
+    uses: ./.github/workflows/mobile-test.yml
+
   distribute:
     name: Google Play (${{ inputs.track }})
     runs-on: ubuntu-latest
+    needs: test
 
     defaults:
       run:
