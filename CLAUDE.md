@@ -101,7 +101,7 @@ The `okto-tests` crate (`tests/`) holds the workspace's black-box e2e suites —
 - **lair** (`boot.rs`, `chat.rs`, `tools.rs`) — spawn the real `lair` binary on a temp dir + ephemeral ports and drive it over the Noise tunnel like the mobile client, with an in-process Anthropic-SSE mock LLM (fully offline).
 - **CLI** (`cli_*.rs`, sharing `common/okto_cli.rs` + `common/mock_mgmt.rs`) — spawn the real `okto` binary against a temp `HOME` and assert on stdout/stderr/exit code plus on-disk `~/.okto` state. Cover `version`, `completions`, `config`, `env`, `mcp list/remove`, `qr`, `ssh pubkey`, `agents`, and `tasks`; commands that hit lair's loopback management API run against a mock, so no docker or network is needed.
 
-The `cli.yml` release workflow runs `cargo test -p okto-tests` as a `test` job that `build` depends on, so these tests must pass before any CLI release binary is built or pushed.
+The `cli.yml` release workflow runs the **CLI suites only** (the `cli_*` files, not the lair suites) as a `test` job that `build` depends on, so the CLI tests must pass before any CLI release binary is built or pushed. Locally, `cargo test-cli` (a `.cargo/config.toml` alias) runs that same CLI-only subset.
 
 ---
 
@@ -243,7 +243,7 @@ Inheritance is a snapshot at create time — subsequent edits to lair's `mcp.jso
 
 | Workflow | What it does |
 |----------|--------------|
-| `cli.yml` | Runs the `okto-tests` e2e suite (gate), then builds the `okto` CLI per-target and uploads as Release assets. The `build` job `needs:` the `test` job, so a failing test blocks the release. |
+| `cli.yml` | Runs the CLI e2e suites (the `cli_*` tests, gate), then builds the `okto` CLI per-target and uploads as Release assets. The `build` job `needs:` the `test` job, so a failing test blocks the release. |
 | `relay.yml` | Builds `okto-relay` per-Linux-arch and uploads as assets on `relay-v<version>` (read from `relay/Cargo.toml`). |
 | `lair.yml` | Builds the multi-arch lair Docker image (native amd64 + arm64 runners) and pushes `ghcr.io/georgebradford0/lair:<version>` + `:latest` (version from `lair/Cargo.toml`). |
 | `desktop.yml` | Builds the Tauri desktop app as a Universal macOS DMG, signs + notarizes, attaches to the `desktop-v<version>` release. |

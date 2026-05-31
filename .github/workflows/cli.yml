@@ -8,11 +8,12 @@ on:
 # lair runtime binary ships separately via `.github/workflows/lair.yml`.
 
 jobs:
-  # Gate the release on the workspace e2e suite (CLI + lair, both offline:
-  # no docker, no network, in-process mock LLM / mgmt API). `build` needs this,
-  # so a failing test blocks the binaries and the release below.
+  # Gate the release on the CLI e2e suite (offline: no docker, no network,
+  # in-process mock mgmt API). `build` needs this, so a failing test blocks the
+  # binaries and the release below. Only the CLI suites run here — the lair
+  # suites in the same crate are gated by their own (lair.yml) release path.
   test:
-    name: e2e tests
+    name: cli e2e tests
     runs-on: ubuntu-latest
 
     steps:
@@ -30,8 +31,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-x86_64-unknown-linux-gnu-cargo-
 
-      - name: Run e2e test suite
-        run: cargo test -p okto-tests
+      # CLI suites only (keep in sync with the tests/tests/cli_*.rs files).
+      - name: Run CLI e2e tests
+        run: >-
+          cargo test -p okto-tests
+          --test cli_misc --test cli_config --test cli_env --test cli_mcp
+          --test cli_qr_ssh --test cli_agents --test cli_tasks
 
   build:
     name: Build ${{ matrix.target }}

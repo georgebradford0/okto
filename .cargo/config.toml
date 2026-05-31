@@ -1,0 +1,6 @@
+# Workspace-local cargo config.
+
+[alias]
+# Run only the CLI e2e suites (excludes the lair suites in the same crate).
+# Keep this list in sync with the `tests/tests/cli_*.rs` files.
+test-cli = "test -p okto-tests --test cli_misc --test cli_config --test cli_env --test cli_mcp --test cli_qr_ssh --test cli_agents --test cli_tasks"
