@@ -1,0 +1,12 @@
+title: Okto
+description: Privacy policy and project pages for the Okto mobile app.
+theme: jekyll-theme-cayman
+
+# Only the privacy policy page carries Jekyll front matter and is rendered as a
+# web page. Everything else in this monorepo is source code; keep it out of the
+# published site to keep builds fast and the site clean.
+include:
+  - PRIVACY_POLICY.md
+exclude:
+  - "*"
+  - ".*"
