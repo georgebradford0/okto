@@ -95,4 +95,4 @@ with an updated "Last updated" date.
 
 If you have questions about this privacy policy, contact:
 
-**gbalch714@gmail.com**
+**georgebradford0@proton.me**
