@@ -11,6 +11,7 @@ the git log.
 
 ### Changed
 
+- Send button now uses the Lucide `Send` icon (`lucide-react-native`) instead of the hand-drawn paper-plane.
 - **Replaced the gluestack-ui v3 + NativeWind styling stack with Tamagui.** NativeWind v4
   doesn't apply styles under React Native's New Architecture (which RN 0.84 + reanimated 4
   require), so the mobile UI rendered unstyled. The shared `@okto/ui` package was rebuilt on

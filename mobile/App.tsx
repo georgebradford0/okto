@@ -49,6 +49,7 @@ import {
   View,
   Text,
 } from '@okto/ui'
+import { Send } from 'lucide-react-native'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -419,29 +420,6 @@ function OrbitingArc({ size = 48, thickness = 3, durationMs = 1100 }: {
   )
 }
 
-// ── PaperPlane ────────────────────────────────────────────────────────────────
-// The canonical "send" mark, rendered with two stacked View triangles:
-//   1. A large right-pointing triangle in white — the wing silhouette.
-//   2. A smaller triangle in the button's background colour, sitting on the
-//      bottom edge — this "notch" creates the V-cut that reads as the
-//      paper-plane fold.
-// The whole assembly is rotated -22° so it reads as a plane in flight, not a
-// play-button. When disabled the wing dims and the notch tracks the disabled
-// surface colour so the cutout still works.
-
-function PaperPlane({ disabled = false }: { disabled?: boolean }) {
-  const wingColor  = disabled ? C.textMuted : '#FFFFFF'
-  // Notch matches the send-button background so the V-cut reads (button is C.userBlue, now teal).
-  const notchColor = disabled ? C.surface  : C.userBlue
-  return (
-    <View style={s.paperPlaneWrap}>
-      <View style={s.paperPlaneTilt}>
-        <View style={[s.paperPlaneWing,  { borderLeftColor: wingColor }]} />
-        <View style={[s.paperPlaneNotch, { borderLeftColor: notchColor }]} />
-      </View>
-    </View>
-  )
-}
 
 // ── @ completion helpers ───────────────────────────────────────────────────────
 
@@ -1769,7 +1747,7 @@ const ChatPane = memo(function ChatPane({
                 disabled={!input.trim()}
                 activeOpacity={0.75}
               >
-                <PaperPlane disabled={!input.trim()} />
+                <Send size={22} color={!input.trim() ? '#94A3B8' : '#FFFFFF'} />
               </Touchable>
             )}
           </View>
@@ -2820,12 +2798,6 @@ const s = StyleSheet.create({
 
   // ── App icon mark ────────────────────────────────────────────────────────────
   creatureImg:        { width: 116, height: 116, borderRadius: 28, marginBottom: 10 },
-
-  // ── Paper-plane send icon ────────────────────────────────────────────────────
-  paperPlaneWrap:  { width: 24, height: 24, alignItems: 'center', justifyContent: 'center' },
-  paperPlaneTilt:  { transform: [{ rotate: '-22deg' }], marginLeft: 1 },
-  paperPlaneWing:  { width: 0, height: 0, borderTopWidth: 8, borderBottomWidth: 8, borderLeftWidth: 19, borderTopColor: 'transparent', borderBottomColor: 'transparent' },
-  paperPlaneNotch: { position: 'absolute', top: 8, left: 0, width: 0, height: 0, borderTopWidth: 5, borderLeftWidth: 11, borderTopColor: 'transparent' },
 
   // ── Orbiting arc (streaming stop button) ─────────────────────────────────────
   orbitArc:        { position: 'absolute', borderColor: 'transparent', borderTopColor: C.accent },

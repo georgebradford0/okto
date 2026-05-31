@@ -8,6 +8,7 @@ import {
   type AgentInfo, type ServerEvent, type TaskRecord, type WorktreeMeta,
 } from './wire'
 import { Spinner, View, Text, Touchable } from '@okto/ui'
+import { Send } from 'lucide-react-native'
 
 // The pseudo-id we use for lair itself in the sidebar list. Children's ids are
 // their names (per AgentInfo.id); 'lair' is reserved so it can never collide.
@@ -2151,7 +2152,7 @@ function InputBar({
             disabled={!draft.trim()}
             title="Send"
           >
-            ➤
+            <Send size={18} color="#FFFFFF" />
           </Touchable>
         )}
       </View>
