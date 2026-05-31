@@ -1,10 +1,9 @@
 module.exports = {
-  presets: [
-    'module:@react-native/babel-preset',
-    // NativeWind v4 — adds the className jsx transform + jsxImportSource so gluestack-ui
-    // components (in @okto/ui) get their Tailwind styles applied on native.
-    'nativewind/babel',
-  ],
+  presets: ['module:@react-native/babel-preset'],
   // The reanimated/worklets plugin must stay LAST.
-  plugins: ['react-native-reanimated/plugin'],
+  plugins: [
+    ['transform-inline-environment-variables', { include: ['TAMAGUI_TARGET'] }],
+    // The reanimated/worklets plugin must stay LAST.
+    'react-native-reanimated/plugin',
+  ],
 };

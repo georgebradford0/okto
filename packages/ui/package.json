@@ -7,23 +7,16 @@
   "types": "src/index.ts",
   "sideEffects": false,
   "exports": {
-    ".": "./src/index.ts",
-    "./tailwind-preset": "./tailwind-preset.js"
+    ".": "./src/index.ts"
   },
   "files": [
-    "src",
-    "tailwind-preset.js"
+    "src"
   ],
   "dependencies": {
-    "@expo/html-elements": "^0.12.5",
-    "@gluestack-ui/core": "^3.0.15",
-    "@gluestack-ui/utils": "^3.0.18",
-    "@legendapp/motion": "^2.4.0",
-    "react-native-svg": "^15.15.4",
-    "tailwind-variants": "^0.1.20"
+    "@tamagui/config": "^2.1.0",
+    "tamagui": "^2.1.0"
   },
   "peerDependencies": {
-    "nativewind": ">=4.2.0",
     "react": ">=19",
     "react-native": ">=0.81",
     "react-native-safe-area-context": "*"

@@ -1,9 +1,5 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
-/* react-native-web fills its flex tree from the mount node down, so the root
-   elements must establish full height or flex-1 layouts collapse to 0. */
+/* Tamagui injects component styles at runtime; this just establishes the full-height
+   flex root so 100vh / flex-1 layouts fill the window. */
 html,
 body,
 #root {

@@ -5,6 +5,17 @@ Changes to the okto desktop (Tauri) app. Current version: see `package.json` /
 
 ## [Unreleased]
 
+### Changed
+
+- **Replaced the gluestack-ui v3 + NativeWind styling stack with Tamagui** (shared with mobile
+  via `@okto/ui`). `App.tsx`'s DOM elements + NativeWind classes were converted to Tamagui
+  primitives/props (div→View, span→Text, button→Touchable, onClick→onPress, ~70 className sites
+  → style props incl. web `hover:`→`hoverStyle`); `main.tsx` now wraps the app in `OktoProvider`;
+  Vite drops NativeWind (`TAMAGUI_TARGET=web`, react pinned to desktop's copy). Both `vite build`
+  and the dev server pass; the connect screen renders styled. Some connected-view bits
+  (dynamic `*_CLASS` maps, a few `input`/`textarea`) still carry no-op classNames pending a
+  styling pass.
+
 ## [0.4.1] - 2026-05-30
 
 ### Fixed

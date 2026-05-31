@@ -7,7 +7,7 @@ import {
   encodeClientFrame, parseServerEvent,
   type AgentInfo, type ServerEvent, type TaskRecord, type WorktreeMeta,
 } from './wire'
-import { Spinner } from '@okto/ui'
+import { Spinner, View, Text, Touchable } from '@okto/ui'
 
 // The pseudo-id we use for lair itself in the sidebar list. Children's ids are
 // their names (per AgentInfo.id); 'lair' is reserved so it can never collide.
@@ -1298,9 +1298,9 @@ function App() {
   })()
 
   return (
-    <div
-      className="relative grid h-screen w-screen overflow-hidden bg-background-50 font-sans text-typography-900"
-      style={{ gridTemplateColumns: `${sidebarWidth}px 1fr` }}
+    <View
+      position="relative" height="100vh" width="100vw" overflow="hidden" backgroundColor="$background50" color="$typography900"
+      style={{ display: 'grid', gridTemplateColumns: `${sidebarWidth}px 1fr` }}
     >
       <Sidebar
         agents={agents}
@@ -1315,48 +1315,48 @@ function App() {
         onSubmitWt={submitNewWorktree}
         onDeleteWt={deleteWorktree}
       />
-      <div
-        className="absolute top-0 bottom-0 z-10 w-[12px] cursor-col-resize hover:bg-primary-100/40"
+      <View
+        position="absolute" top={0} bottom={0} zIndex={10} width={12} cursor="col-resize" hoverStyle={{ backgroundColor: 'rgba(219,234,254,0.4)' }}
         style={{ left: sidebarWidth - 6 }}
         onMouseDown={startSidebarResize}
         title="Drag to resize sidebar"
       />
-      <div className="flex min-w-0 flex-col bg-background-0">
-        <div className="flex items-center gap-2.5 border-b border-outline-100 px-5 py-3">
-          <h1 className="min-w-0 flex-1 truncate text-base font-semibold tracking-tight text-typography-900">{activeLabel}</h1>
-          <button
-            className="rounded-md px-2.5 py-1 text-xs font-medium text-error-600 transition hover:bg-error-50"
-            onClick={disconnect}
+      <View flexDirection="column" minWidth={0} backgroundColor="$background0">
+        <View flexDirection="row" alignItems="center" gap={10} borderBottomWidth={1} borderColor="$outline100" paddingHorizontal={20} paddingVertical={12}>
+          <Text minWidth={0} flex={1} fontSize={16} fontWeight="600" color="$typography900">{activeLabel}</Text>
+          <Touchable
+            borderRadius={6} paddingHorizontal={10} paddingVertical={4} fontSize={12} fontWeight="500" color="$error600" hoverStyle={{ backgroundColor: '$error50' }}
+            onPress={disconnect}
           >
             Disconnect
-          </button>
+          </Touchable>
           <StatusPill status={connStatus} />
-          <button
-            className="rounded-md border border-outline-200 px-2.5 py-1 text-xs font-medium text-typography-600 transition hover:bg-background-100 disabled:cursor-not-allowed disabled:opacity-40"
-            onClick={clearChat}
+          <Touchable
+            borderRadius={6} borderWidth={1} borderColor="$outline200" paddingHorizontal={10} paddingVertical={4} fontSize={12} fontWeight="500" color="$typography600" hoverStyle={{ backgroundColor: '$background100' }}
+            onPress={clearChat}
             disabled={connStatus !== 'ready' || items.length === 0}
             title="Clear chat history"
           >
             Clear
-          </button>
-          <TasksButton tasks={tasks} onClick={() => setShowTasksModal(v => !v)} />
+          </Touchable>
+          <TasksButton tasks={tasks} onPress={() => setShowTasksModal(v => !v)} />
           <UpdateButton
             state={updateState}
             onCheck={() => checkForUpdates(true)}
             onInstall={installUpdate}
           />
-        </div>
+        </View>
 
-        <div className="flex-1 overflow-y-auto px-5 py-4" ref={chatRef}>
+        <View flex={1} overflow="auto" paddingHorizontal={20} paddingVertical={16} ref={chatRef}>
           {items.length === 0 && historyReady[activeAgent] && (
             // Only show the "empty conversation" prompt once /history has
             // confirmed the agent really has no messages — otherwise the
             // text flashes for the duration of the GET /history while the
             // chat is just waiting on the server's authoritative reply.
-            <div className="mt-12 text-center text-sm text-typography-400">Awaiting your first message</div>
+            <View marginTop={48} textAlign="center" fontSize={14} color="$typography400">Awaiting your first message</View>
           )}
           {items.map(item => <Row key={item.id} item={item} />)}
-        </div>
+        </View>
 
         <InputBar
           draft={draft}
@@ -1374,7 +1374,7 @@ function App() {
               : null
           }
         />
-      </div>
+      </View>
 
       <TasksDrawer
         visible={showTasksModal}
@@ -1384,7 +1384,7 @@ function App() {
         onClose={() => setShowTasksModal(false)}
         onCancel={requestCancelTask}
       />
-    </div>
+    </View>
   )
 }
 
@@ -1428,14 +1428,14 @@ function ConnectScreen({
     }
   }
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-background-50 font-sans">
-      <div className="w-full max-w-md rounded-2xl border border-outline-100 bg-background-0 p-9 shadow-soft-2">
-        <h1 className="text-2xl font-bold tracking-tight text-typography-900">okto</h1>
-        <div className="mt-3 h-px w-10 bg-primary-500" />
-        <p className="mt-3 text-xs font-medium uppercase tracking-wider text-typography-400">Desktop</p>
-        <p className="mt-4 text-sm leading-relaxed text-typography-500">
+    <View height="100vh" width="100vw" alignItems="center" justifyContent="center" backgroundColor="$background50">
+      <View width="100%" maxWidth={448} borderRadius={16} borderWidth={1} borderColor="$outline100" backgroundColor="$background0" padding={36}>
+        <Text fontSize={24} fontWeight="700" color="$typography900">okto</Text>
+        <View marginTop={12} height={1} width={40} backgroundColor="$primary500" />
+        <Text marginTop={12} fontSize={12} fontWeight="500" textTransform="uppercase" color="$typography400">Desktop</Text>
+        <Text marginTop={16} fontSize={14} color="$typography500">
           Paste the session QR payload printed by lair on startup.
-        </p>
+        </Text>
         <textarea
           className="mt-5 h-24 w-full resize-none rounded-lg border border-outline-200 bg-background-50 px-3.5 py-3 font-mono text-sm text-typography-800 outline-none transition focus:border-primary-500 focus:bg-background-0"
           value={qrInput}
@@ -1446,18 +1446,18 @@ function ConnectScreen({
           autoCapitalize="off"
           autoCorrect="off"
         />
-        <button
-          className="mt-4 w-full rounded-lg bg-primary-500 py-2.5 text-sm font-semibold text-typography-0 transition hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-40"
-          onClick={onConnect}
+        <Touchable
+          marginTop={16} width="100%" borderRadius={8} backgroundColor="$primary500" paddingVertical={10} fontSize={14} fontWeight="600" color="$typography0" hoverStyle={{ backgroundColor: '$primary600' }}
+          onPress={onConnect}
           disabled={connecting || !qrInput.trim()}
         >
           {connecting ? 'Connecting…' : 'Connect'}
-        </button>
+        </Touchable>
         {status.kind === 'error' && (
-          <p className="mt-3 text-sm text-error-600">{status.message}</p>
+          <Text marginTop={12} fontSize={14} color="$error600">{status.message}</Text>
         )}
-      </div>
-    </div>
+      </View>
+    </View>
   )
 }
 
@@ -1479,8 +1479,8 @@ function Sidebar({
   onDeleteWt: (agentName: string, wtId: string) => void
 }) {
   return (
-    <aside className="flex flex-col overflow-y-auto border-r border-outline-100 bg-background-50 px-2.5 py-3">
-      <ul className="flex flex-col gap-0.5">
+    <View flexDirection="column" borderRightWidth={1} borderColor="$outline100" backgroundColor="$background50" paddingHorizontal={10} paddingVertical={12}>
+      <View flexDirection="column" gap={2}>
         <AgentRow
           id={LAIR_ID}
           name="Lair"
@@ -1489,12 +1489,12 @@ function Sidebar({
           active={activeAgent === LAIR_ID}
           onSelect={onSelect}
         />
-      </ul>
+      </View>
 
-      <p className="mb-1 mt-5 px-2 text-[11px] font-semibold uppercase tracking-wider text-typography-400">Agents</p>
-      <ul className="flex flex-col gap-0.5">
+      <Text marginBottom={4} marginTop={20} paddingHorizontal={8} fontSize={11} fontWeight="600" textTransform="uppercase" color="$typography400">Agents</Text>
+      <View flexDirection="column" gap={2}>
         {agents.length === 0 && (
-          <li className="px-2 py-1.5 text-xs text-typography-400">No child agents</li>
+          <View paddingHorizontal={8} paddingVertical={6} fontSize={12} color="$typography400">No child agents</View>
         )}
         {agents.map(a => {
           const worktrees = worktreesByAgent[a.id] ?? []
@@ -1523,7 +1523,7 @@ function Sidebar({
                 />
               ))}
               {creatingWtFor === a.id && (
-                <li className="px-2 py-1">
+                <View paddingHorizontal={8} paddingVertical={4}>
                   <input
                     className="w-full rounded-md border border-outline-200 bg-background-0 px-2 py-1 text-xs text-typography-800 outline-none focus:border-primary-500"
                     autoFocus
@@ -1536,13 +1536,13 @@ function Sidebar({
                     }}
                     onBlur={onCancelCreateWt}
                   />
-                </li>
+                </View>
               )}
             </Fragment>
           )
         })}
-      </ul>
-    </aside>
+      </View>
+    </View>
   )
 }
 
@@ -1568,39 +1568,39 @@ function AgentRow({
   onDelete?: () => void
 }) {
   return (
-    <li>
-      <button
+    <View>
+      <Touchable
         className={`group flex w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left text-sm transition ${
           active ? 'bg-primary-50 font-medium text-primary-800' : 'text-typography-700 hover:bg-background-100'
         } ${worktree ? 'pl-5' : 'pl-2'}`}
-        onClick={() => onSelect(id)}
+        onPress={() => onSelect(id)}
       >
-        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT_CLASS[statusKind]}`} />
-        <span className="min-w-0 flex-1 truncate">
-          {worktree && <span className="text-typography-400">⌥&nbsp;</span>}
+        <Text className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT_CLASS[statusKind]}`} />
+        <Text minWidth={0} flex={1}>
+          {worktree && <Text color="$typography400">⌥&nbsp;</Text>}
           {name}
-        </span>
-        <span className="flex shrink-0 items-center">
+        </Text>
+        <Text flexShrink={0} alignItems="center">
           {onAddWorktree && (
-            <span
-              className="rounded px-1 text-typography-400 opacity-0 transition hover:text-primary-600 group-hover:opacity-100"
+            <Text
+              borderRadius={6} paddingHorizontal={4} color="$typography400" opacity={0} hoverStyle={{ color: '$primary600' }}
               title="Add worktree"
-              onClick={(e) => { e.stopPropagation(); onAddWorktree() }}
-            >＋</span>
+              onPress={(e) => { e.stopPropagation(); onAddWorktree() }}
+            >＋</Text>
           )}
           {onDelete && (
-            <span
+            <Text
               className="rounded px-1 text-typography-400 opacity-0 transition hover:text-error-600 group-hover:opacity-100"
               title="Delete worktree (and its branch)"
-              onClick={(e) => { e.stopPropagation(); onDelete() }}
-            >✕</span>
+              onPress={(e) => { e.stopPropagation(); onDelete() }}
+            >✕</Text>
           )}
           {!onAddWorktree && !onDelete && (
-            <span className="text-[11px] text-typography-400">{statusText}</span>
+            <Text fontSize={11} color="$typography400">{statusText}</Text>
           )}
-        </span>
-      </button>
-    </li>
+        </Text>
+      </Touchable>
+    </View>
   )
 }
 
@@ -1615,18 +1615,18 @@ function agentStatusKind(status: string): 'ready' | 'pending' | 'error' {
 function TasksButton({ tasks, onClick }: { tasks: TaskRecord[]; onClick: () => void }) {
   const running = tasks.filter(t => t.status === 'running').length
   return (
-    <button
+    <Touchable
       className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition ${
         running > 0
           ? 'border-primary-200 bg-primary-50 text-primary-700'
           : 'border-outline-200 text-typography-600 hover:bg-background-100'
       }`}
-      onClick={onClick}
+      onPress={onClick}
       title="Background tasks"
     >
-      <span className={`h-1.5 w-1.5 rounded-full ${running > 0 ? 'bg-primary-500' : 'bg-typography-300'}`} />
+      <Text className={`h-1.5 w-1.5 rounded-full ${running > 0 ? 'bg-primary-500' : 'bg-typography-300'}`} />
       {running > 0 ? `Tasks · ${running}` : 'Tasks'}
-    </button>
+    </Touchable>
   )
 }
 
@@ -1650,20 +1650,20 @@ function UpdateButton({
 }) {
   if (state.kind === 'available') {
     return (
-      <button
-        className="rounded-md bg-primary-500 px-2.5 py-1 text-xs font-semibold text-typography-0 transition hover:bg-primary-600"
-        onClick={onInstall}
+      <Touchable
+        borderRadius={6} backgroundColor="$primary500" paddingHorizontal={10} paddingVertical={4} fontSize={12} fontWeight="600" color="$typography0" hoverStyle={{ backgroundColor: '$primary600' }}
+        onPress={onInstall}
         title={`Download and install v${state.version}, then restart`}
       >
         ↓ Update to v{state.version}
-      </button>
+      </Touchable>
     )
   }
   if (state.kind === 'downloading') {
     return (
-      <button className="rounded-md border border-outline-200 px-2.5 py-1 text-xs font-medium text-typography-400" disabled title="Downloading update…">
+      <Touchable borderRadius={6} borderWidth={1} borderColor="$outline200" paddingHorizontal={10} paddingVertical={4} fontSize={12} fontWeight="500" color="$typography400" disabled title="Downloading update…">
         Updating…
-      </button>
+      </Touchable>
     )
   }
   const label =
@@ -1672,14 +1672,14 @@ function UpdateButton({
     : state.kind === 'error' ? 'Update failed'
     : 'Check for updates'
   return (
-    <button
-      className="rounded-md border border-outline-200 px-2.5 py-1 text-xs font-medium text-typography-600 transition hover:bg-background-100 disabled:opacity-50"
-      onClick={onCheck}
+    <Touchable
+      borderRadius={6} borderWidth={1} borderColor="$outline200" paddingHorizontal={10} paddingVertical={4} fontSize={12} fontWeight="500" color="$typography600" hoverStyle={{ backgroundColor: '$background100' }}
+      onPress={onCheck}
       disabled={state.kind === 'checking'}
       title={state.kind === 'error' ? state.message : 'Check for a newer version'}
     >
       {label}
-    </button>
+    </Touchable>
   )
 }
 
@@ -1711,24 +1711,24 @@ function TasksDrawer({
 
   return (
     <>
-      <div
+      <View
         className={`fixed inset-0 z-40 bg-typography-950/20 transition-opacity duration-200 ${visible ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
-        onClick={onClose}
+        onPress={onClose}
       />
-      <aside
+      <View
         className={`fixed right-0 top-0 z-50 flex h-screen w-[380px] flex-col border-l border-outline-100 bg-background-0 shadow-soft-3 transition-transform duration-200 ${visible ? 'translate-x-0' : 'translate-x-full'}`}
         aria-hidden={!visible}
       >
-        <div className="flex items-start justify-between border-b border-outline-100 px-5 py-4">
-          <div>
-            <div className="text-sm font-semibold text-typography-900">Background Tasks</div>
-            <div className="text-xs text-typography-400">{agentLabel}</div>
-          </div>
-          <button className="rounded p-1 text-typography-400 transition hover:bg-background-100 hover:text-typography-700" onClick={onClose} title="Close (Esc)">✕</button>
-        </div>
-        <div className="flex-1 space-y-2.5 overflow-y-auto px-4 py-3">
+        <View alignItems="flex-start" justifyContent="space-between" borderBottomWidth={1} borderColor="$outline100" paddingHorizontal={20} paddingVertical={16}>
+          <View>
+            <View fontSize={14} fontWeight="600" color="$typography900">Background Tasks</View>
+            <View fontSize={12} color="$typography400">{agentLabel}</View>
+          </View>
+          <Touchable borderRadius={4} padding={4} color="$typography400" hoverStyle={{ backgroundColor: '$background100', color: '$typography700' }} onPress={onClose} title="Close (Esc)">✕</Touchable>
+        </View>
+        <View flex={1} overflow="scroll" paddingHorizontal={16} paddingVertical={12}>
           {sorted.length === 0 ? (
-            <div className="mt-8 text-center text-sm text-typography-400">No background tasks</div>
+            <View marginTop={32} textAlign="center" fontSize={14} color="$typography400">No background tasks</View>
           ) : (
             sorted.map(t => (
               <TaskRow
@@ -1739,8 +1739,8 @@ function TasksDrawer({
               />
             ))
           )}
-        </div>
-      </aside>
+        </View>
+      </View>
     </>
   )
 }
@@ -1759,40 +1759,40 @@ function TaskRow({
     : relativeTime(task.started_at)
   const statusKind = taskStatusKind(task.status)
   return (
-    <div className="rounded-lg border border-outline-100 bg-background-50 p-3">
-      <div className="flex items-center gap-2">
-        <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${TASK_TAG_CLASS[statusKind]}`}>
-          <span className={`h-1.5 w-1.5 rounded-full ${TASK_DOT_CLASS[statusKind]}`} />
-          <span>{task.status.toUpperCase()}</span>
-        </span>
+    <View borderRadius={8} borderWidth={1} borderColor="$outline100" backgroundColor="$background50" padding={12}>
+      <View alignItems="center" gap={8}>
+        <Text className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${TASK_TAG_CLASS[statusKind]}`}>
+          <Text className={`h-1.5 w-1.5 rounded-full ${TASK_DOT_CLASS[statusKind]}`} />
+          <Text>{task.status.toUpperCase()}</Text>
+        </Text>
         {task.wake_interval_secs != null && (
-          <span className="text-[10px] font-medium uppercase tracking-wide text-primary-600">◈ Monitored</span>
+          <Text fontSize={10} fontWeight="500" textTransform="uppercase" color="$primary600">◈ Monitored</Text>
         )}
-        <span className="text-[11px] text-typography-400">{ts}</span>
+        <Text fontSize={11} color="$typography400">{ts}</Text>
         {isRunning && (
-          <button
-            className="ml-auto rounded-md bg-error-50 px-2 py-0.5 text-[11px] font-semibold text-error-600 transition hover:bg-error-100 disabled:opacity-50"
-            onClick={onCancel}
+          <Touchable
+            marginLeft="auto" borderRadius={6} backgroundColor="$error50" paddingHorizontal={8} paddingVertical={2} fontSize={11} fontWeight="600" color="$error600" hoverStyle={{ backgroundColor: '$error100' }}
+            onPress={onCancel}
             disabled={cancelling}
           >
             {cancelling ? 'Stopping' : 'Stop'}
-          </button>
+          </Touchable>
         )}
-      </div>
-      <button
-        className="mt-2 w-full text-left"
-        onClick={() => setExpanded(v => !v)}
+      </View>
+      <Touchable
+        marginTop={8} width="100%" textAlign="left"
+        onPress={() => setExpanded(v => !v)}
         title={expanded ? 'Collapse' : 'Expand'}
       >
-        <div className={`font-mono text-xs text-typography-800 ${expanded ? '' : 'line-clamp-2'}`}>{task.command}</div>
+        <View className={`font-mono text-xs text-typography-800 ${expanded ? '' : 'line-clamp-2'}`}>{task.command}</View>
         {task.summary && task.summary.length > 0 && (
-          <div className={`mt-1 text-xs text-typography-500 ${expanded ? '' : 'line-clamp-2'}`}>{task.summary}</div>
+          <View className={`mt-1 text-xs text-typography-500 ${expanded ? '' : 'line-clamp-2'}`}>{task.summary}</View>
         )}
         {task.cost_usd != null && task.cost_usd > 0 && (
-          <div className="mt-1 text-[11px] text-typography-400">{formatCost(task.cost_usd)}</div>
+          <View marginTop={4} fontSize={11} color="$typography400">{formatCost(task.cost_usd)}</View>
         )}
-      </button>
-    </div>
+      </Touchable>
+    </View>
   )
 }
 
@@ -1850,10 +1850,10 @@ function StatusPill({ status }: { status: ConnStatus }) {
     return 'Connecting'
   }, [status])
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${STATUS_PILL_CLASS[status]}`}>
-      <span className={`h-1.5 w-1.5 rounded-full ${STATUS_DOT_CLASS[status]}`} />
-      <span>{label}</span>
-    </span>
+    <Text className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${STATUS_PILL_CLASS[status]}`}>
+      <Text className={`h-1.5 w-1.5 rounded-full ${STATUS_DOT_CLASS[status]}`} />
+      <Text>{label}</Text>
+    </Text>
   )
 }
 
@@ -1876,7 +1876,7 @@ function renderInlineSpans(text: string, baseKey: number): ReactNode[] {
     else if (m[2] != null) out.push(<strong key={k}>{m[2]}</strong>)
     else if (m[3] != null) out.push(<em key={k}>{m[3]}</em>)
     else if (m[4] != null) out.push(<s key={k}>{m[4]}</s>)
-    else if (m[5] != null) out.push(<code key={k} className="rounded bg-background-100 px-1 py-0.5 font-mono text-[0.85em] text-typography-800">{m[5]}</code>)
+    else if (m[5] != null) out.push(<Text key={k} borderRadius={6} backgroundColor="$background100" paddingHorizontal={4} paddingVertical={2} fontFamily="$mono" color="$typography800">{m[5]}</Text>)
     last = m.index + m[0].length
   }
   if (last < text.length) out.push(<Fragment key={`${baseKey}-${i++}`}>{text.slice(last)}</Fragment>)
@@ -1897,10 +1897,10 @@ function MarkdownText({ text }: { text: string }) {
       let lang = ''
       const body = seg.slice(3, -3).replace(/^([a-zA-Z0-9_+-]+)\n/, (_, l) => { lang = l; return '' })
       out.push(
-        <pre key={`md-${k++}`} className="my-2 overflow-x-auto rounded-lg border border-outline-100 bg-background-50 p-3 font-mono text-xs leading-relaxed text-typography-800">
-          {lang && <span className="mb-1 block text-[10px] uppercase tracking-wide text-typography-400">{lang}</span>}
-          <code>{body}</code>
-        </pre>
+        <View key={`md-${k++}`} marginVertical={8} borderRadius={8} borderWidth={1} borderColor="$outline100" backgroundColor="$background50" padding={12} fontFamily="$mono" fontSize={12} color="$typography800">
+          {lang && <Text marginBottom={4} fontSize={10} textTransform="uppercase" color="$typography400">{lang}</Text>}
+          <Text>{body}</Text>
+        </View>
       )
     } else {
       out.push(<Fragment key={`md-${k++}`}>{renderInlineSpans(seg, k)}</Fragment>)
@@ -1918,29 +1918,29 @@ function ToolRow({ item }: { item: Message }) {
   const [expanded, setExpanded] = useState(false)
   const hasOutput = item.output != null && item.output.length > 0
   return (
-    <div className="mb-2">
-      <div className={`overflow-hidden rounded-lg border border-outline-100 border-l-2 ${
+    <View marginBottom={8}>
+      <View className={`overflow-hidden rounded-lg border border-outline-100 border-l-2 ${
         item.running ? 'border-l-primary-500 bg-primary-50/40' : 'border-l-outline-300 bg-background-50'
       }`}>
-        <button
+        <Touchable
           type="button"
-          className="flex w-full items-center gap-2 px-3 py-2 text-left disabled:cursor-default"
-          onClick={() => { if (hasOutput) setExpanded(e => !e) }}
+          width="100%" alignItems="center" gap={8} paddingHorizontal={12} paddingVertical={8} textAlign="left"
+          onPress={() => { if (hasOutput) setExpanded(e => !e) }}
           disabled={!hasOutput}
           aria-expanded={hasOutput ? expanded : undefined}
         >
-          {item.running && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary-500" />}
-          {!item.running && item.output === undefined && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-typography-300" />}
-          <span className="min-w-0 flex-1 truncate font-mono text-xs text-typography-700">{item.text}</span>
+          {item.running && <Text height={6} width={6} flexShrink={0} borderRadius={999} backgroundColor="$primary500" />}
+          {!item.running && item.output === undefined && <Text height={6} width={6} flexShrink={0} borderRadius={999} backgroundColor="$typography300" />}
+          <Text minWidth={0} flex={1} fontFamily="$mono" fontSize={12} color="$typography700">{item.text}</Text>
           {hasOutput && (
-            <span className={`shrink-0 text-typography-400 transition-transform ${expanded ? 'rotate-90' : ''}`} aria-hidden="true">▸</span>
+            <Text className={`shrink-0 text-typography-400 transition-transform ${expanded ? 'rotate-90' : ''}`} aria-hidden="true">▸</Text>
           )}
-        </button>
+        </Touchable>
         {expanded && hasOutput && (
-          <div className="whitespace-pre-wrap break-words border-t border-outline-100 px-3 py-2 font-mono text-[11px] leading-relaxed text-typography-600">{truncate(item.output!, 4000)}</div>
+          <View borderTopWidth={1} borderColor="$outline100" paddingHorizontal={12} paddingVertical={8} fontFamily="$mono" fontSize={11} color="$typography600">{truncate(item.output!, 4000)}</View>
         )}
-      </div>
-    </div>
+      </View>
+    </View>
   )
 }
 
@@ -1948,32 +1948,32 @@ function Row({ item }: { item: Message }) {
   switch (item.role) {
     case 'user':
       return (
-        <div className="mb-3 flex justify-end">
-          <div className="max-w-[78%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-primary-500 px-3.5 py-2 text-sm text-typography-0">{item.text}</div>
-        </div>
+        <View marginBottom={12} justifyContent="flex-end">
+          <View maxWidth="78%" borderRadius={16} borderBottomRightRadius={6} backgroundColor="$primary500" paddingHorizontal={14} paddingVertical={8} fontSize={14} color="$typography0">{item.text}</View>
+        </View>
       )
     case 'assistant':
       // Cost (when present) is the turn total stamped onto the last
       // assistant message at done/interrupted — render it as a small label
       // below the text. Mirrors mobile's MessageBubble assistant branch.
       return (
-        <div className="mb-3">
-          <div className="max-w-[80%] whitespace-pre-wrap break-words text-sm leading-relaxed text-typography-800">
+        <View marginBottom={12}>
+          <View maxWidth="80%" fontSize={14} color="$typography800">
             <MarkdownText text={item.text} />
             {item.cost != null && (
-              <div className="mt-1 text-[11px] text-typography-400">${item.cost.toFixed(4)}</div>
+              <View marginTop={4} fontSize={11} color="$typography400">${item.cost.toFixed(4)}</View>
             )}
-          </div>
-        </div>
+          </View>
+        </View>
       )
     case 'tool':
       return <ToolRow item={item} />
     case 'interrupted':
       // Cost (if any) lives on the preceding assistant message — this row is
       // just the standalone "● Interrupted" marker.
-      return <div className="mb-2 text-xs font-medium text-warning-600">● Interrupted</div>
+      return <View marginBottom={8} fontSize={12} fontWeight="500" color="$warning600">● Interrupted</View>
     case 'error':
-      return <div className="mb-2 text-xs font-medium text-error-600">● {item.text}</div>
+      return <View marginBottom={8} fontSize={12} fontWeight="500" color="$error600">● {item.text}</View>
     case 'bg_complete':
     case 'bg_progress': {
       // Take just the first line — the persisted body is prefixed with a
@@ -1982,7 +1982,7 @@ function Row({ item }: { item: Message }) {
       // the chip. Marker differs so the user can spot progress vs. final.
       const firstLine = item.text.split('\n', 1)[0] || item.text
       const marker = item.role === 'bg_progress' ? '◈' : '◇'
-      return <div className="mb-2 text-xs text-typography-500">{marker} {firstLine}</div>
+      return <View marginBottom={8} fontSize={12} color="$typography500">{marker} {firstLine}</View>
     }
   }
 }
@@ -2092,22 +2092,22 @@ function InputBar({
   }
 
   return (
-    <div className="border-t border-outline-100 px-4 pb-3 pt-3">
+    <View borderTopWidth={1} borderColor="$outline100" paddingHorizontal={16} paddingBottom={12} paddingTop={12}>
       {completions.length > 0 && (
-        <div className="mb-2 max-h-48 overflow-y-auto rounded-lg border border-outline-200 bg-background-0 shadow-soft-2">
+        <View marginBottom={8} maxHeight={192} overflow="scroll" borderRadius={8} borderWidth={1} borderColor="$outline200" backgroundColor="$background0">
           {completions.map((c, i) => (
-            <div
+            <View
               key={c}
               className={`cursor-pointer px-3 py-1.5 font-mono text-xs ${i === selectedIdx ? 'bg-primary-50 text-primary-800' : 'text-typography-700 hover:bg-background-100'}`}
               onMouseDown={(e) => { e.preventDefault(); applyCompletion(c) }}
               onMouseEnter={() => setSelectedIdx(i)}
             >
               {c}
-            </div>
+            </View>
           ))}
-        </div>
+        </View>
       )}
-      <div className="flex items-end gap-2">
+      <View alignItems="flex-end" gap={8}>
         <textarea
           ref={taRef}
           className="max-h-[200px] min-h-[40px] flex-1 resize-none rounded-xl border border-outline-200 bg-background-50 px-3.5 py-2.5 text-sm text-typography-800 outline-none transition placeholder:text-typography-400 focus:border-primary-500 focus:bg-background-0"
@@ -2122,7 +2122,7 @@ function InputBar({
           // model is generating. Clicking sends an interrupt and locks the
           // button at reduced opacity until the server's interrupt_ack (or 3 s
           // fallback).
-          <div className="relative flex h-9 w-9 shrink-0 items-center justify-center">
+          <View position="relative" height={36} width={36} flexShrink={0} alignItems="center" justifyContent="center">
             {!stopSent && (
               <Spinner
                 color="#0d9488"
@@ -2130,30 +2130,30 @@ function InputBar({
                 className="pointer-events-none absolute -inset-1"
               />
             )}
-            <button
+            <Touchable
               className={`flex h-9 w-9 items-center justify-center rounded-full bg-error-500 transition hover:bg-error-600 disabled:cursor-not-allowed ${stopSent ? 'opacity-50' : ''}`}
-              onClick={onInterrupt}
+              onPress={onInterrupt}
               disabled={stopSent}
               title={stopSent ? 'Interrupt sent…' : 'Interrupt'}
             >
-              <span className="h-2.5 w-2.5 rounded-[2px] bg-typography-0" />
-            </button>
-          </div>
+              <Text height={10} width={10} borderRadius={2} backgroundColor="$typography0" />
+            </Touchable>
+          </View>
         ) : (
-          <button
+          <Touchable
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-500 text-sm text-typography-0 transition hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-40"
-            onClick={onSend}
+            onPress={onSend}
             disabled={!draft.trim()}
             title="Send"
           >
             ➤
-          </button>
+          </Touchable>
         )}
-      </div>
+      </View>
       {model && (
-        <div className="mt-1.5 text-right text-[11px] text-typography-400" title={model}>{model}</div>
+        <View className="mt-1.5 text-right text-[11px] text-typography-400" title={model}>{model}</View>
       )}
-    </div>
+    </View>
   )
 }
 

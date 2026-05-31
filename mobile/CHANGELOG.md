@@ -11,6 +11,15 @@ the git log.
 
 ### Changed
 
+- **Replaced the gluestack-ui v3 + NativeWind styling stack with Tamagui.** NativeWind v4
+  doesn't apply styles under React Native's New Architecture (which RN 0.84 + reanimated 4
+  require), so the mobile UI rendered unstyled. The shared `@okto/ui` package was rebuilt on
+  Tamagui (a proven RN + web design system): the full okto token palette (light + dark) ported
+  into a Tamagui theme, an `OktoProvider`, and `View`/`Text`/`Touchable`/`Spinner`/`Button`
+  primitives. `App.tsx`'s ~150 NativeWind `className` sites were converted to Tamagui style
+  props; NativeWind/Tailwind removed from the mobile build (babel, metro, global.css). Verified
+  rendering styled on the iOS simulator (New Architecture). The `ErrorBoundary` fallback now uses
+  RN primitives so it can render outside the provider.
 - **Migrated to the shared `@okto/ui` design system (gluestack-ui v3 + NativeWind).**
   Mobile and desktop now draw from one design-token set (via a new npm workspace),
   so the two clients read as one product. The color ramp moves from warm-paper to a

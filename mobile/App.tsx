@@ -13,12 +13,11 @@ import {
   Platform,
   ScrollView,
   StyleSheet,
-  Text,
+  Text as RNText,
   TextInput,
-  TouchableOpacity,
   useWindowDimensions,
   Vibration,
-  View,
+  View as RNView,
 } from 'react-native'
 import { KeyboardProvider, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller'
 import Reanimated, { useAnimatedStyle } from 'react-native-reanimated'
@@ -42,12 +41,13 @@ import {
   parseServerEvent,
 } from './src/wire'
 import {
-  GluestackUIProvider,
+  OktoProvider,
   Spinner,
   Button,
   ButtonText,
-  Badge,
-  BadgeText,
+  Touchable,
+  View,
+  Text,
 } from '@okto/ui'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -517,8 +517,8 @@ const MessageBubble = memo(function MessageBubble({
   if (message.role === 'error') {
     return (
       <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
-        <View className="px-4 pl-7" style={{ marginBottom: bubbleBottomMargin }}>
-          <Text selectable className="self-start overflow-hidden rounded-[10px] bg-error-50 px-3 py-2 font-sans text-[13px] font-medium leading-[19px] text-error-600">⚠ {message.text}</Text>
+        <View paddingHorizontal={16} paddingLeft={28} style={{ marginBottom: bubbleBottomMargin }}>
+          <Text selectable alignSelf="flex-start" overflow="hidden" borderRadius={10} backgroundColor="$error50" paddingHorizontal={12} paddingVertical={8} fontFamily="$body" fontSize={13} fontWeight="500" lineHeight={19} color="$error600">⚠ {message.text}</Text>
         </View>
       </Animated.View>
     )
@@ -526,8 +526,8 @@ const MessageBubble = memo(function MessageBubble({
   if (message.role === 'interrupted') {
     return (
       <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
-        <View className="px-4 pl-7" style={{ marginBottom: bubbleBottomMargin }}>
-          <Text selectable className="text-[11px] font-bold uppercase leading-[18px] tracking-[1.6px] text-typography-500" style={{ fontFamily: MONO }}>■ interrupted</Text>
+        <View paddingHorizontal={16} paddingLeft={28} style={{ marginBottom: bubbleBottomMargin }}>
+          <Text selectable fontSize={11} fontWeight="700" textTransform="uppercase" lineHeight={18} letterSpacing={1.6} color="$typography500" style={{ fontFamily: MONO }}>■ interrupted</Text>
         </View>
       </Animated.View>
     )
@@ -540,8 +540,8 @@ const MessageBubble = memo(function MessageBubble({
     const marker = message.role === 'bg_progress' ? '◈' : '◇'
     return (
       <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
-        <View className="px-4 pl-7" style={{ marginBottom: bubbleBottomMargin }}>
-          <Text selectable className="font-sans text-[12.5px] italic leading-[19px] text-typography-500">{marker} {firstLine}</Text>
+        <View paddingHorizontal={16} paddingLeft={28} style={{ marginBottom: bubbleBottomMargin }}>
+          <Text selectable fontFamily="$body" fontSize={12.5} fontStyle="italic" lineHeight={19} color="$typography500">{marker} {firstLine}</Text>
         </View>
       </Animated.View>
     )
@@ -549,35 +549,35 @@ const MessageBubble = memo(function MessageBubble({
   if (message.role === 'tool') {
     return (
       <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
-        <TouchableOpacity
-          className="mb-1 px-4"
+        <Touchable
+          marginBottom={4} paddingHorizontal={16}
           onPress={() => setToolExpanded(v => !v)}
           activeOpacity={0.7}
         >
-          <View className="rounded-xl border border-l-[3px] border-outline-200 border-l-primary-600 bg-background-50 px-[14px] py-[10px]">
-            <View className="flex-row items-center">
+          <View borderRadius={12} borderWidth={1} borderLeftWidth={3} borderColor="$outline200" borderLeftColor="$primary600" backgroundColor="$background50" paddingHorizontal={14} paddingVertical={10}>
+            <View flexDirection="row" alignItems="center">
               {message.running && <PulsingDot />}
               {!message.running && message.output === undefined && <QueuedDot />}
-              <Text className="flex-1 text-[13px] font-semibold tracking-[0.2px] text-primary-700" style={{ fontFamily: MONO }} selectable numberOfLines={toolExpanded ? undefined : 1} ellipsizeMode="tail">{message.text}</Text>
-              <Text className="ml-1.5 text-sm text-primary-600" style={{ transform: [{ rotate: toolExpanded ? '90deg' : '0deg' }] }}>›</Text>
+              <Text flex={1} fontSize={13} fontWeight="600" letterSpacing={0.2} color="$primary700" style={{ fontFamily: MONO }} selectable numberOfLines={toolExpanded ? undefined : 1} ellipsizeMode="tail">{message.text}</Text>
+              <Text marginLeft={6} fontSize={14} color="$primary600" style={{ transform: [{ rotate: toolExpanded ? '90deg' : '0deg' }] }}>›</Text>
             </View>
             {toolExpanded && message.output != null && (
-              <View className="mt-2 border-t border-outline-200 pt-2">
+              <View marginTop={8} borderTopWidth={1} borderColor="$outline200" paddingTop={8}>
                 <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled showsVerticalScrollIndicator={false}>
-                  <Text className="text-xs leading-[18px] text-typography-600" style={{ fontFamily: MONO }} selectable>{message.output}</Text>
+                  <Text fontSize={12} lineHeight={18} color="$typography600" style={{ fontFamily: MONO }} selectable>{message.output}</Text>
                 </ScrollView>
               </View>
             )}
           </View>
-        </TouchableOpacity>
+        </Touchable>
       </Animated.View>
     )
   }
   if (message.role === 'user') {
     return (
       <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
-        <View className="items-end px-4" style={{ marginBottom: bubbleBottomMargin }}>
-          <View className="max-w-[82%] rounded-[22px] rounded-br-md bg-primary-600 px-[15px] py-[10px]">
+        <View alignItems="flex-end" paddingHorizontal={16} style={{ marginBottom: bubbleBottomMargin }}>
+          <View maxWidth="82%" borderRadius={22} borderBottomRightRadius={6} backgroundColor="$primary600" paddingHorizontal={15} paddingVertical={10}>
             {renderedText}
           </View>
         </View>
@@ -586,10 +586,10 @@ const MessageBubble = memo(function MessageBubble({
   }
   return (
     <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
-      <View className="px-4" style={{ marginBottom: bubbleBottomMargin }}>
+      <View paddingHorizontal={16} style={{ marginBottom: bubbleBottomMargin }}>
         {renderedText}
         {message.cost != null && (
-          <Text className="ml-0.5 mt-1.5 text-[10.5px] tracking-[0.4px] text-typography-400" style={{ fontFamily: MONO }}>{formatCost(message.cost)}</Text>
+          <Text marginLeft={2} marginTop={6} fontSize={10.5} letterSpacing={0.4} color="$typography400" style={{ fontFamily: MONO }}>{formatCost(message.cost)}</Text>
         )}
       </View>
     </Animated.View>
@@ -616,16 +616,16 @@ function taskStatusColor(status: TaskRecord['status']): string {
 function TasksHeaderButton({ tasks, onPress }: { tasks: TaskRecord[]; onPress: () => void }) {
   const runningCount = tasks.filter(t => t.status === 'running').length
   return (
-    <TouchableOpacity
-      className="flex-row items-center gap-[7px] rounded-full border border-outline-200 bg-background-0 px-3 py-[5px]"
+    <Touchable
+      flexDirection="row" alignItems="center" gap={7} borderRadius={999} borderWidth={1} borderColor="$outline200" backgroundColor="$background0" paddingHorizontal={12} paddingVertical={5}
       onPress={onPress}
       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
     >
-      <View className={`h-[7px] w-[7px] rounded-full ${runningCount > 0 ? 'bg-primary-600' : 'bg-typography-500'}`} />
-      <Text className="font-sans text-[11px] font-bold tracking-[0.4px] text-typography-600">
+      <View height={7} width={7} borderRadius={999} backgroundColor={runningCount > 0 ? '$primary600' : '$typography500'} />
+      <Text fontFamily="$body" fontSize={11} fontWeight="700" letterSpacing={0.4} color="$typography600">
         {runningCount > 0 ? `TASKS · ${runningCount}` : 'TASKS'}
       </Text>
-    </TouchableOpacity>
+    </Touchable>
   )
 }
 
@@ -635,42 +635,42 @@ const TaskRow = memo(function TaskRow({ task, cancelling, onCancel }: { task: Ta
   const ts = task.completed_at != null ? relativeTime(task.completed_at) : relativeTime(task.started_at)
   const statusColor = taskStatusColor(task.status)
   return (
-    <View className="border-b border-outline-200 px-5 py-[14px]">
-      <View className="mb-2 flex-row items-center gap-2.5">
-        <View className="flex-row items-center gap-1.5 rounded-full border px-[9px] py-[3px]" style={{ borderColor: statusColor }}>
-          <View className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: statusColor }} />
-          <Text className="text-[10px] font-bold tracking-[1.2px]" style={{ color: statusColor, fontFamily: MONO }}>
+    <View borderBottomWidth={1} borderColor="$outline200" paddingHorizontal={20} paddingVertical={14}>
+      <View marginBottom={8} flexDirection="row" alignItems="center" gap={10}>
+        <View flexDirection="row" alignItems="center" gap={6} borderRadius={999} borderWidth={1} paddingHorizontal={9} paddingVertical={3} style={{ borderColor: statusColor }}>
+          <View height={6} width={6} borderRadius={999} style={{ backgroundColor: statusColor }} />
+          <Text fontSize={10} fontWeight="700" letterSpacing={1.2} style={{ color: statusColor, fontFamily: MONO }}>
             {task.status.toUpperCase()}
           </Text>
         </View>
         {task.wake_interval_secs != null && (
-          <Text className="text-[10px] font-bold tracking-[1.2px] text-primary-600" style={{ fontFamily: MONO }}>◈ MONITORED</Text>
+          <Text fontSize={10} fontWeight="700" letterSpacing={1.2} color="$primary600" style={{ fontFamily: MONO }}>◈ MONITORED</Text>
         )}
-        <Text className="flex-1 text-[11px] tracking-[0.4px] text-typography-500" style={{ fontFamily: MONO }}>{ts}</Text>
+        <Text flex={1} fontSize={11} letterSpacing={0.4} color="$typography500" style={{ fontFamily: MONO }}>{ts}</Text>
         {isRunning && (
-          <TouchableOpacity
-            className={`rounded-full border border-error-600 px-3 py-1 ${cancelling ? 'opacity-40' : ''}`}
+          <Touchable
+            borderRadius={999} borderWidth={1} borderColor="$error600" paddingHorizontal={12} paddingVertical={4} opacity={cancelling ? 0.4 : undefined}
             onPress={onCancel}
             disabled={cancelling}
             hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
           >
-            <Text className="font-sans text-[11px] font-bold tracking-[0.4px] text-error-600">{cancelling ? 'STOPPING' : 'STOP'}</Text>
-          </TouchableOpacity>
+            <Text fontFamily="$body" fontSize={11} fontWeight="700" letterSpacing={0.4} color="$error600">{cancelling ? 'STOPPING' : 'STOP'}</Text>
+          </Touchable>
         )}
       </View>
-      <TouchableOpacity activeOpacity={0.7} onPress={() => setExpanded(v => !v)}>
-        <Text className="font-sans text-[14.5px] leading-[21px] text-typography-900" numberOfLines={expanded ? undefined : 2} selectable>
+      <Touchable activeOpacity={0.7} onPress={() => setExpanded(v => !v)}>
+        <Text fontFamily="$body" fontSize={14.5} lineHeight={21} color="$typography900" numberOfLines={expanded ? undefined : 2} selectable>
           {task.command}
         </Text>
         {task.summary != null && task.summary.length > 0 && (
-          <Text className="mt-1.5 font-sans text-[13px] leading-[19px] text-typography-600" numberOfLines={expanded ? undefined : 2} selectable>
+          <Text marginTop={6} fontFamily="$body" fontSize={13} lineHeight={19} color="$typography600" numberOfLines={expanded ? undefined : 2} selectable>
             {task.summary}
           </Text>
         )}
         {task.cost_usd != null && task.cost_usd > 0 && (
-          <Text className="mt-2 text-[10.5px] tracking-[0.3px] text-typography-400" style={{ fontFamily: MONO }}>{formatCost(task.cost_usd)}</Text>
+          <Text marginTop={8} fontSize={10.5} letterSpacing={0.3} color="$typography400" style={{ fontFamily: MONO }}>{formatCost(task.cost_usd)}</Text>
         )}
-      </TouchableOpacity>
+      </Touchable>
     </View>
   )
 })
@@ -709,25 +709,25 @@ function TasksModal({ visible, tasks, cancellingIds, onClose, onCancel }: {
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
       <Animated.View
-        className="bg-typography-950/40"
-        style={[StyleSheet.absoluteFill, { zIndex: 300, opacity: slide }]}
+        style={[StyleSheet.absoluteFill, { zIndex: 300, opacity: slide, backgroundColor: 'rgba(2,6,23,0.4)' }]}
         pointerEvents={visible ? 'auto' : 'none'}
       >
-        <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onClose} />
+        <Touchable style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onClose} />
       </Animated.View>
       <Animated.View
-        className="absolute inset-x-0 bottom-0 z-[301] max-h-[78%] rounded-t-[22px] bg-background-0 pt-2.5"
         style={{
+          position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 301, maxHeight: '78%',
+          borderTopLeftRadius: 22, borderTopRightRadius: 22, backgroundColor: '#fff', paddingTop: 10,
           paddingBottom: insets.bottom + 16,
           transform: [{ translateY: slide.interpolate({ inputRange: [0, 1], outputRange: [600, 0] }) }],
         }}
       >
-        <View className="mb-2.5 h-[5px] w-10 self-center rounded-full bg-outline-300 opacity-60" />
-        <View className="flex-row items-center justify-between border-b border-outline-200 px-5 py-[14px]">
-          <Text className="font-sans text-[17px] font-bold text-typography-900">Background Tasks</Text>
-          <TouchableOpacity onPress={onClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Text className="text-base font-light text-typography-600">✕</Text>
-          </TouchableOpacity>
+        <View marginBottom={10} height={5} width={40} alignSelf="center" borderRadius={999} backgroundColor="$outline300" opacity={0.6} />
+        <View flexDirection="row" alignItems="center" justifyContent="space-between" borderBottomWidth={1} borderColor="$outline200" paddingHorizontal={20} paddingVertical={14}>
+          <Text fontFamily="$body" fontSize={17} fontWeight="700" color="$typography900">Background Tasks</Text>
+          <Touchable onPress={onClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Text fontSize={16} fontWeight="300" color="$typography600">✕</Text>
+          </Touchable>
         </View>
         <ScrollView
           style={{ flex: 1 }}
@@ -735,8 +735,8 @@ function TasksModal({ visible, tasks, cancellingIds, onClose, onCancel }: {
           showsVerticalScrollIndicator={false}
         >
           {sorted.length === 0 ? (
-            <View className="items-center py-[60px]">
-              <Text className="font-sans text-[13px] italic text-typography-500">No background tasks</Text>
+            <View alignItems="center" paddingVertical={60}>
+              <Text fontFamily="$body" fontSize={13} fontStyle="italic" color="$typography500">No background tasks</Text>
             </View>
           ) : sorted.map(t => (
             <TaskRow
@@ -863,9 +863,9 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
   if (!device) return (
     <View style={s.scannerFull}>
       <Text style={s.scannerError}>Camera not available</Text>
-      <TouchableOpacity style={s.scannerCancel} onPress={onCancel}>
+      <Touchable style={s.scannerCancel} onPress={onCancel}>
         <Text style={s.scannerCancelText}>Cancel</Text>
-      </TouchableOpacity>
+      </Touchable>
     </View>
   )
   return (
@@ -883,9 +883,9 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
           <View style={[s.scannerCorner, s.cornerBL]} />
           <View style={[s.scannerCorner, s.cornerBR]} />
         </View>
-        <TouchableOpacity style={s.scannerCancel} onPress={onCancel}>
+        <Touchable style={s.scannerCancel} onPress={onCancel}>
           <Text style={s.scannerCancelText}>Cancel</Text>
-        </TouchableOpacity>
+        </Touchable>
       </View>
     </View>
   )
@@ -1664,8 +1664,8 @@ const ChatPane = memo(function ChatPane({
   ), [])
 
   return (
-    <View className="flex-1 bg-background-50">
-      <View className="flex-1">
+    <View flex={1} backgroundColor="$background50">
+      <View flex={1}>
         <FlatList
           ref={listRef}
           data={messages}
@@ -1678,10 +1678,10 @@ const ChatPane = memo(function ChatPane({
           ]}
           style={{ flex: 1 }}
           ListEmptyComponent={
-            <View className="mt-[88px] items-center gap-2">
+            <View marginTop={88} alignItems="center" gap={8}>
               <AppIcon />
-              <View className="mt-1 h-0.5 w-8 rounded-full bg-primary-600 opacity-60" />
-              <Text className="mt-2 text-[11px] font-semibold uppercase tracking-[1.8px] text-typography-500" style={{ fontFamily: MONO }}>Awaiting Instructions</Text>
+              <View marginTop={4} height={2} width={32} borderRadius={999} backgroundColor="$primary600" opacity={0.6} />
+              <Text marginTop={8} fontSize={11} fontWeight="600" textTransform="uppercase" letterSpacing={1.8} color="$typography500" style={{ fontFamily: MONO }}>Awaiting Instructions</Text>
             </View>
           }
           onContentSizeChange={(_, h) => {
@@ -1711,28 +1711,26 @@ const ChatPane = memo(function ChatPane({
 
         {completions.length > 0 && (
           <ScrollView
-            className="absolute inset-x-2 z-10 max-h-[180px] overflow-hidden rounded-[14px] border border-outline-200 bg-background-0"
-            style={{ bottom: inputAreaH }}
+            style={{ bottom: inputAreaH, position: 'absolute', left: 8, right: 8, zIndex: 10, maxHeight: 180, overflow: 'hidden', borderRadius: 14, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: '#fff' }}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
             {completions.map(c => (
-              <TouchableOpacity key={c} className="border-b border-outline-200 px-4 py-[11px]" onPress={() => applyCompletion(c)}>
-                <Text className="text-[13.5px] text-typography-900" style={{ fontFamily: MONO }}>{c}</Text>
-              </TouchableOpacity>
+              <Touchable key={c} borderBottomWidth={1} borderColor="$outline200" paddingHorizontal={16} paddingVertical={11} onPress={() => applyCompletion(c)}>
+                <Text fontSize={13.5} color="$typography900" style={{ fontFamily: MONO }}>{c}</Text>
+              </Touchable>
             ))}
           </ScrollView>
         )}
-        <View className="absolute inset-x-0 bottom-0 border-t border-outline-200 bg-background-50 px-3 pb-3 pt-2.5" onLayout={e => setInputAreaH(e.nativeEvent.layout.height)}>
-          <View className="flex-row items-end gap-2.5">
+        <View position="absolute" left={0} right={0} bottom={0} borderTopWidth={1} borderColor="$outline200" backgroundColor="$background50" paddingHorizontal={12} paddingBottom={12} paddingTop={10} onLayout={e => setInputAreaH(e.nativeEvent.layout.height)}>
+          <View flexDirection="row" alignItems="flex-end" gap={10}>
             <TextInput
               // Lock height to one line when empty so a `setInput('')` on send
               // collapses the box immediately — without this, iOS keeps the
               // previous multiline intrinsic size for ~a second. With a value
               // present we omit `height` so RN's intrinsic sizing handles
               // multiline auto-grow (clamped by min/max height classes).
-              className="max-h-[140px] min-h-[56px] flex-1 rounded-[22px] border border-outline-200 bg-background-0 px-[18px] py-[15px] font-sans text-base leading-[22px] text-typography-900"
-              style={!input ? { height: 56 } : undefined}
+              style={[{ maxHeight: 140, minHeight: 56, flex: 1, borderRadius: 22, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: '#fff', paddingHorizontal: 18, paddingVertical: 15, fontFamily: ARIMO, fontSize: 16, lineHeight: 22, color: 'rgb(15,23,42)' }, !input ? { height: 56 } : null]}
               value={input}
               onChangeText={setInput}
               placeholder="message…"
@@ -1745,10 +1743,10 @@ const ChatPane = memo(function ChatPane({
               // (single dot orbiting). Tapping issues an interrupt and locks
               // the button at reduced opacity until the server's
               // interrupt_ack (or the 3 s timeout fallback in stopAckTimerRef).
-              <View className="h-14 w-14 items-center justify-center">
+              <View height={56} width={56} alignItems="center" justifyContent="center">
                 <OrbitingArc size={56} thickness={3} />
-                <TouchableOpacity
-                  className={`h-[50px] w-[50px] items-center justify-center rounded-[25px] bg-error-500 ${stopSent ? 'opacity-40' : ''}`}
+                <Touchable
+                  height={50} width={50} alignItems="center" justifyContent="center" borderRadius={25} backgroundColor="$error500" opacity={stopSent ? 0.4 : undefined}
                   disabled={stopSent}
                   onPress={() => {
                     if (!sendFrame({ type: 'interrupt' })) return
@@ -1761,26 +1759,26 @@ const ChatPane = memo(function ChatPane({
                   }}
                   activeOpacity={0.7}
                 >
-                  <Text className="text-[18px] font-bold text-typography-0">■</Text>
-                </TouchableOpacity>
+                  <Text fontSize={18} fontWeight="700" color="$typography0">■</Text>
+                </Touchable>
               </View>
             ) : (
-              <TouchableOpacity
-                className={`h-14 w-14 items-center justify-center rounded-[22px] ${!input.trim() ? 'border border-outline-200 bg-background-100' : 'bg-primary-600'}`}
+              <Touchable
+                height={56} width={56} alignItems="center" justifyContent="center" borderRadius={22} borderWidth={!input.trim() ? 1 : undefined} borderColor={!input.trim() ? '$outline200' : undefined} backgroundColor={!input.trim() ? '$background100' : '$primary600'}
                 onPress={() => sendMessageRef.current()}
                 disabled={!input.trim()}
                 activeOpacity={0.75}
               >
                 <PaperPlane disabled={!input.trim()} />
-              </TouchableOpacity>
+              </Touchable>
             )}
           </View>
         </View>
 
         {showScrollBtn && (
-          <View className="absolute inset-x-0 items-center" style={{ bottom: inputAreaH }} pointerEvents="box-none">
-            <TouchableOpacity
-              className="mb-3 h-9 w-9 items-center justify-center rounded-full border border-outline-200 bg-background-0"
+          <View position="absolute" left={0} right={0} alignItems="center" style={{ bottom: inputAreaH }} pointerEvents="box-none">
+            <Touchable
+              marginBottom={12} height={36} width={36} alignItems="center" justifyContent="center" borderRadius={999} borderWidth={1} borderColor="$outline200" backgroundColor="$background0"
               onPress={() => {
                 isAtBottomRef.current = true
                 setShowScrollBtn(false)
@@ -1789,14 +1787,14 @@ const ChatPane = memo(function ChatPane({
               }}
               activeOpacity={0.75}
             >
-              <Text className="text-base font-bold text-typography-900" style={{ fontFamily: ARIMO }}>↓</Text>
-            </TouchableOpacity>
+              <Text fontSize={16} fontWeight="700" color="$typography900" style={{ fontFamily: ARIMO }}>↓</Text>
+            </Touchable>
           </View>
         )}
 
         {status === 'error' && (
-          <View className="absolute inset-x-0 top-0 z-10 flex-row items-center justify-center border-b border-error-600 bg-background-100 py-[7px]" pointerEvents="none">
-            <Text className="text-[11px] font-bold uppercase tracking-[1.4px] text-error-600" style={{ fontFamily: MONO }}>Connection error</Text>
+          <View position="absolute" left={0} right={0} top={0} zIndex={10} flexDirection="row" alignItems="center" justifyContent="center" borderBottomWidth={1} borderColor="$error600" backgroundColor="$background100" paddingVertical={7} pointerEvents="none">
+            <Text fontSize={11} fontWeight="700" textTransform="uppercase" letterSpacing={1.4} color="$error600" style={{ fontFamily: MONO }}>Connection error</Text>
           </View>
         )}
       </View>
@@ -1828,28 +1826,27 @@ function ConnectionErrorModal({ visible, onDismiss }: { visible: boolean; onDism
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
       <Animated.View
-        className="bg-typography-950/50"
-        style={[StyleSheet.absoluteFill, { zIndex: 400, opacity: slide }]}
+        style={[StyleSheet.absoluteFill, { zIndex: 400, opacity: slide, backgroundColor: 'rgba(2,6,23,0.5)' }]}
         pointerEvents={visible ? 'auto' : 'none'}
       >
-        <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onDismiss} />
+        <Touchable style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onDismiss} />
       </Animated.View>
       <Animated.View
-        className="absolute items-center rounded-[18px] bg-background-0 p-7"
         style={{
+          position: 'absolute', alignItems: 'center', borderRadius: 18, backgroundColor: '#fff', padding: 28,
           top: '38%', left: '12%', right: '12%', zIndex: 401,
           transform: [{ scale: slide.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] }) }],
           opacity: slide,
         }}
         pointerEvents={visible ? 'auto' : 'none'}
       >
-        <View className="mb-3.5 h-[52px] w-[52px] items-center justify-center rounded-full bg-error-50">
-          <Text className="font-brand text-[28px] font-bold text-error-600">!</Text>
+        <View marginBottom={14} height={52} width={52} alignItems="center" justifyContent="center" borderRadius={999} backgroundColor="$error50">
+          <Text fontFamily="$heading" fontSize={28} fontWeight="700" color="$error600">!</Text>
         </View>
-        <Text className="mb-1.5 font-brand text-[18px] font-bold text-typography-900">Connection Lost</Text>
-        <Text className="mb-5 text-center font-sans text-sm leading-5 text-typography-500">Reconnecting automatically…{'\n'}Tap to dismiss.</Text>
-        <Button action="primary" onPress={onDismiss} className="rounded-full px-7">
-          <ButtonText>Dismiss</ButtonText>
+        <Text marginBottom={6} fontFamily="$heading" fontSize={18} fontWeight="700" color="$typography900">Connection Lost</Text>
+        <Text marginBottom={20} textAlign="center" fontFamily="$body" fontSize={14} lineHeight={20} color="$typography500">Reconnecting automatically…{'\n'}Tap to dismiss.</Text>
+        <Button onPress={onDismiss} borderRadius={999} paddingHorizontal={28} backgroundColor="$primary600">
+          <ButtonText color="$typography0">Dismiss</ButtonText>
         </Button>
       </Animated.View>
     </View>
@@ -1894,35 +1891,35 @@ function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, o
     // No SafeAreaView here: this screen is rendered as an overlay inside
     // AppInner's SafeAreaView, so applying the top inset again would push
     // the header down by double the status-bar height.
-    <View className="flex-1 bg-background-50">
-      <View className="flex-1">
-        <View className="flex-row items-center justify-between border-b border-outline-200 bg-background-50 px-4 py-3">
-          <View className="flex-1 flex-row items-center gap-2.5">
-            <TouchableOpacity
-              className="mr-1 px-1.5 py-2"
+    <View flex={1} backgroundColor="$background50">
+      <View flex={1}>
+        <View flexDirection="row" alignItems="center" justifyContent="space-between" borderBottomWidth={1} borderColor="$outline200" backgroundColor="$background50" paddingHorizontal={16} paddingVertical={12}>
+          <View flex={1} flexDirection="row" alignItems="center" gap={10}>
+            <Touchable
+              marginRight={4} paddingHorizontal={6} paddingVertical={8}
               onPress={onOpenSidebar}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <View className="h-3 w-[18px] justify-between">
-                <View className="h-0.5 rounded-full bg-typography-900" />
-                <View className="h-0.5 rounded-full bg-typography-900" />
-                <View className="h-0.5 rounded-full bg-typography-900" />
+              <View height={12} width={18} justifyContent="space-between">
+                <View height={2} borderRadius={999} backgroundColor="$typography900" />
+                <View height={2} borderRadius={999} backgroundColor="$typography900" />
+                <View height={2} borderRadius={999} backgroundColor="$typography900" />
               </View>
-            </TouchableOpacity>
-            <Text className="font-sans text-[15px] font-bold tracking-[0.2px] text-typography-900">
+            </Touchable>
+            <Text fontFamily="$body" fontSize={15} fontWeight="700" letterSpacing={0.2} color="$typography900">
               {containerDisplayName(child.name)}{worktree ? ` / ${worktree.branch}` : ''}
             </Text>
           </View>
-          <View className="flex-row items-center gap-2">
+          <View flexDirection="row" alignItems="center" gap={8}>
             <TasksHeaderButton tasks={tasks} onPress={() => { Keyboard.dismiss(); setShowTasksModal(true) }} />
-            <TouchableOpacity
-              className="rounded-full border border-outline-200 bg-background-0 px-3 py-[5px]"
+            <Touchable
+              borderRadius={999} borderWidth={1} borderColor="$outline200" backgroundColor="$background0" paddingHorizontal={12} paddingVertical={5}
               onPress={() => clearRef.current()}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               disabled={chatStatus !== 'ready'}
             >
-              <Text className={`font-sans text-[11px] font-semibold tracking-[0.4px] text-typography-600 ${chatStatus !== 'ready' ? 'opacity-30' : ''}`}>clear</Text>
-            </TouchableOpacity>
+              <Text fontFamily="$body" fontSize={11} fontWeight="600" letterSpacing={0.4} color="$typography600" opacity={chatStatus !== 'ready' ? 0.3 : undefined}>clear</Text>
+            </Touchable>
           </View>
         </View>
 
@@ -1942,8 +1939,8 @@ function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, o
             onCancelAck={handleCancelAck}
           />
         ) : tunnelError ? (
-          <View className="flex-1 items-center justify-center gap-3.5 px-10">
-            <Text className="overflow-hidden rounded-xl bg-error-50 px-3.5 py-2.5 text-center font-sans text-[13px] leading-[19px] text-error-600">{tunnelError}</Text>
+          <View flex={1} alignItems="center" justifyContent="center" gap={14} paddingHorizontal={40}>
+            <Text overflow="hidden" borderRadius={12} backgroundColor="$error50" paddingHorizontal={14} paddingVertical={10} textAlign="center" fontFamily="$body" fontSize={13} lineHeight={19} color="$error600">{tunnelError}</Text>
           </View>
         ) : null}
 
@@ -1984,10 +1981,10 @@ class ErrorBoundary extends React.Component<
   render() {
     if (this.state.error) {
       return (
-        <View style={{ flex: 1, backgroundColor: '#EB4F0B', alignItems: 'center', justifyContent: 'center', padding: 32 }}>
-          <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700', marginBottom: 12 }}>Something went wrong</Text>
-          <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 14, textAlign: 'center', lineHeight: 20 }}>{this.state.error}</Text>
-        </View>
+        <RNView style={{ flex: 1, backgroundColor: '#EB4F0B', alignItems: 'center', justifyContent: 'center', padding: 32 }}>
+          <RNText style={{ color: '#fff', fontSize: 18, fontWeight: '700', marginBottom: 12 }}>Something went wrong</RNText>
+          <RNText style={{ color: 'rgba(255,255,255,0.85)', fontSize: 14, textAlign: 'center', lineHeight: 20 }}>{this.state.error}</RNText>
+        </RNView>
       )
     }
     return this.props.children
@@ -2442,15 +2439,15 @@ function AppInner() {
   // ── Connection error screen ──────────────────────────────────────────────────
   if (conn && !tunnelPort && tunnelError) {
     return (
-      <SafeAreaView className="flex-1 bg-background-50" edges={['top', 'bottom']}>
-        <View className="flex-1 items-center justify-center gap-3.5 px-10">
+      <SafeAreaView style={{ flex: 1, backgroundColor: 'rgb(246,246,246)' }} edges={['top', 'bottom']}>
+        <View flex={1} alignItems="center" justifyContent="center" gap={14} paddingHorizontal={40}>
           <AppIcon />
-          <Text className="mt-5 pl-2 font-brand text-[40px] font-extrabold tracking-[8px] text-typography-900">OCTO</Text>
-          <View className="my-1.5 h-0.5 w-9 rounded-full bg-primary-600 opacity-70" />
-          <Text className="overflow-hidden rounded-xl bg-error-50 px-3.5 py-2.5 text-center font-sans text-[13px] leading-[19px] text-error-600">{tunnelError}</Text>
-          <TouchableOpacity className="mt-4 rounded-[14px] bg-typography-900 px-10 py-3.5" onPress={() => setConn(null)}>
-            <Text className="font-sans text-[12px] font-bold uppercase tracking-[1.8px] text-typography-0">back</Text>
-          </TouchableOpacity>
+          <Text marginTop={20} paddingLeft={8} fontFamily="$heading" fontSize={40} fontWeight="800" letterSpacing={8} color="$typography900">OCTO</Text>
+          <View marginVertical={6} height={2} width={36} borderRadius={999} backgroundColor="$primary600" opacity={0.7} />
+          <Text overflow="hidden" borderRadius={12} backgroundColor="$error50" paddingHorizontal={14} paddingVertical={10} textAlign="center" fontFamily="$body" fontSize={13} lineHeight={19} color="$error600">{tunnelError}</Text>
+          <Touchable marginTop={16} borderRadius={14} backgroundColor="$typography900" paddingHorizontal={40} paddingVertical={14} onPress={() => setConn(null)}>
+            <Text fontFamily="$body" fontSize={12} fontWeight="700" textTransform="uppercase" letterSpacing={1.8} color="$typography0">back</Text>
+          </Touchable>
         </View>
       </SafeAreaView>
     )
@@ -2459,20 +2456,19 @@ function AppInner() {
   // ── No master connection yet ─────────────────────────────────────────────────
   if (!conn) {
     return (
-      <SafeAreaView className="flex-1 bg-background-50" edges={['top', 'bottom']}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: 'rgb(246,246,246)' }} edges={['top', 'bottom']}>
         <Reanimated.View style={[{ flex: 1 }, setupKeyboardLift]}>
-          <View className="flex-1 items-center justify-center gap-3.5 px-10">
-            <TouchableOpacity onPress={requestCameraAndScan} activeOpacity={0.85}>
+          <View flex={1} alignItems="center" justifyContent="center" gap={14} paddingHorizontal={40}>
+            <Touchable onPress={requestCameraAndScan} activeOpacity={0.85}>
               <AppIcon pulse />
-            </TouchableOpacity>
-            <Text className="mt-5 pl-2 font-brand text-[40px] font-extrabold tracking-[8px] text-typography-900">OCTO</Text>
-            <View className="my-1.5 h-0.5 w-9 rounded-full bg-primary-600 opacity-70" />
-            <Text className="text-[10.5px] font-semibold uppercase tracking-[2.4px] text-typography-500" style={{ fontFamily: MONO }}>Distributed Coding Agents</Text>
-            <Text className="mt-3.5 max-w-[300px] text-center font-sans text-sm leading-[22px] text-typography-600">Tap the mark to scan your session QR code.</Text>
-            <Text className="mt-5 text-[10.5px] font-semibold uppercase tracking-[2.4px] text-typography-500" style={{ fontFamily: MONO }}>or paste a connect string</Text>
+            </Touchable>
+            <Text marginTop={20} paddingLeft={8} fontFamily="$heading" fontSize={40} fontWeight="800" letterSpacing={8} color="$typography900">OCTO</Text>
+            <View marginVertical={6} height={2} width={36} borderRadius={999} backgroundColor="$primary600" opacity={0.7} />
+            <Text fontSize={10.5} fontWeight="600" textTransform="uppercase" letterSpacing={2.4} color="$typography500" style={{ fontFamily: MONO }}>Distributed Coding Agents</Text>
+            <Text marginTop={14} maxWidth={300} textAlign="center" fontFamily="$body" fontSize={14} lineHeight={22} color="$typography600">Tap the mark to scan your session QR code.</Text>
+            <Text marginTop={20} fontSize={10.5} fontWeight="600" textTransform="uppercase" letterSpacing={2.4} color="$typography500" style={{ fontFamily: MONO }}>or paste a connect string</Text>
             <TextInput
-              className="mt-1.5 w-full max-w-[340px] rounded-[14px] border border-outline-200 bg-background-0 px-4 py-3.5 text-[13.5px] text-typography-900"
-              style={{ fontFamily: MONO }}
+              style={{ fontFamily: MONO, marginTop: 6, width: '100%', maxWidth: 340, borderRadius: 14, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: '#fff', paddingHorizontal: 16, paddingVertical: 14, fontSize: 13.5, color: 'rgb(15,23,42)' }}
               value={manualConn}
               onChangeText={(t) => { setManualConn(t); if (manualError) setManualError(null) }}
               onSubmitEditing={handleManualConnect}
@@ -2484,14 +2480,14 @@ function AppInner() {
               spellCheck={false}
               returnKeyType="go"
             />
-            {manualError ? <Text className="overflow-hidden rounded-xl bg-error-50 px-3.5 py-2.5 text-center font-sans text-[13px] leading-[19px] text-error-600">{manualError}</Text> : null}
-            <TouchableOpacity
-              className={`mt-4 rounded-[14px] px-10 py-3.5 ${!manualConn.trim() ? 'bg-typography-900 opacity-35' : 'bg-typography-900'}`}
+            {manualError ? <Text overflow="hidden" borderRadius={12} backgroundColor="$error50" paddingHorizontal={14} paddingVertical={10} textAlign="center" fontFamily="$body" fontSize={13} lineHeight={19} color="$error600">{manualError}</Text> : null}
+            <Touchable
+              marginTop={16} borderRadius={14} paddingHorizontal={40} paddingVertical={14} backgroundColor="$typography900" opacity={!manualConn.trim() ? 0.35 : undefined}
               onPress={handleManualConnect}
               disabled={!manualConn.trim()}
             >
-              <Text className="font-sans text-[12px] font-bold uppercase tracking-[1.8px] text-typography-0">connect</Text>
-            </TouchableOpacity>
+              <Text fontFamily="$body" fontSize={12} fontWeight="700" textTransform="uppercase" letterSpacing={1.8} color="$typography0">connect</Text>
+            </Touchable>
           </View>
         </Reanimated.View>
       </SafeAreaView>
@@ -2511,33 +2507,33 @@ function AppInner() {
 
   // ── Master chat UI ───────────────────────────────────────────────────────────
   return (
-    <SafeAreaView className="flex-1 bg-background-50" edges={['top']}>
-      <View className="flex-1">
+    <SafeAreaView style={{ flex: 1, backgroundColor: 'rgb(246,246,246)' }} edges={['top']}>
+      <View flex={1}>
         <Animated.View style={[{ flex: 1, transform: [{ translateX: masterTranslateX }] }]}>
-          <View className="flex-row items-center justify-between border-b border-outline-200 bg-background-50 px-4 py-3">
-            <View className="flex-1 flex-row items-center gap-2.5">
-              <TouchableOpacity
-                className="mr-1 px-1.5 py-2"
+          <View flexDirection="row" alignItems="center" justifyContent="space-between" borderBottomWidth={1} borderColor="$outline200" backgroundColor="$background50" paddingHorizontal={16} paddingVertical={12}>
+            <View flex={1} flexDirection="row" alignItems="center" gap={10}>
+              <Touchable
+                marginRight={4} paddingHorizontal={6} paddingVertical={8}
                 onPress={openSidebar}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
-                <View className="h-3 w-[18px] justify-between">
-                  <View className="h-0.5 rounded-full bg-typography-900" />
-                  <View className="h-0.5 rounded-full bg-typography-900" />
-                  <View className="h-0.5 rounded-full bg-typography-900" />
+                <View height={12} width={18} justifyContent="space-between">
+                  <View height={2} borderRadius={999} backgroundColor="$typography900" />
+                  <View height={2} borderRadius={999} backgroundColor="$typography900" />
+                  <View height={2} borderRadius={999} backgroundColor="$typography900" />
                 </View>
-              </TouchableOpacity>
+              </Touchable>
             </View>
-            <View className="flex-row items-center gap-2">
+            <View flexDirection="row" alignItems="center" gap={8}>
               <TasksHeaderButton tasks={masterTasks} onPress={() => { Keyboard.dismiss(); setShowTasksModal(true) }} />
-              <TouchableOpacity
-                className="rounded-full border border-outline-200 bg-background-0 px-3 py-[5px]"
+              <Touchable
+                borderRadius={999} borderWidth={1} borderColor="$outline200" backgroundColor="$background0" paddingHorizontal={12} paddingVertical={5}
                 onPress={() => clearChatRef.current()}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 disabled={chatStatus !== 'ready'}
               >
-                <Text className={`font-sans text-[11px] font-semibold tracking-[0.4px] text-typography-600 ${chatStatus !== 'ready' ? 'opacity-30' : ''}`}>clear</Text>
-              </TouchableOpacity>
+                <Text fontFamily="$body" fontSize={11} fontWeight="600" letterSpacing={0.4} color="$typography600" opacity={chatStatus !== 'ready' ? 0.3 : undefined}>clear</Text>
+              </Touchable>
             </View>
           </View>
 
@@ -2620,55 +2616,53 @@ function AppInner() {
         )}
 
         {startingContainerId !== null && (
-          <View className="absolute inset-0 items-center justify-center gap-[18px] bg-background-50 px-8">
+          <View position="absolute" top={0} right={0} bottom={0} left={0} alignItems="center" justifyContent="center" gap={18} backgroundColor="$background50" paddingHorizontal={32}>
             {startingError ? (
               <>
-                <Text className="text-center font-sans text-[13px] font-bold uppercase tracking-[1.6px] text-error-600">Failed to start container</Text>
-                <Text className="text-center font-sans text-[13px] leading-[19px] text-typography-600">{startingError}</Text>
+                <Text textAlign="center" fontFamily="$body" fontSize={13} fontWeight="700" textTransform="uppercase" letterSpacing={1.6} color="$error600">Failed to start container</Text>
+                <Text textAlign="center" fontFamily="$body" fontSize={13} lineHeight={19} color="$typography600">{startingError}</Text>
               </>
             ) : (
               <>
                 <Spinner size="large" color={C.accent} />
-                <Text className="text-[11px] font-semibold uppercase tracking-[1.8px] text-typography-600" style={{ fontFamily: MONO }}>Starting container...</Text>
+                <Text fontSize={11} fontWeight="600" textTransform="uppercase" letterSpacing={1.8} color="$typography600" style={{ fontFamily: MONO }}>Starting container...</Text>
               </>
             )}
-            <TouchableOpacity
-              className="mt-2.5 rounded-xl border border-outline-200 bg-background-0 px-8 py-3"
+            <Touchable
+              marginTop={10} borderRadius={12} borderWidth={1} borderColor="$outline200" backgroundColor="$background0" paddingHorizontal={32} paddingVertical={12}
               onPress={() => {
                 startingContainerIdRef.current = null
                 setStartingContainerId(null)
                 setStartingError(null)
               }}
             >
-              <Text className="font-sans text-[12px] font-bold uppercase tracking-[1.8px] text-typography-900">{startingError ? 'dismiss' : 'cancel'}</Text>
-            </TouchableOpacity>
+              <Text fontFamily="$body" fontSize={12} fontWeight="700" textTransform="uppercase" letterSpacing={1.8} color="$typography900">{startingError ? 'dismiss' : 'cancel'}</Text>
+            </Touchable>
           </View>
         )}
         {showSidebar && (
           <>
             <Animated.View
-              className="bg-typography-950/40"
-              style={[StyleSheet.absoluteFillObject, { zIndex: 200, opacity: sidebarAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] }) }]}
+              style={[StyleSheet.absoluteFillObject, { zIndex: 200, backgroundColor: 'rgba(2,6,23,0.4)', opacity: sidebarAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] }) }]}
               pointerEvents="box-none"
             >
-              <TouchableOpacity
+              <Touchable
                 style={StyleSheet.absoluteFillObject}
                 activeOpacity={1}
                 onPress={closeSidebar}
               />
             </Animated.View>
             <Animated.View
-              className="absolute bottom-0 left-0 top-0 z-[201] w-[308px] flex-col overflow-hidden rounded-r-[22px] bg-background-50"
-              style={{ transform: [{ translateX: sidebarAnim.interpolate({ inputRange: [0, 1], outputRange: [-280, 0] }) }] }}
+              style={{ position: 'absolute', bottom: 0, left: 0, top: 0, zIndex: 201, width: 308, flexDirection: 'column', overflow: 'hidden', borderTopRightRadius: 22, borderBottomRightRadius: 22, backgroundColor: 'rgb(246,246,246)', transform: [{ translateX: sidebarAnim.interpolate({ inputRange: [0, 1], outputRange: [-280, 0] }) }] }}
             >
-              <View className="flex-row items-center justify-between border-b border-outline-200 px-5 py-5">
+              <View flexDirection="row" alignItems="center" justifyContent="space-between" borderBottomWidth={1} borderColor="$outline200" paddingHorizontal={20} paddingVertical={20}>
                 <View>
-                  <Text className="pl-[5px] font-brand text-[22px] font-extrabold tracking-[5px] text-typography-900">OCTO</Text>
-                  <Text className="mt-1.5 text-[10px] font-semibold uppercase tracking-[1.8px] text-typography-500" style={{ fontFamily: MONO }}>Agent Console</Text>
+                  <Text paddingLeft={5} fontFamily="$heading" fontSize={22} fontWeight="800" letterSpacing={5} color="$typography900">OCTO</Text>
+                  <Text marginTop={6} fontSize={10} fontWeight="600" textTransform="uppercase" letterSpacing={1.8} color="$typography500" style={{ fontFamily: MONO }}>Agent Console</Text>
                 </View>
-                <TouchableOpacity onPress={closeSidebar} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                  <Text className="text-base font-light text-typography-600">✕</Text>
-                </TouchableOpacity>
+                <Touchable onPress={closeSidebar} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Text fontSize={16} fontWeight="300" color="$typography600">✕</Text>
+                </Touchable>
               </View>
               <ScrollView
                 style={{ flex: 1 }}
@@ -2676,25 +2670,25 @@ function AppInner() {
                 keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={false}
               >
-                <TouchableOpacity
-                  className={`flex-row items-center gap-3 border-b border-outline-200 py-3.5 ${!childMounted ? 'border-l-[3px] border-l-primary-600 bg-primary-50 pl-[17px] pr-5' : 'px-5'}`}
+                <Touchable
+                  flexDirection="row" alignItems="center" gap={12} borderBottomWidth={1} borderColor="$outline200" paddingVertical={14} borderLeftWidth={!childMounted ? 3 : undefined} borderLeftColor={!childMounted ? '$primary600' : undefined} backgroundColor={!childMounted ? '$primary50' : undefined} paddingLeft={!childMounted ? 17 : 20} paddingRight={20}
                   onPress={goToMaster}
                   activeOpacity={0.7}
                 >
-                  <View className="h-2 w-2 rounded-full" style={{ backgroundColor: C.green }} />
-                  <View className="flex-1">
-                    <Text className="font-sans text-[14.5px] font-semibold text-typography-900">LAIR</Text>
+                  <View height={8} width={8} borderRadius={999} style={{ backgroundColor: C.green }} />
+                  <View flex={1}>
+                    <Text fontFamily="$body" fontSize={14.5} fontWeight="600" color="$typography900">LAIR</Text>
                   </View>
-                  <Text className="text-[10px] font-bold uppercase tracking-[1.2px] text-typography-500" style={{ fontFamily: MONO }}>main</Text>
-                </TouchableOpacity>
+                  <Text fontSize={10} fontWeight="700" textTransform="uppercase" letterSpacing={1.2} color="$typography500" style={{ fontFamily: MONO }}>main</Text>
+                </Touchable>
 
-                <View className="px-5 pb-2 pt-5">
-                  <Text className="text-[10.5px] font-bold uppercase tracking-[1.6px] text-typography-500" style={{ fontFamily: MONO }}>Agents</Text>
+                <View paddingHorizontal={20} paddingBottom={8} paddingTop={20}>
+                  <Text fontSize={10.5} fontWeight="700" textTransform="uppercase" letterSpacing={1.6} color="$typography500" style={{ fontFamily: MONO }}>Agents</Text>
                 </View>
 
                 {containers.length === 0 && (
-                  <View className="flex-row items-center gap-3 border-b border-outline-200 px-5 py-3.5">
-                    <Text className="text-[10px] font-bold uppercase tracking-[1.2px] text-typography-500" style={{ fontFamily: MONO }}>No agents</Text>
+                  <View flexDirection="row" alignItems="center" gap={12} borderBottomWidth={1} borderColor="$outline200" paddingHorizontal={20} paddingVertical={14}>
+                    <Text fontSize={10} fontWeight="700" textTransform="uppercase" letterSpacing={1.2} color="$typography500" style={{ fontFamily: MONO }}>No agents</Text>
                   </View>
                 )}
                 {containers.map(c => {
@@ -2702,8 +2696,8 @@ function AppInner() {
                   const cWorktrees = worktrees[c.name] ?? []
                   return (
                   <React.Fragment key={c.id}>
-                  <TouchableOpacity
-                    className={`flex-row items-center gap-3 border-b border-outline-200 py-3.5 ${active ? 'border-l-[3px] border-l-primary-600 bg-primary-50 pl-[17px] pr-5' : 'px-5'}`}
+                  <Touchable
+                    flexDirection="row" alignItems="center" gap={12} borderBottomWidth={1} borderColor="$outline200" paddingVertical={14} borderLeftWidth={active ? 3 : undefined} borderLeftColor={active ? '$primary600' : undefined} backgroundColor={active ? '$primary50' : undefined} paddingLeft={active ? 17 : 20} paddingRight={20}
                     onPress={() => {
                       if (c.status === 'running') {
                         setShowSidebar(false)
@@ -2717,27 +2711,27 @@ function AppInner() {
                     delayLongPress={500}
                     activeOpacity={0.7}
                   >
-                    <View className="h-2 w-2 rounded-full" style={{ backgroundColor: c.status === 'running' ? C.green : C.textMuted }} />
-                    <View className="flex-1">
-                      <Text className="font-sans text-[14.5px] font-semibold text-typography-900">{containerDisplayName(c.name)}</Text>
-                      {c.kind === 'remote' ? <Text className="mt-0.5 text-[11.5px] text-typography-500" style={{ fontFamily: MONO }} numberOfLines={1}>remote</Text> : null}
+                    <View height={8} width={8} borderRadius={999} style={{ backgroundColor: c.status === 'running' ? C.green : C.textMuted }} />
+                    <View flex={1}>
+                      <Text fontFamily="$body" fontSize={14.5} fontWeight="600" color="$typography900">{containerDisplayName(c.name)}</Text>
+                      {c.kind === 'remote' ? <Text marginTop={2} fontSize={11.5} color="$typography500" style={{ fontFamily: MONO }} numberOfLines={1}>remote</Text> : null}
                     </View>
                     {c.status === 'running' && (
-                      <TouchableOpacity
+                      <Touchable
                         hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                         onPress={() => { setCreatingWtFor(prev => prev === c.name ? null : c.name); setNewBranchDraft('') }}
                       >
-                        <Text className="px-1 text-[18px] font-semibold text-typography-500">＋</Text>
-                      </TouchableOpacity>
+                        <Text paddingHorizontal={4} fontSize={18} fontWeight="600" color="$typography500">＋</Text>
+                      </Touchable>
                     )}
-                  </TouchableOpacity>
+                  </Touchable>
 
                   {cWorktrees.map(wt => {
                     const wtActive = childMounted && activeChild?.id === c.id && activeWorktree?.id === wt.id
                     return (
-                      <TouchableOpacity
+                      <Touchable
                         key={`${c.id}::${wt.id}`}
-                        className={`flex-row items-center gap-2.5 border-b border-outline-200 bg-background-0 py-3.5 pl-[34px] ${wtActive ? 'border-l-[3px] border-l-primary-600 bg-primary-50 pr-5' : 'pr-5'}`}
+                        flexDirection="row" alignItems="center" gap={10} borderBottomWidth={1} borderColor="$outline200" backgroundColor={wtActive ? '$primary50' : '$background0'} paddingVertical={14} paddingLeft={34} borderLeftWidth={wtActive ? 3 : undefined} borderLeftColor={wtActive ? '$primary600' : undefined} paddingRight={20}
                         onPress={() => { setShowSidebar(false); sidebarAnim.setValue(0); openChild(c, wt) }}
                         onLongPress={() => Alert.alert(
                           'Delete worktree?',
@@ -2750,20 +2744,19 @@ function AppInner() {
                         delayLongPress={500}
                         activeOpacity={0.7}
                       >
-                        <Text className="w-3 text-[13px] font-bold text-typography-500">⌥</Text>
-                        <View className="flex-1">
-                          <Text className="font-sans text-[13.5px] font-medium text-typography-600" numberOfLines={1}>{wt.branch}</Text>
+                        <Text width={12} fontSize={13} fontWeight="700" color="$typography500">⌥</Text>
+                        <View flex={1}>
+                          <Text fontFamily="$body" fontSize={13.5} fontWeight="500" color="$typography600" numberOfLines={1}>{wt.branch}</Text>
                         </View>
-                        <Text className="text-[10px] font-bold uppercase tracking-[1.2px] text-typography-500" style={{ fontFamily: MONO }}>worktree</Text>
-                      </TouchableOpacity>
+                        <Text fontSize={10} fontWeight="700" textTransform="uppercase" letterSpacing={1.2} color="$typography500" style={{ fontFamily: MONO }}>worktree</Text>
+                      </Touchable>
                     )
                   })}
 
                   {creatingWtFor === c.name && (
-                    <View className="flex-row items-center gap-2.5 border-b border-outline-200 bg-background-0 py-3.5 pl-[34px] pr-5">
+                    <View flexDirection="row" alignItems="center" gap={10} borderBottomWidth={1} borderColor="$outline200" backgroundColor="$background0" paddingVertical={14} paddingLeft={34} paddingRight={20}>
                       <TextInput
-                        className="flex-1 rounded-md border border-outline-200 bg-background-50 px-2 py-1 text-[13px] text-typography-900"
-                        style={{ fontFamily: MONO }}
+                        style={{ fontFamily: MONO, flex: 1, borderRadius: 6, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: 'rgb(246,246,246)', paddingHorizontal: 8, paddingVertical: 4, fontSize: 13, color: 'rgb(15,23,42)' }}
                         autoFocus
                         placeholder="new branch name…"
                         placeholderTextColor={C.textMuted}
@@ -2781,10 +2774,10 @@ function AppInner() {
                   )
                 })}
               </ScrollView>
-              <View className="h-px bg-outline-200" />
-              <TouchableOpacity className="px-5 py-4" onPress={handleLogout}>
-                <Text className="font-sans text-[13px] font-bold tracking-[0.4px] text-error-600">exit</Text>
-              </TouchableOpacity>
+              <View height={1} backgroundColor="$outline200" />
+              <Touchable paddingHorizontal={20} paddingVertical={16} onPress={handleLogout}>
+                <Text fontFamily="$body" fontSize={13} fontWeight="700" letterSpacing={0.4} color="$error600">exit</Text>
+              </Touchable>
             </Animated.View>
           </>
         )}
@@ -2798,13 +2791,13 @@ function AppInner() {
 export default function App() {
   return (
     <ErrorBoundary>
-      <GluestackUIProvider mode="light">
+      <OktoProvider mode="light">
         <KeyboardProvider>
           <SafeAreaProvider>
             <AppInner />
           </SafeAreaProvider>
         </KeyboardProvider>
-      </GluestackUIProvider>
+      </OktoProvider>
     </ErrorBoundary>
   )
 }
