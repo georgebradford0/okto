@@ -8,8 +8,34 @@ on:
 # lair runtime binary ships separately via `.github/workflows/lair.yml`.
 
 jobs:
+  # Gate the release on the workspace e2e suite (CLI + lair, both offline:
+  # no docker, no network, in-process mock LLM / mgmt API). `build` needs this,
+  # so a failing test blocks the binaries and the release below.
+  test:
+    name: e2e tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-x86_64-unknown-linux-gnu-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-x86_64-unknown-linux-gnu-cargo-
+
+      - name: Run e2e test suite
+        run: cargo test -p okto-tests
+
   build:
     name: Build ${{ matrix.target }}
+    needs: test
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
