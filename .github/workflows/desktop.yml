@@ -34,8 +34,35 @@ on:
 # (latest.json manifest) that the in-app updater polls.
 
 jobs:
+  # Gate: the desktop behavioural suite (Jest + RTL under jsdom) must pass
+  # before we build or publish anything. Runs on Linux — the renderer tests
+  # mock the Tauri bridge + @okto/ui, so no macOS toolchain is needed here.
+  # Mirrors cli.yml's test→build gate.
+  test:
+    name: Desktop tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      # npm workspaces: install from the repo root (single root lockfile installs
+      # all workspaces, hoisting deps to <root>/node_modules).
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Run desktop test suite
+        run: npm test -w desktop
+
   build:
     name: Build & release (Universal macOS)
+    needs: test
     runs-on: macos-26
     permissions:
       contents: write
