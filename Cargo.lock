@@ -2610,7 +2610,7 @@ dependencies = [
 
 [[package]]
 name = "lair"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3252,7 +3252,7 @@ dependencies = [
 
 [[package]]
 name = "okto"
-version = "0.6.11"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "clap",

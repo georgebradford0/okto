@@ -7,6 +7,8 @@ the git log.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-31
+
 ### Added
 - **`okto init --disable-push`.** Persists `OKTO_RELAY_URL=` (explicit empty)
   into `~/.okto/lair-env`, which silences push notifications end-to-end: lair

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-05-31
+
 ### Added
 - **Push notifications can now be disabled end-to-end** via `OKTO_RELAY_URL=`
   (empty) in the container env, typically set by `okto init --disable-push`.
