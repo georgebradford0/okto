@@ -16,12 +16,14 @@ Changes to the okto desktop (Tauri) app. Current version: see `package.json` /
   `cargo test -p okto-tests --test desktop`.
 
 ### Fixed
-- A child agent deleted elsewhere (e.g. from mobile) no longer leaves a ghost
-  chat behind. When lair's roster push omits an agent, the renderer now closes
-  its proxy socket, prunes its cached transcript, and falls back to the lair tab
-  if it was active — previously the deleted agent's chat lingered on screen
-  (absent from the sidebar) with the connection stuck on "Error", and the stale
-  cache re-appeared on the next launch.
+- A child agent or git worktree deleted elsewhere (e.g. from mobile) no longer
+  leaves a ghost chat behind. When lair's roster push omits an agent — or an
+  agent's worktree list drops a worktree — the renderer now closes its proxy
+  socket, prunes its cached transcript, and falls back to the parent tab (lair
+  for an agent, the agent for a worktree) if it was active. Previously the
+  deleted entity's chat lingered on screen (absent from the sidebar) with the
+  connection stuck on "Error", and the stale cache re-appeared on the next
+  launch.
 
 ## [0.4.3] - 2026-05-30
 

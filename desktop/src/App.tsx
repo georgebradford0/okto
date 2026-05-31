@@ -910,23 +910,19 @@ function App() {
     }
   }
 
-  // Reconcile every per-agent slot against an authoritative `agents` push.
-  // The poller rebuilds the list from the registry, so an agent that's been
-  // deleted (DELETE removes its row — e.g. from mobile while this app was
-  // closed) is simply absent; a merely-stopped agent stays in the list with a
-  // non-running status. So any child key whose agent name isn't in the list
-  // was deleted: close its (now-dead) proxy WS, drop its cached slots, and —
-  // if it was the active tab — fall back to lair. Without this the deleted
-  // agent's chat lingers on screen, stuck in 'error' as its proxied
-  // WS/history fail, and the stale cache re-persists for the next launch.
-  // Worktree keys (`<agent>::<wt>`) are pruned with their parent agent.
-  const reconcileAgainstAgents = (live: AgentInfo[]) => {
-    const liveNames = new Set(live.map(a => a.id))
-    const isDead = (key: string): boolean =>
-      key !== LAIR_ID && !liveNames.has(parseAgentKey(key).agent)
-
-    // Close + forget any child/worktree WS whose agent is gone, and tear down
-    // its per-agent refs so a later same-named agent can't inherit stale
+  // Tear down every per-agent slot whose key satisfies `isDead`, redirecting
+  // the active tab via `fallback(deadKey)` if it lands on one. Shared by the
+  // agent-roster reconcile (a deleted agent) and the worktree reconcile (a
+  // deleted worktree): both leave a chat keyed to a now-gone entity behind —
+  // its cached transcript, draft, conn status, tasks, etc. — which would
+  // otherwise linger on screen (stuck on 'error' as its proxied WS/history
+  // fail) and re-persist to localStorage for the next launch.
+  const dropDeadKeys = (
+    isDead:   (key: string) => boolean,
+    fallback: (deadKey: string) => string,
+  ) => {
+    // Close + forget any child/worktree WS that's dead, and tear down its
+    // per-agent refs so a later same-keyed entity can't inherit stale
     // streaming/timer state.
     for (const [key, ws] of childWsRefs.current) {
       if (!isDead(key)) continue
@@ -953,8 +949,8 @@ function App() {
       delete stopAckTimersRef.current[key]
     }
 
-    // If the active tab is a now-deleted agent, fall back to lair.
-    setActiveAgent(prev => isDead(prev) ? LAIR_ID : prev)
+    // If the active tab points at a now-dead key, redirect it.
+    setActiveAgent(prev => isDead(prev) ? fallback(prev) : prev)
 
     // Drop dead keys from every per-agent map so the cached chat can't linger
     // on screen or re-persist to localStorage.
@@ -972,6 +968,20 @@ function App() {
     setStopSentByAgent(pruneByKey)
     setModelByAgent(pruneByKey)
     setHistoryReady(pruneByKey)
+  }
+
+  // Reconcile every per-agent slot against an authoritative `agents` push.
+  // The poller rebuilds the list from the registry, so an agent that's been
+  // deleted (DELETE removes its row — e.g. from mobile while this app was
+  // closed) is simply absent; a merely-stopped agent stays in the list with a
+  // non-running status. So any child key whose agent name isn't in the list
+  // was deleted — drop it (and its worktree keys) and fall back to lair.
+  const reconcileAgainstAgents = (live: AgentInfo[]) => {
+    const liveNames = new Set(live.map(a => a.id))
+    // A bare agent name OR any `<agent>::<wt>` key under a vanished agent.
+    const isDead = (key: string): boolean =>
+      key !== LAIR_ID && !liveNames.has(parseAgentKey(key).agent)
+    dropDeadKeys(isDead, () => LAIR_ID)
 
     // Worktrees are keyed by bare agent name — prune by list membership.
     setWorktreesByAgent(prev => {
@@ -981,6 +991,21 @@ function App() {
       for (const k of dead) delete next[k]
       return next
     })
+  }
+
+  // Reconcile one agent's worktree chat slots against its authoritative
+  // GET /agents/:name/worktrees list. A worktree deleted on another client
+  // vanishes from that list but, like a deleted agent, leaves its
+  // `<agent>::<wt>` chat slot behind — drop it and fall back to the parent
+  // agent's tab if it was active. (The `worktreesByAgent[agentName]` list
+  // itself is already refreshed by the caller; this prunes the chat state.)
+  const reconcileWorktrees = (agentName: string, live: WorktreeMeta[]) => {
+    const liveIds = new Set(live.map(w => w.id))
+    const isDead = (key: string): boolean => {
+      const { agent, wt } = parseAgentKey(key)
+      return agent === agentName && wt != null && !liveIds.has(wt)
+    }
+    dropDeadKeys(isDead, () => agentName)
   }
 
   // The master WS is special: it always handles `agents` (which only lair
@@ -1216,6 +1241,9 @@ function App() {
       if (!res.ok) return
       const data = await res.json() as WorktreeMeta[]
       setWorktreesByAgent(prev => ({ ...prev, [agentName]: data }))
+      // Drop chat state for any worktree deleted on another client so it
+      // can't linger as a ghost (mirrors the agent-roster reconcile).
+      reconcileWorktrees(agentName, data)
     } catch { /* transient — next agents push retries */ }
   }
 

@@ -15,10 +15,13 @@ import {
   resetAll, connectMaster,
   screen, fireEvent, waitFor, act, wsFor,
 } from './helpers/render'
-import { FakeWebSocket } from './helpers/server'
+import { FakeWebSocket, onFetch } from './helpers/server'
 
 const agentsFrame = (agents: unknown[]) => ({ type: 'agents', agents })
 const alpha = { id: 'alpha', name: 'alpha', status: 'running', kind: 'local' }
+// Match only the worktree *list* endpoint, not `/worktrees/<id>/{stream,history}`.
+const worktreeList = (agentName: string) =>
+  (url: string) => url.endsWith(`/agents/${agentName}/worktrees`)
 
 beforeEach(() => resetAll())
 
@@ -50,4 +53,36 @@ test('a child deleted while active drops its chat and falls back to lair', async
   fireEvent.change(screen.getByTestId('composer-input'), { target: { value: 'back to lair' } })
   fireEvent.click(screen.getByTestId('composer-send'))
   expect(master.frames().at(-1)).toEqual({ type: 'user_message', text: 'back to lair' })
+})
+
+test('a worktree deleted elsewhere drops its chat and falls back to the agent', async () => {
+  const { ws: master } = await connectMaster()
+  const wt = { id: 'feat-x', branch: 'feat/x', path: '/w/feat-x', created_at: 0 }
+  onFetch(worktreeList('alpha'), () => [wt])
+  await act(async () => { master.mockServerEvent(agentsFrame([alpha])) })
+
+  // The worktree row appears under its agent; open it and stream content.
+  fireEvent.click(await screen.findByTestId('sidebar-row-alpha::feat-x'))
+  await waitFor(() => expect(wsFor('/agents/alpha/worktrees/feat-x/stream')).toBeTruthy())
+  const wtWs = wsFor('/agents/alpha/worktrees/feat-x/stream')!
+  await act(async () => {
+    wtWs.mockOpen()
+    wtWs.mockServerEvent({ type: 'ready', session_id: 'w1', resumed: false, model: 'sonnet' })
+    wtWs.mockServerEvent({ type: 'text', text: 'worktree says hi' })
+  })
+  expect(await screen.findByText('worktree says hi')).toBeInTheDocument()
+  // Header shows the worktree as the active tab.
+  expect(screen.queryAllByText('alpha / feat/x').length).toBeGreaterThan(0)
+
+  // Worktree deleted elsewhere — it vanishes from the agent's worktree list.
+  onFetch(worktreeList('alpha'), () => [])
+  await act(async () => { master.mockServerEvent(agentsFrame([alpha])) })
+
+  // The worktree row + cached transcript are gone, its socket is closed, and
+  // the active tab fell back to the parent agent — but the agent row survives.
+  await waitFor(() => expect(screen.queryByTestId('sidebar-row-alpha::feat-x')).not.toBeInTheDocument())
+  expect(screen.queryByText('worktree says hi')).not.toBeInTheDocument()
+  expect(wtWs.readyState).toBe(FakeWebSocket.CLOSED)
+  expect(screen.queryAllByText('alpha / feat/x')).toHaveLength(0)
+  expect(screen.getByTestId('sidebar-row-alpha')).toBeInTheDocument()
 })
