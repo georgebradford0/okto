@@ -2156,7 +2156,7 @@ function InputBar({
         )}
       </View>
       {model && (
-        <View marginTop={6} textAlign="right" fontSize={11} color="$typography400" title={model}>{model}</View>
+        <View marginTop={6} fontSize={11} color="$typography400" style={{ textAlign: 'right', paddingRight: 12 }} title={model}>{model}</View>
       )}
     </View>
   )
