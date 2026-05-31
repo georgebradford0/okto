@@ -1322,7 +1322,7 @@ function App() {
         title="Drag to resize sidebar"
       />
       <View flexDirection="column" minWidth={0} backgroundColor="$background0">
-        <View flexDirection="row" alignItems="center" gap={10} borderBottomWidth={1} borderColor="$outline100" paddingHorizontal={20} paddingVertical={12}>
+        <View flexDirection="row" alignItems="center" gap={10} borderBottomWidth={1} borderColor="$outline100" paddingHorizontal={20} paddingTop={30} paddingBottom={12}>
           <Text minWidth={0} flex={1} fontSize={16} fontWeight="600" color="$typography900">{activeLabel}</Text>
           <Touchable
             borderRadius={6} paddingHorizontal={10} paddingVertical={4} fontSize={12} fontWeight="500" color="$error600" hoverStyle={{ backgroundColor: '$error50' }}
@@ -1479,7 +1479,7 @@ function Sidebar({
   onDeleteWt: (agentName: string, wtId: string) => void
 }) {
   return (
-    <View flexDirection="column" borderRightWidth={1} borderColor="$outline100" backgroundColor="$background50" paddingHorizontal={10} paddingVertical={12}>
+    <View flexDirection="column" borderRightWidth={1} borderColor="$outline100" backgroundColor="$background50" paddingHorizontal={10} paddingTop={30} paddingBottom={12}>
       <View flexDirection="column" gap={2}>
         <AgentRow
           id={LAIR_ID}
@@ -1615,7 +1615,7 @@ function agentStatusKind(status: string): 'ready' | 'pending' | 'error' {
 
 // ── Background tasks ────────────────────────────────────────────────────────
 
-function TasksButton({ tasks, onClick }: { tasks: TaskRecord[]; onClick: () => void }) {
+function TasksButton({ tasks, onPress }: { tasks: TaskRecord[]; onPress: () => void }) {
   const running = tasks.filter(t => t.status === 'running').length
   return (
     <Touchable
@@ -1624,7 +1624,7 @@ function TasksButton({ tasks, onClick }: { tasks: TaskRecord[]; onClick: () => v
       backgroundColor={running > 0 ? '$primary50' : undefined}
       color={running > 0 ? '$primary700' : '$typography600'}
       hoverStyle={running > 0 ? undefined : { backgroundColor: '$background100' }}
-      onPress={onClick}
+      onPress={onPress}
       title="Background tasks"
     >
       <Text height={6} width={6} borderRadius={999} backgroundColor={running > 0 ? '$primary500' : '$typography300'} />
@@ -2110,7 +2110,7 @@ function InputBar({
           ))}
         </View>
       )}
-      <View alignItems="flex-end" gap={8}>
+      <View flexDirection="row" alignItems="flex-end" gap={8}>
         <textarea
           ref={taRef}
           style={{ maxHeight: 200, minHeight: 40, flex: 1, resize: 'none', borderRadius: 12, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: 'rgb(246,246,246)', paddingLeft: 14, paddingRight: 14, paddingTop: 10, paddingBottom: 10, fontSize: 14, color: 'rgb(30,41,59)', outline: 'none' }}
