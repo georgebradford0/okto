@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-05-31
+
+No functional change from 0.21.0. Republished to verify the release pipeline
+and to keep the lair image version cadenced with the CLI release that ships
+the `--ready-timeout` fix (okto 0.7.1).
+
 ## [0.21.0] - 2026-05-31
 
 ### Added

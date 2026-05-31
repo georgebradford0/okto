@@ -7,6 +7,8 @@ the git log.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-05-31
+
 ### Added
 - **`--ready-timeout <SECS>` on `okto init` and `okto reload`** to control
   how long the CLI waits for `/health` after `docker run` / `docker restart`.

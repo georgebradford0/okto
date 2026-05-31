@@ -186,15 +186,30 @@ enum Command {
         yes: bool,
     },
 
+    /// Print shell-completion script for the given shell (bash, zsh, fish,
+    /// elvish, powershell) to stdout. Source the output or write it to your
+    /// shell's completions dir to enable tab-completion for `okto` commands
+    /// and flags. `okto init` installs the right script automatically when it
+    /// can detect your shell.
     Completions {
         shell: Shell,
     },
 
+    /// Manage the MCP (Model Context Protocol) servers lair and its agents
+    /// load. Each server appears as a set of additional tools in the LLM's
+    /// tool list. Subcommands cover listing what's configured, adding/removing
+    /// servers, and importing a JSON config from disk. Defaults to lair;
+    /// pass `--agent <name>` on subcommands that support it to target a child
+    /// agent instead.
     Mcp {
         #[command(subcommand)]
         action: McpAction,
     },
 
+    /// Read or edit `~/.okto/config.json` — the operator credentials and
+    /// model settings lair uses (Anthropic / OpenAI API keys, model, optional
+    /// `api_url`, `system_prompt_append`). Lair re-reads the file on every
+    /// turn, so changes apply live without restarting the container.
     Config {
         #[command(subcommand)]
         action: ConfigAction,
