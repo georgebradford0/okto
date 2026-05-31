@@ -277,6 +277,16 @@ enum ConfigAction {
         /// `@<path>` to read from a file, or an empty string ("") to clear it.
         #[arg(long, value_name = "TEXT|@PATH")]
         system_prompt_append: Option<String>,
+        /// Input-token price in USD per 1M tokens for OpenAI-compatible
+        /// backends (config key `cost_input1M`). Set together with
+        /// `--cost-output1m` to get per-turn cost; pass a negative value to
+        /// clear. Ignored for Anthropic, which uses built-in pricing.
+        #[arg(long, value_name = "USD_PER_1M", allow_hyphen_values = true)]
+        cost_input1m: Option<f64>,
+        /// Output-token price in USD per 1M tokens for OpenAI-compatible
+        /// backends (config key `cost_output1M`). See `--cost-input1m`.
+        #[arg(long, value_name = "USD_PER_1M", allow_hyphen_values = true)]
+        cost_output1m: Option<f64>,
     },
 }
 
@@ -1042,6 +1052,8 @@ async fn main() -> Result<()> {
                     println!("openai_api_key:       {}", cfg.openai_api_key.as_deref().map(mask).unwrap_or_else(|| "(not set)".into()));
                     println!("model:                {}", cfg.model.as_deref().unwrap_or("(default)"));
                     println!("api_url:              {}", cfg.api_url.as_deref().unwrap_or("(Anthropic)"));
+                    println!("cost_input1M:         {}", cfg.cost_input_1m.map(|v| format!("${v}/1M")).unwrap_or_else(|| "(not set)".into()));
+                    println!("cost_output1M:        {}", cfg.cost_output_1m.map(|v| format!("${v}/1M")).unwrap_or_else(|| "(not set)".into()));
                     match cfg.system_prompt_append.as_deref() {
                         Some(text) => {
                             let preview: String = text.chars().take(80).collect();
@@ -1051,7 +1063,7 @@ async fn main() -> Result<()> {
                         None => println!("system_prompt_append: (not set)"),
                     }
                 }
-                ConfigAction::Set { model, api_url, anthropic_api_key, openai_api_key, system_prompt_append } => {
+                ConfigAction::Set { model, api_url, anthropic_api_key, openai_api_key, system_prompt_append, cost_input1m, cost_output1m } => {
                     let mut cfg = okto_core::read_config();
                     if anthropic_api_key.is_some() {
                         debug!("[cli] config set: updating anthropic_api_key");
@@ -1072,6 +1084,16 @@ async fn main() -> Result<()> {
                     if let Some(raw) = system_prompt_append {
                         debug!("[cli] config set: updating system_prompt_append");
                         cfg.system_prompt_append = resolve_text_or_at_path(&raw)?;
+                    }
+                    // A negative value clears the field (no natural "unset" for a
+                    // numeric flag, and a negative price is never valid anyway).
+                    if let Some(v) = cost_input1m {
+                        debug!("[cli] config set: updating cost_input1M");
+                        cfg.cost_input_1m = (v >= 0.0).then_some(v);
+                    }
+                    if let Some(v) = cost_output1m {
+                        debug!("[cli] config set: updating cost_output1M");
+                        cfg.cost_output_1m = (v >= 0.0).then_some(v);
                     }
                     okto_core::write_config(&cfg);
                     info!("[cli] config updated at {}", okto_core::config_path().display());

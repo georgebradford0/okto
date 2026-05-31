@@ -1,9 +1,15 @@
-//! A minimal Anthropic-compatible mock LLM server for e2e tests.
+//! A minimal mock LLM server for e2e tests.
 //!
-//! It speaks just enough of the `/v1/messages` streaming SSE protocol that
-//! `okto_core::stream_anthropic` parses (see `pop_sse_event` + the event match
-//! in `core/src/lib.rs`). Point lair at it with `ANTHROPIC_API_URL` and script
-//! the turns each request should return.
+//! It speaks just enough of the Anthropic `/v1/messages` and the
+//! OpenAI-compatible `/v1/chat/completions` streaming SSE protocols that
+//! `okto_core::stream_anthropic` / `stream_openai` parse (see `pop_sse_event`
+//! + the event matches in `core/src/lib.rs`). Point lair at the Anthropic
+//! endpoint with `ANTHROPIC_API_URL`, or the OpenAI one with `OPENAI_API_URL`,
+//! and script the turns each request should return.
+//!
+//! Both endpoints serve the same scripted [`Turn`] queue. The reported token
+//! usage is fixed (`input_tokens`/`prompt_tokens` = 1, `output_tokens`/
+//! `completion_tokens` = 5) so cost assertions are deterministic.
 
 use std::collections::VecDeque;
 use std::convert::Infallible;
@@ -39,6 +45,11 @@ impl Turn {
     }
 }
 
+/// Fixed token usage every scripted turn reports, on both backends. Tests use
+/// these to compute the expected cost deterministically.
+pub const MOCK_INPUT_TOKENS: u64 = 1;
+pub const MOCK_OUTPUT_TOKENS: u64 = 5;
+
 struct MockState {
     turns: Mutex<VecDeque<Turn>>,
     /// Every request body lair sent, in order — lets tests assert on what the
@@ -49,7 +60,7 @@ struct MockState {
 /// A running mock server. Drop it (or let the owning fixture drop) to stop.
 #[derive(Clone)]
 pub struct MockLlm {
-    url: String,
+    addr: String,
     state: Arc<MockState>,
 }
 
@@ -62,6 +73,7 @@ impl MockLlm {
         });
         let app = Router::new()
             .route("/v1/messages", post(handle))
+            .route("/v1/chat/completions", post(handle_openai))
             .with_state(state.clone());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -70,14 +82,20 @@ impl MockLlm {
             let _ = axum::serve(listener, app).await;
         });
         Ok(MockLlm {
-            url: format!("http://{addr}/v1/messages"),
+            addr: format!("http://{addr}"),
             state,
         })
     }
 
-    /// Full URL to pass to lair as `ANTHROPIC_API_URL`.
-    pub fn url(&self) -> &str {
-        &self.url
+    /// Full URL to pass to lair as `ANTHROPIC_API_URL` (Anthropic `/v1/messages`).
+    pub fn url(&self) -> String {
+        format!("{}/v1/messages", self.addr)
+    }
+
+    /// Full URL to pass to lair as `OPENAI_API_URL`
+    /// (OpenAI-compatible `/v1/chat/completions`).
+    pub fn openai_url(&self) -> String {
+        format!("{}/v1/chat/completions", self.addr)
     }
 
     /// Number of model calls lair has made so far.
@@ -121,7 +139,7 @@ fn sse_events(turn: Turn) -> Vec<Result<Event, Infallible>> {
         json!({
             "type": "message_start",
             "message": { "usage": {
-                "input_tokens": 1,
+                "input_tokens": MOCK_INPUT_TOKENS,
                 "output_tokens": 0,
                 "cache_creation_input_tokens": 0,
                 "cache_read_input_tokens": 0
@@ -145,7 +163,7 @@ fn sse_events(turn: Turn) -> Vec<Result<Event, Infallible>> {
             ));
             out.push(ev(
                 "message_delta",
-                json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}),
+                json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":MOCK_OUTPUT_TOKENS}}),
             ));
         }
         Turn::Tool { id, name, input } => {
@@ -164,11 +182,74 @@ fn sse_events(turn: Turn) -> Vec<Result<Event, Infallible>> {
             ));
             out.push(ev(
                 "message_delta",
-                json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}),
+                json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":MOCK_OUTPUT_TOKENS}}),
             ));
         }
     }
 
     out.push(ev("message_stop", json!({"type":"message_stop"})));
+    out
+}
+
+/// OpenAI-compatible `/v1/chat/completions` handler. Pops the same scripted
+/// turn queue and emits chat-completion SSE chunks that `stream_openai` parses.
+async fn handle_openai(
+    State(state): State<Arc<MockState>>,
+    Json(body): Json<Value>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    state.requests.lock().unwrap().push(body);
+    let turn = state
+        .turns
+        .lock()
+        .unwrap()
+        .pop_front()
+        .unwrap_or_else(|| Turn::Text("ok".to_string()));
+
+    Sse::new(stream::iter(openai_sse_events(turn)))
+}
+
+/// Build the ordered SSE chunks for one scripted turn in OpenAI chat-completions
+/// shape, mirroring what `stream_openai` decodes. The final chunk carries the
+/// `usage` block (lair sets `stream_options.include_usage`).
+fn openai_sse_events(turn: Turn) -> Vec<Result<Event, Infallible>> {
+    let mut out: Vec<Result<Event, Infallible>> = Vec::new();
+    // OpenAI chunks are unnamed `data:` lines (no SSE event name).
+    let ev = |data: Value| -> Result<Event, Infallible> {
+        Ok(Event::default().data(data.to_string()))
+    };
+
+    match turn {
+        Turn::Text(text) => {
+            out.push(ev(json!({
+                "choices": [{"index":0,"delta":{"content":text},"finish_reason":null}]
+            })));
+            out.push(ev(json!({
+                "choices": [{"index":0,"delta":{},"finish_reason":"stop"}]
+            })));
+        }
+        Turn::Tool { id, name, input } => {
+            out.push(ev(json!({
+                "choices": [{"index":0,"delta":{"tool_calls":[{
+                    "index":0,"id":id,
+                    "function":{"name":name,"arguments":input.to_string()}
+                }]},"finish_reason":null}]
+            })));
+            out.push(ev(json!({
+                "choices": [{"index":0,"delta":{},"finish_reason":"tool_calls"}]
+            })));
+        }
+    }
+
+    // Final usage-only chunk (choices empty), as OpenAI sends when
+    // include_usage is set.
+    out.push(ev(json!({
+        "choices": [],
+        "usage": {
+            "prompt_tokens": MOCK_INPUT_TOKENS,
+            "completion_tokens": MOCK_OUTPUT_TOKENS,
+            "total_tokens": MOCK_INPUT_TOKENS + MOCK_OUTPUT_TOKENS
+        }
+    })));
+    out.push(Ok(Event::default().data("[DONE]")));
     out
 }

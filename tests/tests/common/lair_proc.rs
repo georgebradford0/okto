@@ -83,8 +83,52 @@ impl LairProcess {
         turns: Vec<Turn>,
         env_overrides: &[(&str, &str)],
     ) -> anyhow::Result<LairProcess> {
+        let owned: Vec<(String, String)> = env_overrides
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        Self::spawn(turns, move |_mock| owned, None).await
+    }
+
+    /// Start lair pointed at the mock's OpenAI-compatible endpoint
+    /// (`/v1/chat/completions`) instead of the Anthropic one. Any provided
+    /// per-1M-token prices are written into `config.json` as `cost_input1M` /
+    /// `cost_output1M`; pass `None` to omit a field (exercising the 0.0
+    /// fallback). Used to exercise the OpenAI cost path offline.
+    pub async fn start_openai(
+        turns: Vec<Turn>,
+        cost_input_1m: Option<f64>,
+        cost_output_1m: Option<f64>,
+    ) -> anyhow::Result<LairProcess> {
+        let mut fields: Vec<String> = Vec::new();
+        if let Some(v) = cost_input_1m  { fields.push(format!(r#""cost_input1M":{v}"#)); }
+        if let Some(v) = cost_output_1m { fields.push(format!(r#""cost_output1M":{v}"#)); }
+        let config_json = format!("{{{}}}", fields.join(","));
+        Self::spawn(
+            turns,
+            |mock| {
+                vec![
+                    ("OPENAI_API_URL".to_string(), mock.openai_url()),
+                    ("OPENAI_API_KEY".to_string(), "test-key".to_string()),
+                ]
+            },
+            Some(config_json),
+        )
+        .await
+    }
+
+    /// Shared spawn path. `env_fn` computes env overrides (applied last, after
+    /// the harness defaults) and may reference the live mock — e.g. to point
+    /// `OPENAI_API_URL` at it. `config_json`, if present, is written to
+    /// `$OKTO_HOME/config.json` before launch.
+    async fn spawn(
+        turns: Vec<Turn>,
+        env_fn: impl FnOnce(&MockLlm) -> Vec<(String, String)>,
+        config_json: Option<String>,
+    ) -> anyhow::Result<LairProcess> {
         let bin = lair_binary().await;
         let mock = MockLlm::start(turns).await?;
+        let env_overrides = env_fn(&mock);
 
         let tempdir = tempfile::tempdir()?;
         let home = tempdir.path().to_path_buf();
@@ -92,6 +136,9 @@ impl LairProcess {
         let agents_dir = home.join("agents");
         std::fs::create_dir_all(&data_dir)?;
         std::fs::create_dir_all(&agents_dir)?;
+        if let Some(cfg) = &config_json {
+            std::fs::write(home.join("config.json"), cfg)?;
+        }
 
         let noise_port = free_port();
         let http_port = free_port();
@@ -126,8 +173,8 @@ impl LairProcess {
             .stderr(Stdio::from(log_err))
             .kill_on_drop(true);
         // Applied last so callers can override any of the above defaults.
-        for (k, v) in env_overrides {
-            cmd.env(*k, *v);
+        for (k, v) in &env_overrides {
+            cmd.env(k, v);
         }
         let child = cmd.spawn().context("spawn lair process")?;
 

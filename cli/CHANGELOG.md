@@ -7,6 +7,13 @@ the git log.
 
 ## [Unreleased]
 
+### Added
+- `okto config set --cost-input1m <USD> --cost-output1m <USD>` sets the
+  per-1M-token input/output prices (config keys `cost_input1M` /
+  `cost_output1M`) used to compute per-turn cost on OpenAI-compatible
+  backends. `okto config show` displays them; pass a negative value to clear
+  a rate. Anthropic ignores these and uses its built-in pricing.
+
 ## [0.7.1] - 2026-05-31
 
 ### Added

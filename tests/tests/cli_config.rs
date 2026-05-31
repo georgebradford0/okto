@@ -14,7 +14,35 @@ async fn show_on_a_fresh_home_reports_unset_defaults() {
     assert!(out.stdout.contains("openai_api_key:       (not set)"), "{}", out.stdout);
     assert!(out.stdout.contains("model:                (default)"), "{}", out.stdout);
     assert!(out.stdout.contains("api_url:              (Anthropic)"), "{}", out.stdout);
+    assert!(out.stdout.contains("cost_input1M:         (not set)"), "{}", out.stdout);
+    assert!(out.stdout.contains("cost_output1M:        (not set)"), "{}", out.stdout);
     assert!(out.stdout.contains("system_prompt_append: (not set)"), "{}", out.stdout);
+}
+
+#[tokio::test]
+async fn set_cost_rates_persist_and_clear() {
+    let cli = OktoCli::new();
+
+    cli.run(&["config", "set", "--cost-input1m", "2.5", "--cost-output1m", "10"])
+        .await
+        .assert_ok();
+
+    // Persisted to disk under the serde-renamed JSON keys.
+    let on_disk = cli.read(".okto/config.json");
+    assert!(on_disk.contains("cost_input1M"), "config.json should hold cost_input1M: {on_disk}");
+    assert!(on_disk.contains("cost_output1M"), "config.json should hold cost_output1M: {on_disk}");
+
+    let show = cli.run(&["config", "show"]).await;
+    show.assert_ok();
+    assert!(show.stdout.contains("cost_input1M:         $2.5/1M"), "{}", show.stdout);
+    assert!(show.stdout.contains("cost_output1M:        $10/1M"), "{}", show.stdout);
+
+    // A negative value clears a rate (no other unset mechanism for a number).
+    cli.run(&["config", "set", "--cost-input1m", "-1"]).await.assert_ok();
+    let cleared = cli.run(&["config", "show"]).await;
+    assert!(cleared.stdout.contains("cost_input1M:         (not set)"), "{}", cleared.stdout);
+    // The output rate set earlier is untouched.
+    assert!(cleared.stdout.contains("cost_output1M:        $10/1M"), "{}", cleared.stdout);
 }
 
 #[tokio::test]

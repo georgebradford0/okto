@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+- **Cost reporting for OpenAI-compatible backends.** Optional
+  `cost_input1M` / `cost_output1M` fields in `~/.okto/config.json` set the
+  USD price per 1M input/output tokens. When both are present, per-turn cost
+  for the OpenAI-compatible path is computed from these rates (re-read each
+  turn, so edits take effect without a restart); when either is absent it
+  stays 0.0, the prior behavior. Anthropic continues to use its built-in
+  pricing and ignores these fields.
+
 ## [0.21.1] - 2026-05-31
 
 No functional change from 0.21.0. Republished to verify the release pipeline

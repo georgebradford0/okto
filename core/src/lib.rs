@@ -136,6 +136,17 @@ pub struct Config {
     /// Re-read on every turn, so edits take effect without restarting the
     /// container.
     pub system_prompt_append: Option<String>,
+    /// Optional input-token price (USD per 1M tokens) for OpenAI-compatible
+    /// backends, whose pricing isn't known to lair. When set (together with
+    /// `cost_output1M`), per-turn cost for the OpenAI path is computed from
+    /// these rates; otherwise it falls back to 0.0. Ignored for Anthropic,
+    /// which uses its built-in pricing.
+    #[serde(rename = "cost_input1M")]
+    pub cost_input_1m:  Option<f64>,
+    /// Optional output-token price (USD per 1M tokens) for OpenAI-compatible
+    /// backends. See `cost_input1M`.
+    #[serde(rename = "cost_output1M")]
+    pub cost_output_1m: Option<f64>,
 }
 
 /// Resolved spawn-cap pair (depth, descendants). Reads `Config`; supplies
@@ -498,6 +509,18 @@ pub fn cost_usd(
         + cache_creation_input_tokens as f64 * input_rate * 1.25
         + cache_read_input_tokens as f64 * input_rate * 0.10)
         / 1_000_000.0
+}
+
+/// Cost for OpenAI-compatible backends. Their pricing isn't known to lair, so
+/// it's driven by the operator-supplied `cost_input1M` / `cost_output1M`
+/// config fields (USD per 1M tokens). Returns 0.0 unless **both** are set.
+pub fn openai_cost_usd(cfg: &Config, input_tokens: u64, output_tokens: u64) -> f64 {
+    match (cfg.cost_input_1m, cfg.cost_output_1m) {
+        (Some(in_rate), Some(out_rate)) => {
+            (input_tokens as f64 * in_rate + output_tokens as f64 * out_rate) / 1_000_000.0
+        }
+        _ => 0.0,
+    }
 }
 
 // ── Tool Definitions ──────────────────────────────────────────────────────────
@@ -1474,14 +1497,18 @@ pub async fn send_message(
             }
         };
 
-        // Anthropic has fixed per-token pricing; OpenAI-compatible backends don't.
+        // Anthropic has fixed per-token pricing; OpenAI-compatible backends
+        // don't, so they fall back to the operator-supplied cost_input1M /
+        // cost_output1M rates (0.0 unless both are set).
         total_cost += match &backend {
             ApiBackend::Anthropic => cost_usd(
                 model,
                 usage.input_tokens, usage.output_tokens,
                 usage.cache_creation_input_tokens, usage.cache_read_input_tokens,
             ),
-            ApiBackend::OpenAi { .. } => 0.0,
+            ApiBackend::OpenAi { .. } => {
+                openai_cost_usd(&read_config(), usage.input_tokens, usage.output_tokens)
+            }
         };
         info!("[core/send_message] turn={turn} stop_reason={stop_reason} cost=${total_cost:.4}");
 
