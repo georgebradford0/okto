@@ -910,12 +910,88 @@ function App() {
     }
   }
 
+  // Reconcile every per-agent slot against an authoritative `agents` push.
+  // The poller rebuilds the list from the registry, so an agent that's been
+  // deleted (DELETE removes its row — e.g. from mobile while this app was
+  // closed) is simply absent; a merely-stopped agent stays in the list with a
+  // non-running status. So any child key whose agent name isn't in the list
+  // was deleted: close its (now-dead) proxy WS, drop its cached slots, and —
+  // if it was the active tab — fall back to lair. Without this the deleted
+  // agent's chat lingers on screen, stuck in 'error' as its proxied
+  // WS/history fail, and the stale cache re-persists for the next launch.
+  // Worktree keys (`<agent>::<wt>`) are pruned with their parent agent.
+  const reconcileAgainstAgents = (live: AgentInfo[]) => {
+    const liveNames = new Set(live.map(a => a.id))
+    const isDead = (key: string): boolean =>
+      key !== LAIR_ID && !liveNames.has(parseAgentKey(key).agent)
+
+    // Close + forget any child/worktree WS whose agent is gone, and tear down
+    // its per-agent refs so a later same-named agent can't inherit stale
+    // streaming/timer state.
+    for (const [key, ws] of childWsRefs.current) {
+      if (!isDead(key)) continue
+      try { ws.close() } catch { /* already closing */ }
+      childWsRefs.current.delete(key)
+    }
+    for (const key of new Set([
+      ...Object.keys(historyAbortRef.current),
+      ...Object.keys(historyStaggerRef.current),
+      ...Object.keys(streamingIdRef.current),
+      ...Object.keys(stopAckTimersRef.current),
+    ])) {
+      if (!isDead(key)) continue
+      try { historyAbortRef.current[key]?.abort() } catch {}
+      delete historyAbortRef.current[key]
+      const stagger = historyStaggerRef.current[key]
+      if (stagger?.timer) clearTimeout(stagger.timer)
+      delete historyStaggerRef.current[key]
+      delete replayingRef.current[key]
+      delete streamingIdRef.current[key]
+      delete hasAssistantRef.current[key]
+      const t = stopAckTimersRef.current[key]
+      if (t) clearTimeout(t)
+      delete stopAckTimersRef.current[key]
+    }
+
+    // If the active tab is a now-deleted agent, fall back to lair.
+    setActiveAgent(prev => isDead(prev) ? LAIR_ID : prev)
+
+    // Drop dead keys from every per-agent map so the cached chat can't linger
+    // on screen or re-persist to localStorage.
+    const pruneByKey = <T,>(m: Record<string, T>): Record<string, T> => {
+      const dead = Object.keys(m).filter(isDead)
+      if (dead.length === 0) return m
+      const next = { ...m }
+      for (const k of dead) delete next[k]
+      return next
+    }
+    setItemsByAgent(pruneByKey)
+    setDraftByAgent(pruneByKey)
+    setConnStatusByAgent(pruneByKey)
+    setTasksByAgent(pruneByKey)
+    setStopSentByAgent(pruneByKey)
+    setModelByAgent(pruneByKey)
+    setHistoryReady(pruneByKey)
+
+    // Worktrees are keyed by bare agent name — prune by list membership.
+    setWorktreesByAgent(prev => {
+      const dead = Object.keys(prev).filter(name => !liveNames.has(name))
+      if (dead.length === 0) return prev
+      const next = { ...prev }
+      for (const k of dead) delete next[k]
+      return next
+    })
+  }
+
   // The master WS is special: it always handles `agents` (which only lair
   // emits) regardless of which tab is visible. Its chat events feed lair's
   // slot. Children never push `agents`, so their handler is plain applyChatEvent.
   const handleMasterEvent = (ev: ServerEvent) => {
     if (ev.type === 'agents') {
       setAgents(ev.agents)
+      // Drop any local state for agents deleted elsewhere before they can
+      // linger as a ghost chat (see reconcileAgainstAgents).
+      reconcileAgainstAgents(ev.agents)
       // Refresh each agent's worktree list so the sidebar nesting stays current
       // (new agents, or worktrees added from another client).
       for (const a of ev.agents) void fetchWorktrees(a.id)
