@@ -1437,7 +1437,7 @@ function ConnectScreen({
           Paste the session QR payload printed by lair on startup.
         </Text>
         <textarea
-          className="mt-5 h-24 w-full resize-none rounded-lg border border-outline-200 bg-background-50 px-3.5 py-3 font-mono text-sm text-typography-800 outline-none transition focus:border-primary-500 focus:bg-background-0"
+          style={{ marginTop: 20, height: 96, width: '100%', resize: 'none', borderRadius: 8, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: 'rgb(246,246,246)', paddingLeft: 14, paddingRight: 14, paddingTop: 12, paddingBottom: 12, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 14, color: 'rgb(30,41,59)', outline: 'none' }}
           value={qrInput}
           onChange={(e) => setQrInput(e.currentTarget.value)}
           onKeyDown={onKey}
@@ -1525,7 +1525,7 @@ function Sidebar({
               {creatingWtFor === a.id && (
                 <View paddingHorizontal={8} paddingVertical={4}>
                   <input
-                    className="w-full rounded-md border border-outline-200 bg-background-0 px-2 py-1 text-xs text-typography-800 outline-none focus:border-primary-500"
+                    style={{ width: '100%', borderRadius: 6, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: '#fff', paddingLeft: 8, paddingRight: 8, paddingTop: 4, paddingBottom: 4, fontSize: 12, color: 'rgb(30,41,59)', outline: 'none' }}
                     autoFocus
                     placeholder="new branch name…"
                     value={newBranchDraft}
@@ -1547,10 +1547,10 @@ function Sidebar({
 }
 
 // Status dot color by kind — shared by the sidebar rows.
-const DOT_CLASS: Record<'ready' | 'pending' | 'error', string> = {
-  ready:   'bg-success-500',
-  pending: 'bg-warning-500',
-  error:   'bg-error-500',
+const DOT_CLASS: Record<'ready' | 'pending' | 'error', object> = {
+  ready:   { backgroundColor: '$success500' },
+  pending: { backgroundColor: '$warning500' },
+  error:   { backgroundColor: '$error500' },
 }
 
 function AgentRow({
@@ -1570,12 +1570,15 @@ function AgentRow({
   return (
     <View>
       <Touchable
-        className={`group flex w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left text-sm transition ${
-          active ? 'bg-primary-50 font-medium text-primary-800' : 'text-typography-700 hover:bg-background-100'
-        } ${worktree ? 'pl-5' : 'pl-2'}`}
+        flexDirection="row" width="100%" alignItems="center" gap={8} borderRadius={6} paddingVertical={6} paddingRight={8} textAlign="left" fontSize={14}
+        backgroundColor={active ? '$primary50' : undefined}
+        fontWeight={active ? '500' : undefined}
+        color={active ? '$primary800' : '$typography700'}
+        hoverStyle={active ? undefined : { backgroundColor: '$background100' }}
+        paddingLeft={worktree ? 20 : 8}
         onPress={() => onSelect(id)}
       >
-        <Text className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT_CLASS[statusKind]}`} />
+        <Text height={6} width={6} flexShrink={0} borderRadius={999} {...DOT_CLASS[statusKind]} />
         <Text minWidth={0} flex={1}>
           {worktree && <Text color="$typography400">⌥&nbsp;</Text>}
           {name}
@@ -1590,7 +1593,7 @@ function AgentRow({
           )}
           {onDelete && (
             <Text
-              className="rounded px-1 text-typography-400 opacity-0 transition hover:text-error-600 group-hover:opacity-100"
+              borderRadius={6} paddingHorizontal={4} color="$typography400" hoverStyle={{ color: '$error600' }}
               title="Delete worktree (and its branch)"
               onPress={(e) => { e.stopPropagation(); onDelete() }}
             >✕</Text>
@@ -1616,15 +1619,15 @@ function TasksButton({ tasks, onClick }: { tasks: TaskRecord[]; onClick: () => v
   const running = tasks.filter(t => t.status === 'running').length
   return (
     <Touchable
-      className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition ${
-        running > 0
-          ? 'border-primary-200 bg-primary-50 text-primary-700'
-          : 'border-outline-200 text-typography-600 hover:bg-background-100'
-      }`}
+      flexDirection="row" alignItems="center" gap={6} borderRadius={6} borderWidth={1} paddingHorizontal={10} paddingVertical={4} fontSize={12} fontWeight="500"
+      borderColor={running > 0 ? '$primary200' : '$outline200'}
+      backgroundColor={running > 0 ? '$primary50' : undefined}
+      color={running > 0 ? '$primary700' : '$typography600'}
+      hoverStyle={running > 0 ? undefined : { backgroundColor: '$background100' }}
       onPress={onClick}
       title="Background tasks"
     >
-      <Text className={`h-1.5 w-1.5 rounded-full ${running > 0 ? 'bg-primary-500' : 'bg-typography-300'}`} />
+      <Text height={6} width={6} borderRadius={999} backgroundColor={running > 0 ? '$primary500' : '$typography300'} />
       {running > 0 ? `Tasks · ${running}` : 'Tasks'}
     </Touchable>
   )
@@ -1712,11 +1715,11 @@ function TasksDrawer({
   return (
     <>
       <View
-        className={`fixed inset-0 z-40 bg-typography-950/20 transition-opacity duration-200 ${visible ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+        position="absolute" top={0} right={0} bottom={0} left={0} zIndex={40} backgroundColor="rgba(2,6,23,0.2)" opacity={visible ? 1 : 0} pointerEvents={visible ? 'auto' : 'none'}
         onPress={onClose}
       />
       <View
-        className={`fixed right-0 top-0 z-50 flex h-screen w-[380px] flex-col border-l border-outline-100 bg-background-0 shadow-soft-3 transition-transform duration-200 ${visible ? 'translate-x-0' : 'translate-x-full'}`}
+        position="absolute" right={0} top={0} zIndex={50} height="100%" width={380} flexDirection="column" borderLeftWidth={1} borderColor="$outline100" backgroundColor="$background0" x={visible ? 0 : 380}
         aria-hidden={!visible}
       >
         <View alignItems="flex-start" justifyContent="space-between" borderBottomWidth={1} borderColor="$outline100" paddingHorizontal={20} paddingVertical={16}>
@@ -1761,8 +1764,8 @@ function TaskRow({
   return (
     <View borderRadius={8} borderWidth={1} borderColor="$outline100" backgroundColor="$background50" padding={12}>
       <View alignItems="center" gap={8}>
-        <Text className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${TASK_TAG_CLASS[statusKind]}`}>
-          <Text className={`h-1.5 w-1.5 rounded-full ${TASK_DOT_CLASS[statusKind]}`} />
+        <Text flexDirection="row" alignItems="center" gap={6} borderRadius={999} paddingHorizontal={8} paddingVertical={2} fontSize={10} fontWeight="600" textTransform="uppercase" {...TASK_TAG_CLASS[statusKind]}>
+          <Text height={6} width={6} borderRadius={999} {...TASK_DOT_CLASS[statusKind]} />
           <Text>{task.status.toUpperCase()}</Text>
         </Text>
         {task.wake_interval_secs != null && (
@@ -1784,9 +1787,9 @@ function TaskRow({
         onPress={() => setExpanded(v => !v)}
         title={expanded ? 'Collapse' : 'Expand'}
       >
-        <View className={`font-mono text-xs text-typography-800 ${expanded ? '' : 'line-clamp-2'}`}>{task.command}</View>
+        <View fontFamily="$mono" fontSize={12} color="$typography800">{task.command}</View>
         {task.summary && task.summary.length > 0 && (
-          <View className={`mt-1 text-xs text-typography-500 ${expanded ? '' : 'line-clamp-2'}`}>{task.summary}</View>
+          <View marginTop={4} fontSize={12} color="$typography500">{task.summary}</View>
         )}
         {task.cost_usd != null && task.cost_usd > 0 && (
           <View marginTop={4} fontSize={11} color="$typography400">{formatCost(task.cost_usd)}</View>
@@ -1797,17 +1800,17 @@ function TaskRow({
 }
 
 // Background-task status tag/dot palette.
-const TASK_TAG_CLASS: Record<'running' | 'done' | 'cancelled' | 'error', string> = {
-  running:   'bg-primary-50 text-primary-700',
-  done:      'bg-success-50 text-success-700',
-  cancelled: 'bg-background-100 text-typography-500',
-  error:     'bg-error-50 text-error-700',
+const TASK_TAG_CLASS: Record<'running' | 'done' | 'cancelled' | 'error', object> = {
+  running:   { backgroundColor: '$primary50', color: '$primary700' },
+  done:      { backgroundColor: '$success50', color: '$success700' },
+  cancelled: { backgroundColor: '$background100', color: '$typography500' },
+  error:     { backgroundColor: '$error50', color: '$error700' },
 }
-const TASK_DOT_CLASS: Record<'running' | 'done' | 'cancelled' | 'error', string> = {
-  running:   'bg-primary-500',
-  done:      'bg-success-500',
-  cancelled: 'bg-typography-300',
-  error:     'bg-error-500',
+const TASK_DOT_CLASS: Record<'running' | 'done' | 'cancelled' | 'error', object> = {
+  running:   { backgroundColor: '$primary500' },
+  done:      { backgroundColor: '$success500' },
+  cancelled: { backgroundColor: '$typography300' },
+  error:     { backgroundColor: '$error500' },
 }
 
 function taskStatusKind(status: TaskRecord['status']): 'running' | 'done' | 'cancelled' | 'error' {
@@ -1829,17 +1832,17 @@ function formatCost(usd: number): string {
   return usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`
 }
 
-const STATUS_PILL_CLASS: Record<ConnStatus, string> = {
-  ready:     'bg-success-50 text-success-700',
-  streaming: 'bg-primary-50 text-primary-700',
-  error:     'bg-error-50 text-error-700',
-  pending:   'bg-warning-50 text-warning-700',
+const STATUS_PILL_CLASS: Record<ConnStatus, object> = {
+  ready:     { backgroundColor: '$success50', color: '$success700' },
+  streaming: { backgroundColor: '$primary50', color: '$primary700' },
+  error:     { backgroundColor: '$error50', color: '$error700' },
+  pending:   { backgroundColor: '$warning50', color: '$warning700' },
 }
-const STATUS_DOT_CLASS: Record<ConnStatus, string> = {
-  ready:     'bg-success-500',
-  streaming: 'bg-primary-500',
-  error:     'bg-error-500',
-  pending:   'bg-warning-500',
+const STATUS_DOT_CLASS: Record<ConnStatus, object> = {
+  ready:     { backgroundColor: '$success500' },
+  streaming: { backgroundColor: '$primary500' },
+  error:     { backgroundColor: '$error500' },
+  pending:   { backgroundColor: '$warning500' },
 }
 
 function StatusPill({ status }: { status: ConnStatus }) {
@@ -1850,8 +1853,8 @@ function StatusPill({ status }: { status: ConnStatus }) {
     return 'Connecting'
   }, [status])
   return (
-    <Text className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${STATUS_PILL_CLASS[status]}`}>
-      <Text className={`h-1.5 w-1.5 rounded-full ${STATUS_DOT_CLASS[status]}`} />
+    <Text flexDirection="row" alignItems="center" gap={6} borderRadius={999} paddingHorizontal={8} paddingVertical={2} fontSize={11} fontWeight="500" {...STATUS_PILL_CLASS[status]}>
+      <Text height={6} width={6} borderRadius={999} {...STATUS_DOT_CLASS[status]} />
       <Text>{label}</Text>
     </Text>
   )
@@ -1919,9 +1922,9 @@ function ToolRow({ item }: { item: Message }) {
   const hasOutput = item.output != null && item.output.length > 0
   return (
     <View marginBottom={8}>
-      <View className={`overflow-hidden rounded-lg border border-outline-100 border-l-2 ${
-        item.running ? 'border-l-primary-500 bg-primary-50/40' : 'border-l-outline-300 bg-background-50'
-      }`}>
+      <View overflow="hidden" borderRadius={8} borderWidth={1} borderColor="$outline100" borderLeftWidth={2}
+        borderLeftColor={item.running ? '$primary500' : '$outline300'}
+        backgroundColor={item.running ? 'rgba(240,253,250,0.4)' : '$background50'}>
         <Touchable
           type="button"
           width="100%" alignItems="center" gap={8} paddingHorizontal={12} paddingVertical={8} textAlign="left"
@@ -1933,7 +1936,7 @@ function ToolRow({ item }: { item: Message }) {
           {!item.running && item.output === undefined && <Text height={6} width={6} flexShrink={0} borderRadius={999} backgroundColor="$typography300" />}
           <Text minWidth={0} flex={1} fontFamily="$mono" fontSize={12} color="$typography700">{item.text}</Text>
           {hasOutput && (
-            <Text className={`shrink-0 text-typography-400 transition-transform ${expanded ? 'rotate-90' : ''}`} aria-hidden="true">▸</Text>
+            <Text flexShrink={0} color="$typography400" rotate={expanded ? '90deg' : '0deg'} aria-hidden="true">▸</Text>
           )}
         </Touchable>
         {expanded && hasOutput && (
@@ -2098,7 +2101,7 @@ function InputBar({
           {completions.map((c, i) => (
             <View
               key={c}
-              className={`cursor-pointer px-3 py-1.5 font-mono text-xs ${i === selectedIdx ? 'bg-primary-50 text-primary-800' : 'text-typography-700 hover:bg-background-100'}`}
+              cursor="pointer" paddingHorizontal={12} paddingVertical={6} fontFamily="$mono" fontSize={12} backgroundColor={i === selectedIdx ? '$primary50' : undefined} color={i === selectedIdx ? '$primary800' : '$typography700'} hoverStyle={i === selectedIdx ? undefined : { backgroundColor: '$background100' }}
               onMouseDown={(e) => { e.preventDefault(); applyCompletion(c) }}
               onMouseEnter={() => setSelectedIdx(i)}
             >
@@ -2110,7 +2113,7 @@ function InputBar({
       <View alignItems="flex-end" gap={8}>
         <textarea
           ref={taRef}
-          className="max-h-[200px] min-h-[40px] flex-1 resize-none rounded-xl border border-outline-200 bg-background-50 px-3.5 py-2.5 text-sm text-typography-800 outline-none transition placeholder:text-typography-400 focus:border-primary-500 focus:bg-background-0"
+          style={{ maxHeight: 200, minHeight: 40, flex: 1, resize: 'none', borderRadius: 12, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: 'rgb(246,246,246)', paddingLeft: 14, paddingRight: 14, paddingTop: 10, paddingBottom: 10, fontSize: 14, color: 'rgb(30,41,59)', outline: 'none' }}
           value={draft}
           onChange={(e) => setDraft(e.currentTarget.value)}
           onKeyDown={onKey}
@@ -2127,11 +2130,11 @@ function InputBar({
               <Spinner
                 color="#0d9488"
                 size={44}
-                className="pointer-events-none absolute -inset-1"
+                pointerEvents="none" position="absolute" top={-4} left={-4} right={-4} bottom={-4}
               />
             )}
             <Touchable
-              className={`flex h-9 w-9 items-center justify-center rounded-full bg-error-500 transition hover:bg-error-600 disabled:cursor-not-allowed ${stopSent ? 'opacity-50' : ''}`}
+              flexDirection="row" height={36} width={36} alignItems="center" justifyContent="center" borderRadius={999} backgroundColor="$error500" hoverStyle={{ backgroundColor: '$error600' }} opacity={stopSent ? 0.5 : 1}
               onPress={onInterrupt}
               disabled={stopSent}
               title={stopSent ? 'Interrupt sent…' : 'Interrupt'}
@@ -2141,7 +2144,7 @@ function InputBar({
           </View>
         ) : (
           <Touchable
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-500 text-sm text-typography-0 transition hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-40"
+            flexDirection="row" height={36} width={36} flexShrink={0} alignItems="center" justifyContent="center" borderRadius={999} backgroundColor="$primary500" fontSize={14} color="$typography0" hoverStyle={{ backgroundColor: '$primary600' }}
             onPress={onSend}
             disabled={!draft.trim()}
             title="Send"
@@ -2151,7 +2154,7 @@ function InputBar({
         )}
       </View>
       {model && (
-        <View className="mt-1.5 text-right text-[11px] text-typography-400" title={model}>{model}</View>
+        <View marginTop={6} textAlign="right" fontSize={11} color="$typography400" title={model}>{model}</View>
       )}
     </View>
   )
