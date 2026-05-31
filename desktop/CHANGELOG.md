@@ -5,6 +5,8 @@ Changes to the okto desktop (Tauri) app. Current version: see `package.json` /
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-05-31
+
 ### Added
 - End-to-end test suites for the desktop app. A jsdom + Jest behavioural suite
   (`desktop/__tests__/`, driven by `@testing-library/react`) renders the real
