@@ -72,6 +72,17 @@ impl LairProcess {
     /// Start lair with the given scripted model turns. Waits until `/health`
     /// answers over the Noise tunnel.
     pub async fn start(turns: Vec<Turn>) -> anyhow::Result<LairProcess> {
+        Self::start_with_env(turns, &[]).await
+    }
+
+    /// Like [`Self::start`] but with extra env vars applied after the harness
+    /// defaults — so callers can override e.g. `OKTO_RELAY_URL` (set to `""`
+    /// to mimic `okto init --disable-push`). Each entry is `(key, value)` and
+    /// shadows any default of the same name.
+    pub async fn start_with_env(
+        turns: Vec<Turn>,
+        env_overrides: &[(&str, &str)],
+    ) -> anyhow::Result<LairProcess> {
         let bin = lair_binary().await;
         let mock = MockLlm::start(turns).await?;
 
@@ -88,8 +99,8 @@ impl LairProcess {
         let log = std::fs::File::create(&log_path)?;
         let log_err = log.try_clone()?;
 
-        let child = tokio::process::Command::new(&bin)
-            .arg("--role")
+        let mut cmd = tokio::process::Command::new(&bin);
+        cmd.arg("--role")
             .arg("lair")
             // Dev keypair → the test client knows the server's static pubkey,
             // and dev mode keeps public-host resolution offline.
@@ -113,9 +124,12 @@ impl LairProcess {
             .env_remove("OPENAI_API_KEY")
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err))
-            .kill_on_drop(true)
-            .spawn()
-            .context("spawn lair process")?;
+            .kill_on_drop(true);
+        // Applied last so callers can override any of the above defaults.
+        for (k, v) in env_overrides {
+            cmd.env(*k, *v);
+        }
+        let child = cmd.spawn().context("spawn lair process")?;
 
         let mut lair = LairProcess {
             noise_port,
