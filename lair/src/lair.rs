@@ -3135,7 +3135,10 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
     let pubkey_b32 = to_base32(&static_public);
     let noise_port: u16  = std::env::var("NOISE_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(9000);
     let public_port: u16 = std::env::var("PUBLIC_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(noise_port);
-    let http_port:  u16  = 8000;
+    // Loopback-only HTTP port the Noise proxy forwards to. Hardcoded to 8000 in
+    // prod; overridable via OKTO_HTTP_PORT so e2e tests can run several lair
+    // processes in parallel without colliding on 8000.
+    let http_port:  u16  = std::env::var("OKTO_HTTP_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(8000);
     let public_host = crate::bootstrap::resolve_public_host("lair").await?;
     crate::bootstrap::run_bootstrap_script("lair").await?;
 

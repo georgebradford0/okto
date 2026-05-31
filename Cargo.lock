@@ -3321,9 +3321,14 @@ name = "okto-tests"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "axum",
+ "futures-util",
  "okto-core",
+ "serde_json",
  "snow",
+ "tempfile",
  "tokio",
+ "tokio-tungstenite 0.21.0",
 ]
 
 [[package]]

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+- **End-to-end test suite for the lair binary** (`tests/` crate). Spawns the real `lair --role lair` process on a temp data dir with ephemeral ports, drives it over the Noise tunnel exactly like the mobile client, and asserts streamed `ChatEvent` frames + on-disk state — with an in-process Anthropic-SSE mock LLM, so the tests are fully offline (no API spend, no Docker). Covers boot/transport, a full chat turn, history persistence, `/clear`, mid-turn interrupt, and real `bash`-tool execution. Run with `cargo test -p okto-tests`.
+
+### Changed
+- **`OKTO_HTTP_PORT` env override** for lair's loopback HTTP port (still defaults to 8000). Lets multiple lair processes run side by side; used by the e2e suite for port isolation.
+- **`ANTHROPIC_API_URL` env override** (in `okto-core`) for the Anthropic `/v1/messages` endpoint (defaults to the real API). Lets the e2e suite point the production request path at a mock server.
+- **Tool results now stream to clients.** The live chat loop (`okto_core::send_message`) now emits a `tool_result` frame after each tool finishes, matching the wire schema desktop/mobile already implement. Previously only the (unused) startup loop did this, so the desktop UI had to infer tool completion from `done`/`interrupted`; per-tool "running" state now clears correctly.
+
+### Removed
+- **Consolidated the duplicated agentic-loop code in `okto-core`.** There were three copies of the Anthropic request-building/streaming logic (`call_turn`, `send_message`, and the dead `run_agentic_loop`/`run_startup_prompt` chain) — the duplication had already caused one bug (a missed `ANTHROPIC_API_URL` redirect). `send_message` now builds each turn through the single shared `call_turn`, and the unused `run_agentic_loop`, `run_startup_prompt`, and `Session` struct were deleted. No behavior change to the live path beyond the `tool_result` streaming above.
+
 ## [0.20.0] - 2026-05-30
 
 ### Added

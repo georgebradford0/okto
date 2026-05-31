@@ -4,7 +4,12 @@ version = "0.0.1"
 edition = "2021"
 
 [dev-dependencies]
-okto-core = { path = "../core" }
-snow           = "0.9"
-tokio          = { version = "1", features = ["full"] }
-anyhow         = "1.0"
+okto-core         = { path = "../core" }
+snow              = "0.9"
+tokio             = { version = "1", features = ["full"] }
+anyhow            = "1.0"
+axum              = { version = "0.7", features = ["json"] }
+tokio-tungstenite = "0.21"
+futures-util      = "0.3"
+serde_json        = "1.0"
+tempfile          = "3"

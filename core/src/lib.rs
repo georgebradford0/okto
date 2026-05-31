@@ -2,7 +2,7 @@ use std::{
     fs,
     io::{BufRead, BufReader},
     path::PathBuf,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, OnceLock},
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -157,6 +157,14 @@ pub enum ApiBackend {
     OpenAi { api_url: String },
 }
 
+/// Anthropic `/v1/messages` endpoint. Overridable via `ANTHROPIC_API_URL` so
+/// e2e tests can point the production Anthropic code path at a local mock
+/// server; defaults to the real API in every normal run.
+pub fn anthropic_url() -> String {
+    std::env::var("ANTHROPIC_API_URL").ok().filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "https://api.anthropic.com/v1/messages".to_string())
+}
+
 impl ApiBackend {
     /// Resolve the backend from environment then config.
     /// `OPENAI_API_URL` env var or `config.api_url` → OpenAI-compatible.
@@ -244,18 +252,6 @@ pub fn read_key_from_shell_files() -> Option<String> {
         }
     }
     None
-}
-
-// ── Session ───────────────────────────────────────────────────────────────────
-
-pub struct Session {
-    pub messages:      Vec<ApiMessage>,
-    pub system_prompt: String,
-    pub cwd:           String,
-    pub cancel:        CancellationToken,
-    /// Connected MCP server clients.  Populated once at session creation and
-    /// shared across all turns in the agentic loop.
-    pub mcp_pool:      McpPool,
 }
 
 // ── API Types ─────────────────────────────────────────────────────────────────
@@ -1357,7 +1353,7 @@ pub async fn call_turn(
 
             let response = tokio::select! {
                 res = http_client()
-                    .post("https://api.anthropic.com/v1/messages")
+                    .post(anthropic_url())
                     .header("x-api-key",         api_key)
                     .header("anthropic-version", "2023-06-01")
                     .header("anthropic-beta",    "prompt-caching-2024-07-31")
@@ -1452,7 +1448,6 @@ pub async fn send_message(
     let (dummy_tx, _) = mpsc::channel::<ChatEvent>(1);
     let tx = event_tx.unwrap_or(dummy_tx);
 
-    let all_tools = tool_definitions_with_mcp(extra_tools);
     debug!("[core/send_message] starting model={model} messages={} cwd={cwd}", messages.len());
 
     let mut turn = 0usize;
@@ -1462,135 +1457,33 @@ pub async fn send_message(
             tx.send(ChatEvent::InterruptAck).await.ok();
             return Ok((last_text, total_cost, messages));
         }
-        let compacted = compact_history(&messages, 20);
-
-        // Per-call request: stream the response and emit ChatEvent::Text deltas
-        // live (mobile renders typewriter-style). stream_anthropic / stream_openai
-        // also emit ChatEvent::ToolUse once each tool_use block finishes assembling.
-        let (blocks, stop_reason, usage) = match &backend {
-            ApiBackend::Anthropic => {
-                let mut tools_json: Vec<serde_json::Value> = all_tools
-                    .iter().map(|t| serde_json::to_value(t).unwrap()).collect();
-                if let Some(last) = tools_json.last_mut() {
-                    last["cache_control"] = serde_json::json!({"type": "ephemeral"});
-                }
-                let mut messages_json: Vec<serde_json::Value> = compacted.iter()
-                    .map(|m| serde_json::to_value(m).unwrap()).collect();
-                let n = messages_json.len();
-                if n >= 2 {
-                    let candidates: Vec<usize> = if n < 4 { vec![n - 2] } else { vec![n - 2, n / 2] };
-                    let mut seen = std::collections::HashSet::new();
-                    for idx in candidates {
-                        if seen.insert(idx) {
-                            if let Some(content) = messages_json[idx]["content"].as_array_mut() {
-                                if let Some(last_block) = content.last_mut() {
-                                    last_block["cache_control"] = serde_json::json!({"type": "ephemeral"});
-                                }
-                            }
-                        }
-                    }
-                }
-                let body = serde_json::json!({
-                    "model":      model,
-                    "max_tokens": 8192,
-                    "stream":     true,
-                    "system":     [{"type":"text","text":system,"cache_control":{"type":"ephemeral"}}],
-                    "tools":      tools_json,
-                    "messages":   messages_json,
-                });
-                let response = tokio::select! {
-                    res = http_client()
-                        .post("https://api.anthropic.com/v1/messages")
-                        .header("x-api-key",         api_key)
-                        .header("anthropic-version", "2023-06-01")
-                        .header("anthropic-beta",    "prompt-caching-2024-07-31")
-                        .header("content-type",      "application/json")
-                        .header("accept",            "text/event-stream")
-                        .json(&body).send() => res.map_err(|e| (e.to_string(), messages.clone()))?,
-                    _ = cancel.cancelled() => {
-                        tx.send(ChatEvent::InterruptAck).await.ok();
-                        return Ok((last_text, total_cost, messages));
-                    }
-                };
-                if !response.status().is_success() {
-                    let status = response.status();
-                    let text   = response.text().await.unwrap_or_default();
-                    error!("[send_message] turn={turn} anthropic API error {status}: {text}");
-                    return Err((format!("API error {status}: {text}"), messages));
-                }
-                let (blocks, stop_reason, usage) = match stream_anthropic(response, &cancel, &tx, &all_tools).await {
-                    Ok(v) => v,
-                    Err(e) if e == "__interrupted__" => {
-                        tx.send(ChatEvent::InterruptAck).await.ok();
-                        return Ok((last_text, total_cost, messages));
-                    }
-                    Err(e) => {
-                        error!("[send_message] turn={turn} anthropic stream error: {e}");
-                        return Err((e, messages));
-                    }
-                };
-                info!(
-                    "[send_message] turn={turn} stop_reason={stop_reason} in={} out={} cache_create={} cache_read={}",
-                    usage.input_tokens, usage.output_tokens,
-                    usage.cache_creation_input_tokens, usage.cache_read_input_tokens,
-                );
-                total_cost += cost_usd(
-                    model,
-                    usage.input_tokens, usage.output_tokens,
-                    usage.cache_creation_input_tokens, usage.cache_read_input_tokens,
-                );
-                (blocks, stop_reason, usage)
+        // One model call via the shared request+stream builder (`call_turn`).
+        // Text and ToolUse events are emitted live during streaming; we get back
+        // the assembled assistant blocks, the stop reason, and token usage.
+        let (blocks, stop_reason, usage) = match call_turn(
+            &messages, system, model, api_key, &cancel, &tx, extra_tools, &backend,
+        ).await {
+            Ok(v) => v,
+            Err(e) if e == "__interrupted__" => {
+                tx.send(ChatEvent::InterruptAck).await.ok();
+                return Ok((last_text, total_cost, messages));
             }
-
-            ApiBackend::OpenAi { api_url } => {
-                let tools_json  = tools_to_openai(&all_tools);
-                let messages_oa = messages_to_openai(system, &compacted);
-                let body = serde_json::json!({
-                    "model":      model,
-                    "max_tokens": 8192,
-                    "stream":     true,
-                    "stream_options": { "include_usage": true },
-                    "tools":      tools_json,
-                    "messages":   messages_oa,
-                });
-                let response = tokio::select! {
-                    res = http_client()
-                        .post(api_url)
-                        .header("Authorization", format!("Bearer {api_key}"))
-                        .header("content-type",  "application/json")
-                        .header("accept",        "text/event-stream")
-                        .json(&body).send() => res.map_err(|e| (e.to_string(), messages.clone()))?,
-                    _ = cancel.cancelled() => {
-                        tx.send(ChatEvent::InterruptAck).await.ok();
-                        return Ok((last_text, total_cost, messages));
-                    }
-                };
-                if !response.status().is_success() {
-                    let status = response.status();
-                    let text   = response.text().await.unwrap_or_default();
-                    error!("[send_message/openai] turn={turn} API error {status}: {text}");
-                    return Err((format!("API error {status}: {text}"), messages));
-                }
-                let (blocks, stop_reason, usage) = match stream_openai(response, &cancel, &tx, &all_tools).await {
-                    Ok(v) => v,
-                    Err(e) if e == "__interrupted__" => {
-                        tx.send(ChatEvent::InterruptAck).await.ok();
-                        return Ok((last_text, total_cost, messages));
-                    }
-                    Err(e) => {
-                        error!("[send_message/openai] turn={turn} stream error: {e}");
-                        return Err((e, messages));
-                    }
-                };
-                info!(
-                    "[send_message/openai] turn={turn} stop_reason={stop_reason} in={} out={}",
-                    usage.input_tokens, usage.output_tokens,
-                );
-                // Cost tracking skipped for OpenAI-compatible backends (no fixed pricing).
-                (blocks, stop_reason, usage)
+            Err(e) => {
+                error!("[core/send_message] turn={turn} error: {e}");
+                return Err((e, messages));
             }
         };
-        let _ = usage; // tokens already attributed above
+
+        // Anthropic has fixed per-token pricing; OpenAI-compatible backends don't.
+        total_cost += match &backend {
+            ApiBackend::Anthropic => cost_usd(
+                model,
+                usage.input_tokens, usage.output_tokens,
+                usage.cache_creation_input_tokens, usage.cache_read_input_tokens,
+            ),
+            ApiBackend::OpenAi { .. } => 0.0,
+        };
+        info!("[core/send_message] turn={turn} stop_reason={stop_reason} cost=${total_cost:.4}");
 
         // Collect text + tool_uses out of the streamed blocks. Events were already
         // emitted live by stream_anthropic / stream_openai — don't re-emit here.
@@ -1633,6 +1526,12 @@ pub async fn send_message(
             );
             let result_preview = result.chars().take(200).collect::<String>();
             info!("[send_message] turn={turn} tool_result name={name} ({} chars): {result_preview}", result.len());
+            // Stream the result to the client (clears the per-tool "running"
+            // state in desktop/mobile) before feeding it back to the model.
+            tx.send(ChatEvent::ToolResult {
+                tool_use_id: id.clone(),
+                content:     serde_json::Value::String(result.clone()),
+            }).await.ok();
             results.push(ContentBlock::ToolResult {
                 tool_use_id: id,
                 content:     vec![serde_json::json!({"type":"text","text":result})],
@@ -1641,196 +1540,6 @@ pub async fn send_message(
 
         messages.push(ApiMessage { role: "user".to_string(), content: results });
     }
-}
-
-// ── Agentic Loop ──────────────────────────────────────────────────────────────
-
-pub async fn run_agentic_loop(
-    session:        Arc<Mutex<Session>>,
-    session_id:     String,
-    api_key:        String,
-    model:          String,
-    tx:             mpsc::Sender<ChatEvent>,
-    extra_tools:    Vec<AnthropicTool>,
-    extra_executor: Option<Arc<dyn Fn(String, serde_json::Value)
-                            -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
-                            + Send + Sync>>,
-) {
-    info!("[core/agentic_loop] starting session_id={session_id} model={model}");
-    let backend = ApiBackend::resolve();
-
-    let mut turns                        = 0usize;
-    let mut total_input                  = 0u64;
-    let mut total_output                 = 0u64;
-    let mut total_cache_creation_input   = 0u64;
-    let mut total_cache_read_input       = 0u64;
-
-    let partial_cost = |ti, to, tcc, tcr| match &backend {
-        ApiBackend::Anthropic => cost_usd(&model, ti, to, tcc, tcr),
-        ApiBackend::OpenAi { .. } => 0.0,
-    };
-
-    const MAX_TURNS: usize = 100;
-
-    loop {
-        if turns >= MAX_TURNS {
-            error!("[core/agentic_loop] session_id={session_id} hit MAX_TURNS={MAX_TURNS}, aborting");
-            tx.send(ChatEvent::Error {
-                message: format!("Stopped after {MAX_TURNS} turns to prevent runaway loop"),
-            }).await.ok();
-            return;
-        }
-
-        let (messages, system, cwd, cancel) = {
-            let s = session.lock().unwrap();
-            (s.messages.clone(), s.system_prompt.clone(), s.cwd.clone(), s.cancel.clone())
-        };
-
-        info!("[core/agentic_loop] session_id={session_id} turn {} messages={}", turns + 1, messages.len());
-
-        if cancel.is_cancelled() {
-            info!("[core/agentic_loop] session_id={session_id} cancelled before turn");
-            tx.send(ChatEvent::InterruptAck).await.ok();
-            tx.send(ChatEvent::Interrupted { cost_usd: partial_cost(total_input, total_output, total_cache_creation_input, total_cache_read_input) }).await.ok();
-            return;
-        }
-
-        match call_turn(&messages, &system, &model, &api_key, &cancel, &tx, &extra_tools, &backend).await {
-            Err(e) if e == "__interrupted__" => {
-                info!("[core/agentic_loop] session_id={session_id} interrupted");
-                tx.send(ChatEvent::InterruptAck).await.ok();
-                tx.send(ChatEvent::Interrupted { cost_usd: partial_cost(total_input, total_output, total_cache_creation_input, total_cache_read_input) }).await.ok();
-                return;
-            }
-            Err(e) => {
-                error!("[core/agentic_loop] session_id={session_id} error: {e}");
-                tx.send(ChatEvent::Error { message: e }).await.ok();
-                return;
-            }
-            Ok((blocks, stop_reason, usage)) => {
-                turns                      += 1;
-                total_input                += usage.input_tokens;
-                total_output               += usage.output_tokens;
-                total_cache_creation_input += usage.cache_creation_input_tokens;
-                total_cache_read_input     += usage.cache_read_input_tokens;
-
-                {
-                    let mut s = session.lock().unwrap();
-                    s.messages.push(ApiMessage { role: "assistant".to_string(), content: blocks.clone() });
-                }
-
-                if stop_reason != "tool_use" {
-                    let cost = partial_cost(total_input, total_output, total_cache_creation_input, total_cache_read_input);
-                    info!(
-                        "[core/agentic_loop] session_id={session_id} done turns={turns} cost=${cost:.4}"
-                    );
-                    tx.send(ChatEvent::Result {
-                        cost_usd: cost, turns, session_id: session_id.clone(), result: None,
-                    }).await.ok();
-                    return;
-                }
-
-                let mut tool_results: Vec<ContentBlock> = Vec::new();
-                for block in &blocks {
-                    if let ContentBlock::ToolUse { id, name, input } = block {
-                        if cancel.is_cancelled() {
-                            // Keep history valid — synthetic result for each orphaned tool_use.
-                            tool_results.push(ContentBlock::ToolResult {
-                                tool_use_id: id.clone(),
-                                content: vec![serde_json::json!({"type":"text","text":"interrupted"})],
-                            });
-                            continue;
-                        }
-                        let result = truncate_tool_output(
-                            execute_tool(id, name, input, &cwd, &tx, cancel.clone(), extra_executor.as_deref()).await,
-                            tool_output_limit(name),
-                        );
-                        let result_preview: String = result.chars().take(200).collect();
-                        info!(
-                            "[core/agentic_loop] session_id={session_id} tool_result name={name} ({} chars): {result_preview}",
-                            result.len()
-                        );
-                        tx.send(ChatEvent::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: serde_json::Value::String(result.clone()),
-                        }).await.ok();
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: vec![serde_json::json!({"type":"text","text":result})],
-                        });
-                    }
-                }
-
-                // If cancelled mid-tool-loop, flush results and stop.
-                if cancel.is_cancelled() {
-                    {
-                        let mut s = session.lock().unwrap();
-                        s.messages.push(ApiMessage { role: "user".to_string(), content: tool_results });
-                    }
-                    tx.send(ChatEvent::Interrupted { cost_usd: partial_cost(total_input, total_output, total_cache_creation_input, total_cache_read_input) }).await.ok();
-                    return;
-                }
-
-                {
-                    let mut s = session.lock().unwrap();
-                    s.messages.push(ApiMessage { role: "user".to_string(), content: tool_results });
-                }
-            }
-        }
-    }
-}
-
-// ── Startup Prompt ────────────────────────────────────────────────────────────
-
-/// Run the agentic loop once with `prompt` as the sole user message, logging
-/// all output to stdout.  Returns when the loop completes (or errors).
-/// Intended to be called at container startup before accepting connections.
-pub async fn run_startup_prompt(
-    prompt:  &str,
-    session: Arc<Mutex<Session>>,
-    api_key: &str,
-    model:   &str,
-) {
-    tracing::info!("[startup] running startup prompt ({} chars)", prompt.len());
-
-    {
-        let mut s = session.lock().unwrap();
-        s.messages.push(ApiMessage {
-            role:    "user".to_string(),
-            content: vec![ContentBlock::Text { text: prompt.to_string() }],
-        });
-    }
-
-    let (tx, mut rx) = mpsc::channel::<ChatEvent>(256);
-    let session_c = session.clone();
-    let api_key_s = api_key.to_string();
-    let model_s   = model.to_string();
-
-    let handle = tokio::spawn(async move {
-        run_agentic_loop(session_c, "startup".to_string(), api_key_s, model_s, tx, vec![], None).await;
-    });
-
-    while let Some(event) = rx.recv().await {
-        match &event {
-            ChatEvent::Text { text } => print!("{text}"),
-            ChatEvent::ToolUse { tool, input, .. } => {
-                tracing::info!("[startup] tool_use tool={tool} input={input}");
-            }
-            ChatEvent::ToolResult { content, .. } => {
-                let preview = content.as_str().map(|s| s.chars().take(120).collect::<String>()).unwrap_or_default();
-                tracing::info!("[startup] tool_result: {preview}");
-            }
-            ChatEvent::Error { message } => {
-                tracing::error!("[startup] error: {message}");
-            }
-            ChatEvent::Result { cost_usd, turns, .. } => {
-                tracing::info!("[startup] complete turns={turns} cost=${cost_usd:.4}");
-            }
-            _ => {}
-        }
-    }
-
-    let _ = handle.await;
 }
 
 // ── System Prompt ─────────────────────────────────────────────────────────────
