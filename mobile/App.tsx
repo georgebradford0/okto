@@ -1724,6 +1724,7 @@ const ChatPane = memo(function ChatPane({
               <View height={56} width={56} alignItems="center" justifyContent="center">
                 <OrbitingArc size={56} thickness={3} />
                 <Touchable
+                  testID="composer-stop"
                   height={50} width={50} alignItems="center" justifyContent="center" borderRadius={25} backgroundColor="$error500" opacity={stopSent ? 0.4 : undefined}
                   disabled={stopSent}
                   onPress={() => {
@@ -1742,6 +1743,7 @@ const ChatPane = memo(function ChatPane({
               </View>
             ) : (
               <Touchable
+                testID="composer-send"
                 height={56} width={56} alignItems="center" justifyContent="center" borderRadius={22} borderWidth={!input.trim() ? 1 : undefined} borderColor={!input.trim() ? '$outline200' : undefined} backgroundColor={!input.trim() ? '$background100' : '$primary600'}
                 onPress={() => sendMessageRef.current()}
                 disabled={!input.trim()}
@@ -1874,6 +1876,7 @@ function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, o
         <View flexDirection="row" alignItems="center" justifyContent="space-between" borderBottomWidth={1} borderColor="$outline200" backgroundColor="$background50" paddingHorizontal={16} paddingVertical={12}>
           <View flex={1} flexDirection="row" alignItems="center" gap={10}>
             <Touchable
+              testID="open-sidebar-child"
               marginRight={4} paddingHorizontal={6} paddingVertical={8}
               onPress={onOpenSidebar}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -2437,7 +2440,7 @@ function AppInner() {
       <SafeAreaView style={{ flex: 1, backgroundColor: 'rgb(246,246,246)' }} edges={['top', 'bottom']}>
         <Reanimated.View style={[{ flex: 1 }, setupKeyboardLift]}>
           <View flex={1} alignItems="center" justifyContent="center" gap={14} paddingHorizontal={40}>
-            <Touchable onPress={requestCameraAndScan} activeOpacity={0.85}>
+            <Touchable testID="scan-trigger" onPress={requestCameraAndScan} activeOpacity={0.85}>
               <AppIcon pulse />
             </Touchable>
             <Text marginTop={20} paddingLeft={8} fontFamily="$heading" fontSize={40} fontWeight="800" letterSpacing={8} color="$typography900">OCTO</Text>
@@ -2491,6 +2494,7 @@ function AppInner() {
           <View flexDirection="row" alignItems="center" justifyContent="space-between" borderBottomWidth={1} borderColor="$outline200" backgroundColor="$background50" paddingHorizontal={16} paddingVertical={12}>
             <View flex={1} flexDirection="row" alignItems="center" gap={10}>
               <Touchable
+                testID="open-sidebar"
                 marginRight={4} paddingHorizontal={6} paddingVertical={8}
                 onPress={openSidebar}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}

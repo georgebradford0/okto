@@ -11,6 +11,10 @@
   "engines": {
     "node": ">= 22.11.0"
   },
+  "scripts": {
+    "test": "npm test -w mobile",
+    "test:mobile": "npm test -w mobile"
+  },
   "comments": {
     "overrides": "Force a single React across the workspace. react-native (hoisted) binds the Fabric renderer to whichever react sits at the root; without this, desktop's range floats react/react-dom to a newer patch than mobile's pin and npm keeps two copies, causing 'Invalid hook call / more than one copy of React'. Keep this aligned with react-native's peer range."
   },
