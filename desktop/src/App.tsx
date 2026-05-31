@@ -1763,7 +1763,7 @@ function TaskRow({
   const statusKind = taskStatusKind(task.status)
   return (
     <View borderRadius={8} borderWidth={1} borderColor="$outline100" backgroundColor="$background50" padding={12}>
-      <View alignItems="center" gap={8}>
+      <View flexDirection="row" alignItems="center" gap={8}>
         <Text flexDirection="row" alignItems="center" gap={6} borderRadius={999} paddingHorizontal={8} paddingVertical={2} fontSize={10} fontWeight="600" textTransform="uppercase" {...TASK_TAG_CLASS[statusKind]}>
           <Text height={6} width={6} borderRadius={999} {...TASK_DOT_CLASS[statusKind]} />
           <Text>{task.status.toUpperCase()}</Text>
