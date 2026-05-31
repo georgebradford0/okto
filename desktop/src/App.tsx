@@ -2127,16 +2127,16 @@ function InputBar({
           // model is generating. Clicking sends an interrupt and locks the
           // button at reduced opacity until the server's interrupt_ack (or 3 s
           // fallback).
-          <View position="relative" height={36} width={36} flexShrink={0} alignItems="center" justifyContent="center">
+          <View position="relative" height={40} width={40} flexShrink={0} alignItems="center" justifyContent="center">
             {!stopSent && (
               <Spinner
                 color="#0d9488"
-                size={44}
+                size={48}
                 pointerEvents="none" position="absolute" top={-4} left={-4} right={-4} bottom={-4}
               />
             )}
             <Touchable
-              flexDirection="row" height={36} width={36} alignItems="center" justifyContent="center" borderRadius={999} backgroundColor="$error500" hoverStyle={{ backgroundColor: '$error600' }} opacity={stopSent ? 0.5 : 1}
+              flexDirection="row" height={40} width={40} alignItems="center" justifyContent="center" borderRadius={999} backgroundColor="$error500" hoverStyle={{ backgroundColor: '$error600' }} opacity={stopSent ? 0.5 : 1}
               onPress={onInterrupt}
               disabled={stopSent}
               title={stopSent ? 'Interrupt sent…' : 'Interrupt'}
@@ -2146,7 +2146,7 @@ function InputBar({
           </View>
         ) : (
           <Touchable
-            flexDirection="row" height={36} width={36} flexShrink={0} alignItems="center" justifyContent="center" borderRadius={999} backgroundColor="$primary500" fontSize={14} color="$typography0" hoverStyle={{ backgroundColor: '$primary600' }}
+            flexDirection="row" height={40} width={40} flexShrink={0} alignItems="center" justifyContent="center" borderRadius={999} backgroundColor="$primary500" fontSize={14} color="$typography0" hoverStyle={{ backgroundColor: '$primary600' }}
             onPress={onSend}
             disabled={!draft.trim()}
             title="Send"
