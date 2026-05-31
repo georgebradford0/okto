@@ -5,6 +5,16 @@ Changes to the okto desktop (Tauri) app. Current version: see `package.json` /
 
 ## [Unreleased]
 
+### Added
+- End-to-end test suites for the desktop app. A jsdom + Jest behavioural suite
+  (`desktop/__tests__/`, driven by `@testing-library/react`) renders the real
+  `<App/>` over mocked Tauri / `WebSocket` / `fetch` boundaries and covers
+  connect, chat streaming, tool calls, background tasks, the agent sidebar, and
+  keyboard interactions; plus a Rust black-box test (`tests/tests/desktop.rs`)
+  that drives the `noise_connect` transport path against a real lair over the
+  Noise tunnel. Run with `npm test -w desktop` and
+  `cargo test -p okto-tests --test desktop`.
+
 ## [0.4.3] - 2026-05-30
 
 ### Changed

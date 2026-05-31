@@ -1436,6 +1436,7 @@ function ConnectScreen({
           Paste the session QR payload printed by lair on startup.
         </Text>
         <textarea
+          data-testid="qr-input"
           style={{ marginTop: 20, height: 96, width: '100%', resize: 'none', boxSizing: 'border-box', borderRadius: 8, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: 'rgb(246,246,246)', paddingLeft: 14, paddingRight: 14, paddingTop: 12, paddingBottom: 12, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 14, color: 'rgb(30,41,59)', outline: 'none' }}
           value={qrInput}
           onChange={(e) => setQrInput(e.currentTarget.value)}
@@ -1446,6 +1447,7 @@ function ConnectScreen({
           autoCorrect="off"
         />
         <Touchable
+          data-testid="connect-btn"
           marginTop={16} width="100%" borderRadius={8} backgroundColor="$primary500" paddingVertical={10} hoverStyle={{ backgroundColor: '$primary600' }}
           onPress={onConnect}
           disabled={connecting || !qrInput.trim()}
@@ -1569,6 +1571,7 @@ function AgentRow({
   return (
     <View>
       <Touchable
+        data-testid={`sidebar-row-${id}`}
         flexDirection="row" width="100%" alignItems="center" gap={8} borderRadius={6} paddingVertical={6} paddingRight={8}
         backgroundColor={active ? '$primary50' : undefined}
         hoverStyle={active ? undefined : { backgroundColor: '$background100' }}
@@ -1614,6 +1617,7 @@ function TasksButton({ tasks, onPress }: { tasks: TaskRecord[]; onPress: () => v
   const running = tasks.filter(t => t.status === 'running').length
   return (
     <Touchable
+      data-testid="tasks-button"
       flexDirection="row" alignItems="center" gap={6} borderRadius={6} borderWidth={1} paddingHorizontal={10} paddingVertical={4}
       borderColor={running > 0 ? '$primary200' : '$outline200'}
       backgroundColor={running > 0 ? '$primary50' : undefined}
@@ -1755,7 +1759,7 @@ function TaskRow({
     : relativeTime(task.started_at)
   const statusKind = taskStatusKind(task.status)
   return (
-    <View borderRadius={8} borderWidth={1} borderColor="$outline100" backgroundColor="$background50" padding={12}>
+    <View data-testid={`task-row-${task.task_id}`} borderRadius={8} borderWidth={1} borderColor="$outline100" backgroundColor="$background50" padding={12}>
       <View flexDirection="row" alignItems="center" gap={8}>
         <Text flexDirection="row" alignItems="center" gap={6} borderRadius={999} paddingHorizontal={8} paddingVertical={2} fontSize={10} fontWeight="600" textTransform="uppercase" {...TASK_TAG_CLASS[statusKind]}>
           <Text height={6} width={6} borderRadius={999} {...TASK_DOT_CLASS[statusKind]} />
@@ -1767,6 +1771,7 @@ function TaskRow({
         <Text fontSize={11} color="$typography400">{ts}</Text>
         {isRunning && (
           <Touchable
+            data-testid={`task-cancel-${task.task_id}`}
             marginLeft="auto" borderRadius={6} backgroundColor="$error50" paddingHorizontal={8} paddingVertical={2} hoverStyle={{ backgroundColor: '$error100' }}
             onPress={onCancel}
             disabled={cancelling}
@@ -1918,6 +1923,7 @@ function ToolRow({ item }: { item: Message }) {
         borderLeftColor={item.running ? '$primary500' : '$outline300'}
         backgroundColor={item.running ? 'rgba(240,253,250,0.4)' : '$background50'}>
         <Touchable
+          data-testid={`tool-${item.id}`}
           width="100%" alignItems="center" gap={8} paddingHorizontal={12} paddingVertical={8}
           onPress={() => { if (hasOutput) setExpanded(e => !e) }}
           disabled={!hasOutput}
@@ -2104,6 +2110,7 @@ function InputBar({
       <View flexDirection="row" alignItems="flex-end" gap={8}>
         <textarea
           ref={taRef}
+          data-testid="composer-input"
           style={{ maxHeight: 200, minHeight: 40, flex: 1, resize: 'none', boxSizing: 'border-box', borderRadius: 12, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: 'rgb(246,246,246)', paddingLeft: 18, paddingRight: 18, paddingTop: 11, paddingBottom: 11, fontSize: 14, color: 'rgb(30,41,59)', outline: 'none' }}
           value={draft}
           onChange={(e) => setDraft(e.currentTarget.value)}
@@ -2125,6 +2132,7 @@ function InputBar({
               />
             )}
             <Touchable
+              data-testid="composer-stop"
               flexDirection="row" height={40} width={40} alignItems="center" justifyContent="center" borderRadius={999} backgroundColor="$error500" hoverStyle={{ backgroundColor: '$error600' }} opacity={stopSent ? 0.5 : 1}
               onPress={onInterrupt}
               disabled={stopSent}
@@ -2134,6 +2142,7 @@ function InputBar({
           </View>
         ) : (
           <Touchable
+            data-testid="composer-send"
             flexDirection="row" height={40} width={40} flexShrink={0} alignItems="center" justifyContent="center" borderRadius={999} backgroundColor="$primary500" hoverStyle={{ backgroundColor: '$primary600' }}
             onPress={onSend}
             disabled={!draft.trim()}

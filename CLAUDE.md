@@ -100,6 +100,9 @@ The `okto-tests` crate (`tests/`) holds the workspace's black-box e2e suites —
 
 - **lair** (`boot.rs`, `chat.rs`, `tools.rs`) — spawn the real `lair` binary on a temp dir + ephemeral ports and drive it over the Noise tunnel like the mobile client, with an in-process Anthropic-SSE mock LLM (fully offline).
 - **CLI** (`cli_*.rs`, sharing `common/okto_cli.rs` + `common/mock_mgmt.rs`) — spawn the real `okto` binary against a temp `HOME` and assert on stdout/stderr/exit code plus on-disk `~/.okto` state. Cover `version`, `completions`, `config`, `env`, `mcp list/remove`, `qr`, `ssh pubkey`, `agents`, and `tasks`; commands that hit lair's loopback management API run against a mock, so no docker or network is needed.
+- **desktop** (`desktop.rs`) — exercise the desktop renderer's transport path: compose `noise_connect` exactly as `desktop/src-tauri/src/lib.rs` does (`okto_core::from_base32` + `load_or_generate_keypair` + `open_noise_proxy`) against a real lair, then drive a chat turn over a *plaintext* loopback WebSocket like the renderer's `new WebSocket(...)`. Run with `cargo test -p okto-tests --test desktop`.
+
+The desktop **frontend** has its own behavioural suite — `desktop/__tests__/`, run under Jest + jsdom with `npm test -w desktop`. It renders the real `<App/>` via `@testing-library/react` over mocked Tauri / `WebSocket` / `fetch` boundaries (mirrors the mobile RTL suite). See `desktop/__tests__/README.md`.
 
 The `cli.yml` release workflow runs the **CLI suites only** (the `cli_*` files, not the lair suites) as a `test` job that `build` depends on, so the CLI tests must pass before any CLI release binary is built or pushed. Locally, `cargo test-cli` (a `.cargo/config.toml` alias) runs that same CLI-only subset.
 
