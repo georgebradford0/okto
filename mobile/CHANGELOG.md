@@ -35,6 +35,11 @@ the git log.
 
 ### Fixed
 
+- iOS release Archive (TestFlight) no longer fails on a missing Hermes compiler. The
+  hermes-engine podspec baked an absolute `HERMES_CLI_PATH` to the npm-workspace-hoisted
+  `hermes-compiler`, which resolved differently on CI vs local; a Podfile `post_install`
+  hook now rewrites it to a `$(PODS_ROOT)`-relative path that points at the workspace-root
+  `node_modules` in every environment.
 - Pinned `react-native-reanimated` to `~4.3.0` and `react-native-worklets` to `~0.8.1`
   (resolving to reanimated 4.3.1 + worklets 0.8.3). The previous `^4.3.0`/`^0.8.1` ranges
   drifted apart — reanimated floated to 4.4.0 (which requires Worklets 0.9.x) while worklets

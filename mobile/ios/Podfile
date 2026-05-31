@@ -36,5 +36,19 @@ target 'okto' do
       :mac_catalyst_enabled => false,
       # :ccache_enabled => true
     )
+
+    # Monorepo (npm workspaces): the hermes-engine podspec bakes an ABSOLUTE
+    # HERMES_CLI_PATH into the Pods xcconfig by resolving the (hoisted)
+    # hermes-compiler at pod-install time. That resolved path differs between
+    # machines/CI (root vs mobile node_modules), so the release "Bundle React
+    # Native code and images" phase fails with "hermesc: No such file". Pin it
+    # to a $(PODS_ROOT)-relative path that always points at the workspace-root
+    # node_modules (Pods -> ios -> mobile -> repo root).
+    hermesc = '$(PODS_ROOT)/../../../node_modules/hermes-compiler/hermesc/osx-bin/hermesc'
+    Dir.glob(File.join(installer.sandbox.root.to_s, 'Target Support Files', 'Pods-*', '*.xcconfig')).each do |f|
+      text = File.read(f)
+      next unless text.include?('HERMES_CLI_PATH')
+      File.write(f, text.gsub(/^HERMES_CLI_PATH = .*$/, "HERMES_CLI_PATH = #{hermesc}"))
+    end
   end
 end
