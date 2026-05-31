@@ -36,6 +36,21 @@ Once the QR code prints to the terminal, download the mobile app at (TODO build 
 
 If you are on iOS it will ask for push notification permissions.  These are generally for background tasks or monitors, but technically there is a dedicated tool for push notifications so you can always direct the model to call that tool for any scenario you want.  I have set up a small relay server to handle these push notifications.  It does not require sign up.  If you'd like to understand how it authenticates the device you can read [this](docs/relay-architecture.md).
 
+### Push notifications (opt-out)
+Push notifications are **on by default** — lair points at the relay server above, and the mobile app registers its APNs device token with it so background tools (`send_notification`, `ask_question`) can wake you when an agent has something to report.
+
+If you'd rather not use them, opt out at init time:
+```sh
+okto init --disable-push
+```
+This persists `OKTO_RELAY_URL=` (an explicit empty value) into `~/.okto/lair-env`, which (a) drops the `send_notification` and `ask_question` tools from the LLM's tool list in both lair and child agents — so the model never offers to push at all — and (b) makes lair's `/info` advertise an empty relay URL, which the mobile client treats as a signal to skip APNs registration entirely.
+
+To turn push back on later without re-running `init`:
+```sh
+okto env unset OKTO_RELAY_URL
+okto reload
+```
+
 To tear down everything except the config, run
 ```
 okto destroy
