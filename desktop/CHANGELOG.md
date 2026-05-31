@@ -5,6 +5,8 @@ Changes to the okto desktop (Tauri) app. Current version: see `package.json` /
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-05-30
+
 ### Changed
 
 - **Replaced the gluestack-ui v3 + NativeWind styling stack with Tamagui** (shared with mobile
