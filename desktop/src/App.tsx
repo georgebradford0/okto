@@ -1715,11 +1715,13 @@ function TasksDrawer({
   return (
     <>
       <View
-        position="absolute" top={0} right={0} bottom={0} left={0} zIndex={40} backgroundColor="rgba(2,6,23,0.2)" opacity={visible ? 1 : 0} pointerEvents={visible ? 'auto' : 'none'}
+        position="absolute" top={0} right={0} bottom={0} left={0} zIndex={40} backgroundColor="rgba(2,6,23,0.2)" pointerEvents={visible ? 'auto' : 'none'}
+        style={{ opacity: visible ? 1 : 0, transition: 'opacity 200ms ease' }}
         onPress={onClose}
       />
       <View
-        position="absolute" right={0} top={0} zIndex={50} height="100%" width={380} flexDirection="column" borderLeftWidth={1} borderColor="$outline100" backgroundColor="$background0" x={visible ? 0 : 380}
+        position="absolute" top={12} right={12} bottom={12} zIndex={50} width={380} flexDirection="column" borderWidth={1} borderColor="$outline100" backgroundColor="$background0" borderRadius={16} overflow="hidden"
+        style={{ transform: visible ? 'translateX(0)' : 'translateX(404px)', transition: 'transform 220ms ease', boxShadow: '0 12px 40px rgba(0,0,0,0.18)' }}
         aria-hidden={!visible}
       >
         <View flexDirection="row" alignItems="flex-start" justifyContent="space-between" borderBottomWidth={1} borderColor="$outline100" paddingHorizontal={20} paddingVertical={16}>
@@ -1729,7 +1731,7 @@ function TasksDrawer({
           </View>
           <Touchable borderRadius={4} padding={4} color="$typography400" hoverStyle={{ backgroundColor: '$background100', color: '$typography700' }} onPress={onClose} title="Close (Esc)">✕</Touchable>
         </View>
-        <View flex={1} overflow="scroll" paddingHorizontal={16} paddingVertical={12}>
+        <View flex={1} overflow="scroll" paddingHorizontal={16} paddingVertical={12} gap={10}>
           {sorted.length === 0 ? (
             <View marginTop={32} textAlign="center" fontSize={14} color="$typography400">No background tasks</View>
           ) : (
