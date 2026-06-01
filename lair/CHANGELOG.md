@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.21.3] - 2026-06-01
+
+### Removed
+- **AWS CLI v2 is no longer baked into the lair image.** It added ~150 MB and
+  was unused by default. Operators who need it can install it from their
+  `~/.okto/bootstrap.sh` startup hook (the `unzip` the official installer
+  requires is still in the image).
+
 ## [0.21.2] - 2026-05-31
 
 ### Added
