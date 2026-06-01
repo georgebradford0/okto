@@ -11,6 +11,16 @@ the git log.
 
 ### Fixed
 
+- Sidebar worktree rows now update promptly when an agent tears a worktree down
+  server-side (e.g. during a chat turn). Previously the sidebar only refetched a
+  worktree list when the agent roster changed, and lair never pushes `agents` for
+  worktree-only changes — so a removed worktree lingered until the next unrelated
+  agents poll. The agent chat now refreshes its worktree list at each turn
+  boundary (`done`/`interrupted`/`error`).
+- A worktree you're actively viewing that gets removed (torn down server-side, or
+  deleted from another client) no longer leaves a stuck "ghost" chat pane behind:
+  the chat now falls back to the parent agent's chat once the worktree disappears
+  from its authoritative list. Mirrors the desktop client's `reconcileWorktrees`.
 - TestFlight uploads no longer fail export-compliance check 90592: set
   `ITSAppUsesNonExemptEncryption` to `false` (okto uses only standard, published
   algorithms — X25519/ChaCha20-Poly1305/SHA-256 for the Noise tunnel, Ed25519 SSH,

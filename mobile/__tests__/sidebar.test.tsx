@@ -135,3 +135,77 @@ test('worktrees fetched for an agent render as nested rows and open scoped chats
   // Header reads `<agent> / <branch>`.
   expect(await screen.findByText('worker / feature/x')).toBeOnTheScreen()
 })
+
+test('a worktree the agent tears down server-side drops from the sidebar at turn end', async () => {
+  // lair never pushes `agents` for a worktree-only change, so the sidebar
+  // relies on a turn-boundary refetch: the agent ran a tool that removed the
+  // worktree, and once its turn ends the nesting must update without waiting
+  // for an unrelated agents poll.
+  let present = true
+  onFetch(
+    url => url.endsWith('/worktrees'),
+    () => (present ? [{ id: 'feature-x', branch: 'feature/x', path: '/w/feature-x', created_at: 0 }] : []),
+  )
+
+  const { ws } = await connectMaster()
+  await pushAgents(ws, [RUNNING])
+  await openSidebar()
+  expect(await screen.findByText('feature/x')).toBeOnTheScreen()
+
+  // Open the agent's *main* chat (not the worktree chat) and complete the WS
+  // handshake so the stream is live.
+  await act(async () => { fireEvent.press(screen.getByText('worker')) })
+  await waitFor(() => expect(lastWs().url).toContain('/agents/lair-worker/stream'))
+  const childWs = lastWs()
+  await act(async () => { childWs.mockOpen() })
+  await sendReady(childWs)
+
+  // The agent tears the worktree down mid-turn; its list now comes back empty.
+  present = false
+  // Turn boundary — no `agents` push, just `done` on the agent's own stream.
+  await act(async () => { childWs.mockServerEvent({ type: 'done', cost_usd: 0 }) })
+
+  // Reopen the sidebar from the agent chat: the worktree row is gone.
+  await act(async () => { fireEvent.press(screen.getByTestId('open-sidebar-child')) })
+  await waitFor(() => expect(screen.queryByText('feature/x')).toBeNull())
+})
+
+test('a worktree deleted while active drops its ghost chat and falls back to the agent', async () => {
+  // The worktree we're *viewing* vanishes from the authoritative list (deleted
+  // elsewhere, or torn down server-side). Its chat pane must not linger as a
+  // ghost — we fall back to the parent agent's chat. Mirrors desktop's
+  // reconcileWorktrees regression test.
+  let present = true
+  onFetch(
+    url => url.endsWith('/worktrees'),
+    () => (present ? [{ id: 'feature-x', branch: 'feature/x', path: '/w/feature-x', created_at: 0 }] : []),
+  )
+
+  const { ws } = await connectMaster()
+  await pushAgents(ws, [RUNNING])
+  await openSidebar()
+  expect(await screen.findByText('feature/x')).toBeOnTheScreen()
+
+  // Open the worktree's *own* chat and stream content.
+  await act(async () => { fireEvent.press(screen.getByText('feature/x')) })
+  await waitFor(() =>
+    expect(lastWs().url).toContain('/agents/lair-worker/worktrees/feature-x/stream'),
+  )
+  const wtWs = lastWs()
+  await act(async () => { wtWs.mockOpen() })
+  await sendReady(wtWs)
+  expect(await screen.findByText('worker / feature/x')).toBeOnTheScreen()
+
+  // Worktree deleted elsewhere — the list now comes back empty. A turn
+  // boundary on the worktree's own stream triggers the refetch + reconcile.
+  present = false
+  await act(async () => { wtWs.mockServerEvent({ type: 'done', cost_usd: 0 }) })
+
+  // The ghost worktree chat is gone and we fell back to the parent agent's
+  // chat (a fresh stream to the agent's own proxy path, not the worktree's).
+  await waitFor(() => expect(screen.queryByText('worker / feature/x')).toBeNull())
+  await waitFor(() =>
+    expect(lastWs().url).toContain('/agents/lair-worker/stream'),
+  )
+  expect(lastWs().url).not.toContain('worktrees')
+})

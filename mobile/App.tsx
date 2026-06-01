@@ -873,7 +873,7 @@ function QrScanner({ onScanned, onCancel }: { onScanned: (data: string) => void;
 
 const ChatPane = memo(function ChatPane({
   baseUrl, cacheKey, onStatusChange, clearRef, initialDraft, onDraftChange, reconnectingRef, reloadRef, closeWsRef,
-  sendFrameRef, onContainersUpdate, onTasksUpdate, onCancelAck,
+  sendFrameRef, onContainersUpdate, onTasksUpdate, onCancelAck, onTurnEnd,
 }: {
   baseUrl:             string
   /// Stable identity for the persisted MMKV history cache. Must NOT include
@@ -903,6 +903,12 @@ const ChatPane = memo(function ChatPane({
   /// `cancel_task` frame. Lets the STOP-button guard tell a received cancel
   /// apart from a frame dropped on a WS hiccup. See useCancelGuard.
   onCancelAck?:        (id: string, fired: boolean) => void
+  /// Fired at every turn boundary (done / interrupted / error). The agent
+  /// chat uses it to refresh its worktree list: a turn may have spawned or
+  /// torn down a worktree server-side (e.g. the agent ran a tool that removed
+  /// one), and lair only pushes `agents` on registry changes — never for
+  /// worktree-only changes — so the sidebar would otherwise lag.
+  onTurnEnd?:          () => void
 }) {
   const insets                     = useSafeAreaInsets()
   const { height: keyboardHeight } = useReanimatedKeyboardAnimation()
@@ -1185,6 +1191,7 @@ const ChatPane = memo(function ChatPane({
         // merge snaps us back to the server's history. For the client that
         // drove the turn this is a no-op (local already matches /history).
         loadHistoryRef.current()
+        onTurnEnd?.()
         break
       }
       case 'interrupt_ack':
@@ -1213,6 +1220,7 @@ const ChatPane = memo(function ChatPane({
         })
         hasAssistantMsgRef.current = false
         streamingIdRef.current = uid()
+        onTurnEnd?.()
         break
       }
       case 'error':
@@ -1221,6 +1229,7 @@ const ChatPane = memo(function ChatPane({
         updateStatus('ready')
         hasAssistantMsgRef.current = false
         streamingIdRef.current = uid()
+        onTurnEnd?.()
         break
       case 'system':
         log(`[chat] system: ${event.text}`)
@@ -1262,7 +1271,7 @@ const ChatPane = memo(function ChatPane({
         }
         break
     }
-  }, [updateStatus, sendFrame, onContainersUpdate, onTasksUpdate, onCancelAck])
+  }, [updateStatus, sendFrame, onContainersUpdate, onTasksUpdate, onCancelAck, onTurnEnd])
 
   // Keep a stable ref to loadHistory so reattachStream can call it without
   // being listed as a dependency (avoids circular dep: loadHistory → reattachStream → loadHistory).
@@ -1835,7 +1844,7 @@ function ConnectionErrorModal({ visible, onDismiss }: { visible: boolean; onDism
 
 // ── ChildChatScreen ────────────────────────────────────────────────────────────
 
-function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, onOpenSidebar, initialDraft, onDraftChange, reconnectingRef, reloadRef, closeWsRef }: {
+function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, onOpenSidebar, initialDraft, onDraftChange, reconnectingRef, reloadRef, closeWsRef, onTurnEnd }: {
   child:             ContainerInfo
   /// When set, this pane is a git worktree of `child` — chat is scoped to the
   /// worktree's proxy path and the header shows its branch.
@@ -1850,6 +1859,9 @@ function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, o
   reconnectingRef?:  React.MutableRefObject<boolean>
   reloadRef?:        React.MutableRefObject<() => void>
   closeWsRef?:       React.MutableRefObject<() => void>
+  /// Called with this agent's name at every turn boundary, so the parent can
+  /// refresh the agent's worktree list (a turn may have spawned/removed one).
+  onTurnEnd?:        (agentName: string) => void
 }) {
   const [chatStatus, setChatStatus] = useState<ConnStatus>('connecting')
   const [dismissedConnError, setDismissedConnError] = useState(false)
@@ -1866,6 +1878,9 @@ function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, o
     setTasks(t)
     reconcile(t)
   }, [reconcile])
+  // Stable so ChatPane's memo isn't broken every render. Reports this agent's
+  // name up at each turn boundary for a worktree-list refresh.
+  const handleTurnEnd = useCallback(() => { onTurnEnd?.(child.name) }, [onTurnEnd, child.name])
 
   return (
     // No SafeAreaView here: this screen is rendered as an overlay inside
@@ -1918,6 +1933,7 @@ function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, o
             sendFrameRef={sendFrameRef}
             onTasksUpdate={handleTasksUpdate}
             onCancelAck={handleCancelAck}
+            onTurnEnd={handleTurnEnd}
           />
         ) : tunnelError ? (
           <View flex={1} alignItems="center" justifyContent="center" gap={14} paddingHorizontal={40}>
@@ -2061,9 +2077,6 @@ function AppInner() {
   const connRef            = useRef<NoiseConnectionInfo | null>(null)
   const activeChildRef     = useRef<ContainerInfo | null>(null)
   const activeWorktreeRef  = useRef<WorktreeMeta | null>(null)
-  // Ref to closeChild so worktree teardown can navigate away without depending
-  // on closeChild's identity (it's defined later in the component).
-  const closeChildRef      = useRef<() => void>(() => {})
   useEffect(() => { connRef.current = conn },         [conn])
   useEffect(() => { activeChildRef.current = activeChild }, [activeChild])
   useEffect(() => { activeWorktreeRef.current = activeWorktree }, [activeWorktree])
@@ -2200,6 +2213,28 @@ function AppInner() {
     }
   }, [])
 
+  // If the worktree we're actively viewing has vanished from `agentName`'s
+  // authoritative list (deleted from another client, or torn down server-side
+  // by the agent itself), its chat pane would otherwise linger as a ghost —
+  // header stuck on `<agent> / <branch>`, socket dead. Fall back to the parent
+  // agent's chat. Mirrors desktop's reconcileWorktrees. Guard on the agent
+  // name too: worktree ids are per-agent slugs, so two agents can share one
+  // (e.g. both "feature-x").
+  const reconcileActiveWorktree = useCallback((agentName: string, live: WorktreeMeta[]) => {
+    const wt = activeWorktreeRef.current
+    const child = activeChildRef.current
+    if (wt && child?.name === agentName && !live.some(w => w.id === wt.id)) {
+      openChatRef.current(child)
+    }
+  }, [])
+
+  // Apply a freshly-fetched worktree list for one agent: update the sidebar
+  // nesting and drop a now-ghost worktree chat if one is active.
+  const applyWorktrees = useCallback((agentName: string, wts: WorktreeMeta[]) => {
+    setWorktrees(prev => ({ ...prev, [agentName]: wts }))
+    reconcileActiveWorktree(agentName, wts)
+  }, [reconcileActiveWorktree])
+
   // Fetch each agent's worktrees whenever the agent list (or tunnel) changes,
   // so the sidebar nesting tracks worktrees created here or on another client.
   // Also prune stale entries for agents no longer in `containers`.
@@ -2214,11 +2249,24 @@ function AppInner() {
     for (const c of containers) {
       fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(c.name)}/worktrees`, { signal: ac.signal })
         .then(r => r.ok ? r.json() : Promise.reject(new Error('http')))
-        .then((wts: WorktreeMeta[]) => setWorktrees(prev => ({ ...prev, [c.name]: wts })))
+        .then((wts: WorktreeMeta[]) => applyWorktrees(c.name, wts))
         .catch(() => { /* transient; next push retries */ })
     }
     return () => ac.abort()
-  }, [containers, tunnelPort])
+  }, [containers, tunnelPort, applyWorktrees])
+
+  // Refresh one agent's worktree list on demand. Used at agent-chat turn
+  // boundaries: a turn may have spawned or torn down a worktree server-side
+  // (e.g. the agent ran a tool that removed one), and lair only pushes
+  // `agents` on registry changes — never for worktree-only changes — so the
+  // sidebar nesting would otherwise lag until the next unrelated agents push.
+  const refetchWorktrees = useCallback((agentName: string) => {
+    if (tunnelPort == null) return
+    fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(agentName)}/worktrees`)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error('http')))
+      .then((wts: WorktreeMeta[]) => applyWorktrees(agentName, wts))
+      .catch(() => {})
+  }, [tunnelPort, applyWorktrees])
 
   const createWorktree = useCallback((agentName: string, branch: string) => {
     const b = branch.trim()
@@ -2240,15 +2288,20 @@ function AppInner() {
 
   const deleteWorktree = useCallback((agentName: string, wt: WorktreeMeta) => {
     if (tunnelPort == null) return
+    // Optimistically drop the row, then fall back to the parent agent's chat
+    // if we were viewing this worktree (same path as a worktree removed
+    // elsewhere — see reconcileActiveWorktree).
     setWorktrees(prev => ({ ...prev, [agentName]: (prev[agentName] ?? []).filter(w => w.id !== wt.id) }))
-    if (activeWorktreeRef.current?.id === wt.id) closeChildRef.current()
+    if (activeChildRef.current?.name === agentName && activeWorktreeRef.current?.id === wt.id) {
+      openChatRef.current(activeChildRef.current)
+    }
     fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(agentName)}/worktrees/${encodeURIComponent(wt.id)}`,
       { method: 'DELETE' })
       .then(() => fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(agentName)}/worktrees`))
       .then(r => r.ok ? r.json() : Promise.reject(new Error('http')))
-      .then((wts: WorktreeMeta[]) => setWorktrees(prev => ({ ...prev, [agentName]: wts })))
+      .then((wts: WorktreeMeta[]) => applyWorktrees(agentName, wts))
       .catch(() => {})
-  }, [tunnelPort])
+  }, [tunnelPort, applyWorktrees])
 
   const handleQrScanned = useCallback((raw: string) => {
     setScanning(false)
@@ -2410,7 +2463,6 @@ function AppInner() {
 
   // Keep the ref in sync so handleContainersUpdate can trigger animation.
   useEffect(() => { openChatRef.current = openChild }, [openChild])
-  useEffect(() => { closeChildRef.current = closeChild }, [closeChild])
 
   // ── QR scanner overlay ──────────────────────────────────────────────────────
   if (scanning) {
@@ -2593,6 +2645,7 @@ function AppInner() {
               reconnectingRef={reconnectingRef}
               reloadRef={reloadRef}
               closeWsRef={closeWsRef}
+              onTurnEnd={refetchWorktrees}
             />
           </Animated.View>
         )}
