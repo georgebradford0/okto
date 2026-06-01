@@ -34,8 +34,9 @@ Each test spawns a real `lair --role lair` process on a temp `OKTO_HOME` with ep
 - `tests/tests/boot.rs` — boot, Noise handshake, `/health`, `/info`, `/agents`.
 - `tests/tests/chat.rs` — a chat turn (`ready → text → done`), history persistence, `/clear`, mid-turn interrupt.
 - `tests/tests/tools.rs` — the builtin `bash` tool, asserting the streamed `tool_use`/`tool_result` frames **and** the real filesystem side effect.
+- `tests/tests/worktree_tools.rs` — the agent-only `create_worktree`/`remove_worktree` tools, driving a real `lair --role agent` over plaintext loopback: asserts the real git worktree side effect, the `GET /worktrees` list, and that the tools are gated on a repo being attached.
 - `tests/tests/connection.rs` — lower-level Noise handshake/proxy tests.
-- `tests/tests/common/` — the shared harness: `mock_llm.rs` (mock LLM), `lair_proc.rs` (spawns/owns the lair process), `tunnel.rs` (Noise transport + HTTP/WS client).
+- `tests/tests/common/` — the shared harness: `mock_llm.rs` (mock LLM), `lair_proc.rs` (spawns/owns the lair process), `agent_proc.rs` (spawns a `lair --role agent` child on plaintext loopback), `tunnel.rs` (Noise transport + HTTP/WS client).
 
 When you change lair's observable behavior (routes, the agentic loop in `okto_core::send_message`, the wire protocol, transport, or boot sequence), **add or update an e2e test to cover it**. Two prod-only env seams exist purely for these tests and default to production behavior: `OKTO_HTTP_PORT` (lair's loopback HTTP port) and `ANTHROPIC_API_URL` (the Anthropic endpoint in `okto-core`).
 

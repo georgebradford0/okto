@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.21.4] - 2026-06-01
+
+### Added
+- **Agent worktree tools — `create_worktree` / `remove_worktree`.** A child
+  agent with a git repo attached can now manage its own git worktrees from the
+  agentic loop: `create_worktree` adds a worktree on a fresh branch (isolated
+  checkout + its own chat tab) and returns its path; `remove_worktree` tears one
+  down and deletes its branch. The tools are gated on a repo being attached (the
+  workspace is a clone) and are agent-only — lair never offers them. They drive
+  the agent's existing `/worktrees` HTTP handlers over loopback, so client- and
+  model-initiated worktree changes share one code path. Covered by e2e tests
+  (`tests/tests/worktree_tools.rs`).
+
 ## [0.21.3] - 2026-06-01
 
 ### Removed

@@ -952,7 +952,38 @@ fn make_extra_tools() -> Vec<AnthropicTool> {
         tools.push(spawn_agent_tool());
         tools.push(terminate_agent_tool());
     }
+    // Worktree tools are offered only when this agent has a git repo to branch
+    // from — there's nothing to worktree otherwise. Lair (a different role) never
+    // builds these; they're agent-only by construction.
+    if repo_attached() {
+        tools.push(create_worktree_tool());
+        tools.push(remove_worktree_tool());
+    }
     tools
+}
+
+/// The agent's workspace path — its main git clone, if any. Mirrors `run()`'s
+/// `WORKSPACE_DIR` resolution.
+fn workspace_dir() -> PathBuf {
+    PathBuf::from(std::env::var("WORKSPACE_DIR").unwrap_or_else(|_| "workspace".to_string()))
+}
+
+/// True when a git repo is attached — the workspace is a clone we can add git
+/// worktrees to. Gates the `create_worktree` / `remove_worktree` tools so they
+/// only appear for repo-bound agents.
+fn repo_attached() -> bool {
+    workspace_dir().join(".git").exists()
+}
+
+/// This agent's own loopback HTTP base (`http://127.0.0.1:<AGENT_PORT>`). The
+/// worktree tools drive the agent's existing `/worktrees` handlers through it,
+/// mirroring how `spawn_agent`/`terminate_agent` reach lair over HTTP — no
+/// extra plumbing of the process-level `Agent` into the tool executor.
+fn own_http_base() -> String {
+    let port: u16 = std::env::var("AGENT_PORT")
+        .ok().and_then(|v| v.parse().ok())
+        .unwrap_or(30100);
+    format!("http://127.0.0.1:{port}")
 }
 
 /// Push is disabled iff `OKTO_RELAY_URL` is set and empty. Unset means the
@@ -1036,6 +1067,57 @@ fn terminate_agent_tool() -> AnthropicTool {
     }
 }
 
+fn create_worktree_tool() -> AnthropicTool {
+    AnthropicTool {
+        name: "create_worktree".to_string(),
+        description: "Create a git worktree of this agent's repository on a fresh branch. A \
+                       worktree is an isolated working directory (a separate checkout sharing \
+                       the same clone) with its own chat tab, so you can develop a feature or \
+                       fix on its own branch without disturbing the main workspace. Returns the \
+                       worktree's id, branch, and absolute path — `cd` into that path (via the \
+                       bash tool) to work on the branch. Only available when a git repo is \
+                       attached to this agent."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "description": "New branch name to create and check out, e.g. 'feature/login'. Must not already exist as a worktree."
+                },
+                "base": {
+                    "type": "string",
+                    "description": "Optional base ref to branch from (e.g. 'main', 'origin/main'). Defaults to the repository's default branch."
+                }
+            },
+            "required": ["branch"]
+        }),
+        display_label: Some("Creating worktree".into()),
+    }
+}
+
+fn remove_worktree_tool() -> AnthropicTool {
+    AnthropicTool {
+        name: "remove_worktree".to_string(),
+        description: "Remove a worktree created with create_worktree: deletes its working \
+                       directory, deletes its branch, and drops its chat. Irreversible — any \
+                       uncommitted changes in the worktree are lost. Identify it by the branch \
+                       name (or worktree id) you created."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "description": "Branch name (or worktree id) of the worktree to remove."
+                }
+            },
+            "required": ["branch"]
+        }),
+        display_label: Some("Removing worktree".into()),
+    }
+}
+
 fn make_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_json::Value)
     -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
     + Send + Sync>>
@@ -1049,6 +1131,8 @@ fn make_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
                 "stop_monitor"              => exec_stop_monitor(state, input).await,
                 "spawn_agent"               => exec_spawn_agent(input).await,
                 "terminate_agent"           => exec_terminate_agent(input).await,
+                "create_worktree"           => exec_create_worktree(input).await,
+                "remove_worktree"           => exec_remove_worktree(input).await,
                 "send_notification"         => exec_send_notification(input).await,
                 "ask_question"              => exec_ask_question(input).await,
                 other => format!("unknown tool: {other}"),
@@ -1145,6 +1229,84 @@ async fn exec_terminate_agent(input: serde_json::Value) -> String {
     } else {
         warn!("[agent/terminate_agent] termination of '{name}' rejected ({status})");
         format!("error ({status}): {body}")
+    }
+}
+
+/// `create_worktree` tool — POST this agent's own `/worktrees` to add a git
+/// worktree (new branch + isolated checkout + chat session). Reuses the live
+/// HTTP handler over loopback so there's a single code path for worktree
+/// creation whether it's driven by a client or by the model.
+async fn exec_create_worktree(input: serde_json::Value) -> String {
+    let branch = match input.get("branch").and_then(|v| v.as_str()) {
+        Some(b) if !b.trim().is_empty() => b.trim().to_string(),
+        _ => return "error: 'branch' is required".to_string(),
+    };
+    let mut body = serde_json::json!({ "branch": branch });
+    if let Some(base) = input.get("base").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) {
+        body["base"] = serde_json::json!(base.trim());
+    }
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+    {
+        Ok(c)  => c,
+        Err(e) => { error!("[agent/create_worktree] build http client failed: {e}"); return format!("error: build http client: {e}"); }
+    };
+    let url = format!("{}/worktrees", own_http_base());
+    info!("[agent/create_worktree] creating worktree on branch '{branch}'");
+    let resp = match client.post(&url).json(&body).send().await {
+        Ok(r)  => r,
+        Err(e) => { error!("[agent/create_worktree] POST {url} failed: {e}"); return format!("error: POST {url}: {e}"); }
+    };
+    let status = resp.status();
+    let text   = resp.text().await.unwrap_or_default();
+    if status.is_success() {
+        let meta: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        let id   = meta.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let path = meta.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        info!("[agent/create_worktree] created '{id}' at {path}");
+        format!(
+            "Created worktree '{id}' on branch '{branch}' at {path}. `cd` there (via bash) to \
+             work on this branch in isolation; it has its own chat tab."
+        )
+    } else {
+        warn!("[agent/create_worktree] rejected ({status}): {text}");
+        format!("error ({status}): {text}")
+    }
+}
+
+/// `remove_worktree` tool — DELETE this agent's own `/worktrees/<id>`. The
+/// worktree id is the route-safe slug of the branch (idempotent on an already-
+/// slugged id), so the model can pass either the branch or the id.
+async fn exec_remove_worktree(input: serde_json::Value) -> String {
+    let branch = match input.get("branch").and_then(|v| v.as_str()) {
+        Some(b) if !b.trim().is_empty() => b.trim().to_string(),
+        _ => return "error: 'branch' is required".to_string(),
+    };
+    let id = worktree_id_from_branch(&branch);
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+    {
+        Ok(c)  => c,
+        Err(e) => { error!("[agent/remove_worktree] build http client failed: {e}"); return format!("error: build http client: {e}"); }
+    };
+    let url = format!("{}/worktrees/{}", own_http_base(), id);
+    info!("[agent/remove_worktree] removing worktree '{id}' (branch '{branch}')");
+    let resp = match client.delete(&url).send().await {
+        Ok(r)  => r,
+        Err(e) => { error!("[agent/remove_worktree] DELETE {url} failed: {e}"); return format!("error: DELETE {url}: {e}"); }
+    };
+    let status = resp.status();
+    let text   = resp.text().await.unwrap_or_default();
+    if status.is_success() {
+        info!("[agent/remove_worktree] removed '{id}'");
+        format!("Removed worktree '{id}' (branch '{branch}') and deleted its branch.")
+    } else if status == StatusCode::NOT_FOUND {
+        format!("error: no worktree for branch '{branch}' (id '{id}').")
+    } else {
+        warn!("[agent/remove_worktree] rejected ({status}): {text}");
+        format!("error ({status}): {text}")
     }
 }
 

@@ -18,7 +18,7 @@ use super::tunnel;
 /// its path.
 static LAIR_BIN: OnceCell<PathBuf> = OnceCell::const_new();
 
-async fn lair_binary() -> PathBuf {
+pub async fn lair_binary() -> PathBuf {
     LAIR_BIN
         .get_or_init(|| async {
             let release = std::env::current_exe()
@@ -49,7 +49,7 @@ async fn lair_binary() -> PathBuf {
 
 /// Grab a currently-free loopback port. Inherently racy (the port is released
 /// before lair binds it) but fine for tests.
-fn free_port() -> u16 {
+pub fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()

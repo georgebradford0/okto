@@ -10,12 +10,14 @@
 //! so dead-code warnings are expected and silenced here.
 #![allow(dead_code, unused_imports)]
 
+pub mod agent_proc;
 pub mod lair_proc;
 pub mod mock_llm;
 pub mod mock_mgmt;
 pub mod okto_cli;
 pub mod tunnel;
 
+pub use agent_proc::AgentProcess;
 pub use lair_proc::LairProcess;
 pub use mock_llm::Turn;
 pub use mock_mgmt::MockMgmt;
