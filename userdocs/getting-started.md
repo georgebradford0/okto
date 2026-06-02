@@ -8,9 +8,8 @@ This walks you from a fresh host to chatting with an agent on your phone.
 okto init
 ```
 
-`okto init` is the one-time setup command. It refuses to run if
-`~/.okto/config.json` already exists. On first run it **prompts interactively**
-for:
+`okto init` is the setup command. The **first** time you run it (no
+`~/.okto/config.json` yet) it **prompts interactively** for:
 
 - **Anthropic API key** — press <kbd>Enter</kbd> to skip.
 - **OpenAI API key** — press <kbd>Enter</kbd> to skip. *(At least one of the two keys is required.)*
@@ -29,6 +28,14 @@ It then:
 5. `docker pull`s the lair image and `docker run`s the container, bind-mounting
    `~/.okto` to `/data` and publishing the Noise port.
 6. Waits for the management API to report healthy, then **prints a QR code**.
+
+!!! note "Re-running `okto init`"
+    `okto init` is safe to re-run. If `~/.okto/config.json` already exists it
+    **reuses** that config (no prompts) — it validates it, applies
+    `--system-prompt-append` if you passed one, then pulls the image and starts
+    lair. So `init` doubles as a "(re)start from my existing config" command. To
+    change credentials use [`okto config set`](managing-lair.md#credentials-model-okto-config);
+    to start over from scratch, [`okto destroy`](#tearing-down) first.
 
 ### Useful `okto init` flags
 

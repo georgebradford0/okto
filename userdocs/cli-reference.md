@@ -11,8 +11,9 @@ authoritative, version-matched help text.
 ## Lifecycle
 
 ### `okto init`
-Bootstrap lair as a Docker container on this host (one-time; refuses if
-`~/.okto/config.json` exists). Prompts for API keys / URL / model.
+Bootstrap lair as a Docker container on this host. Prompts for API keys / URL /
+model the first time; if `~/.okto/config.json` already exists it **reuses** it
+(no prompts) and just (re)starts lair. Safe to re-run.
 
 | Flag | Default | Description |
 |------|---------|-------------|

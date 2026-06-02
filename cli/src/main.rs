@@ -70,9 +70,10 @@ struct Cli {
 enum Command {
     /// Bootstrap lair as a docker container on this host.
     ///
-    /// Refuses to run if `~/.okto/config.json` already exists. On first run,
-    /// prompts for the API keys / model interactively, writes config.json,
-    /// pulls the lair image, then `docker run`s it.
+    /// On first run (no `~/.okto/config.json`) prompts for the API keys / model
+    /// interactively and writes config.json. If a config already exists it is
+    /// reused as-is (no prompts). Either way, pulls the lair image and
+    /// `docker run`s it — so `init` is safe to re-run to (re)start lair.
     Init {
         /// Extra env var passed to the lair container via `docker --env-file`.
         /// Inherited by every child agent process lair spawns. Repeatable.
