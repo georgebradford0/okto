@@ -1101,9 +1101,30 @@ const ChatPane = memo(function ChatPane({
           // the user never sees a truncate-then-rebuild flash. Clear any
           // stale `running` flags while we're at it: a previous WS drop may
           // have missed tool_results and the dots would otherwise blink on.
+          //
+          // First drain any in-flight history-stagger queue. On foreground
+          // return loadHistory reconciles a multi-row suffix (completed turns
+          // + their bg anchors since the last user message) by appending it
+          // one row per tick. If `ready { resumed: true }` lands mid-stagger,
+          // those rows are still queued — not yet in `prev` — so the anchor
+          // scan below would miss the latest bg row and snapshot too short a
+          // shadow. The replay only rebuilds the *current* turn, so anything
+          // the stagger appends after this snapshot would then be wiped by
+          // `replay_end`'s swap. Folding the queue in now keeps those
+          // completed turns in the shadow (and lands the anchor on the real
+          // last bg row), so the swap is lossless.
+          const staggered = historyStaggerRef.current.queue
+          historyStaggerRef.current.queue = []
+          if (historyStaggerRef.current.timer) {
+            clearTimeout(historyStaggerRef.current.timer)
+            historyStaggerRef.current.timer = null
+          }
           setMessages(prev => {
-            const hadRunning = prev.some(m => m.running)
-            const cleaned = hadRunning ? prev.map(m => m.running ? { ...m, running: false } : m) : prev
+            const merged = staggered.length
+              ? [...prev, ...staggered.filter(s => !prev.some(m => m.id === s.id))]
+              : prev
+            const hadRunning = merged.some(m => m.running)
+            const cleaned = hadRunning ? merged.map(m => m.running ? { ...m, running: false } : m) : merged
             let anchor = cleaned
             for (let i = cleaned.length - 1; i >= 0; i--) {
               const role = cleaned[i].role

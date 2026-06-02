@@ -5,8 +5,9 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import NoiseConnection from '../src/NativeNoiseConnection'
-import { connectMaster, screen, fireEvent, waitFor, act } from './helpers/render'
+import { connectMaster, renderApp, screen, fireEvent, waitFor, act, lastWs } from './helpers/render'
 import { resetServer, onFetch, fetchCalls } from './helpers/server'
+import { VALID_CONNECT } from './helpers/render'
 
 beforeEach(async () => {
   resetServer()
@@ -135,6 +136,67 @@ test('replies to a server ping with a matching pong', async () => {
     ws.mockServerEvent({ type: 'ping', id: 42 })
   })
   expect(ws.frames()).toContainEqual({ type: 'pong', id: 42 })
+})
+
+test('joining an in-flight multi-turn loop keeps completed turns when ready lands mid history-stagger', async () => {
+  // Regression: a connect (or foreground return) that lands while the agent is
+  // mid agentic-loop. /history carries every COMPLETED turn since the last user
+  // message — each auto-turn fronted by the bg row that triggered it — while the
+  // CURRENT in-flight turn is replayed over the socket.
+  //
+  // loadHistory reconciles that multi-row suffix with a staggered append (one
+  // row per tick). If `ready { resumed: true }` arrives before the stagger has
+  // drained, the replay-shadow anchor would snapshot a half-applied list, land
+  // on the user message instead of the latest bg row, and `replay_end`'s swap
+  // would wipe every completed turn in between — they'd vanish while the new
+  // (current) turn shows. The fix folds the pending stagger queue into the
+  // anchor first. Fake timers freeze the stagger so `ready` deterministically
+  // lands mid-drain.
+  jest.useFakeTimers()
+  try {
+    onFetch('/history', () => ({
+      messages: [
+        { role: 'user',        text: 'do the thing' },
+        { role: 'assistant',   text: 'turn1 reply' },
+        { role: 'bg_complete', text: 'taskA done' },
+        { role: 'assistant',   text: 'turn2 reply' },
+        { role: 'bg_complete', text: 'taskB done' },
+      ],
+    }))
+
+    renderApp()
+    fireEvent.changeText(screen.getByPlaceholderText('2:host:port:key'), VALID_CONNECT)
+    await act(async () => { fireEvent.press(screen.getByText('connect')) })
+    // Flush the noise-connect + /history promise chain (microtasks only) so the
+    // /stream socket is constructed — WITHOUT advancing timers, so the stagger
+    // ticker stays parked with the completed-turn rows still queued.
+    for (let i = 0; i < 6; i++) await act(async () => {})
+
+    const ws = lastWs()
+    expect(ws).toBeTruthy()
+    await act(async () => { ws.mockOpen() })
+
+    // Server greets mid-turn, then replays the in-flight turn and seals it.
+    await act(async () => {
+      ws.mockServerEvent({ type: 'ready', session_id: 's1', resumed: true, model: 'sonnet' })
+    })
+    await act(async () => {
+      ws.mockServerEvent({ type: 'text', text: 'turn3 reply' })
+      ws.mockServerEvent({ type: 'replay_end' })
+    })
+    // Drain whatever timers remain (the fix clears the stagger; this just proves
+    // no late re-append reorders or duplicates anything).
+    await act(async () => { jest.runOnlyPendingTimers() })
+
+    // All three assistant turns survive, in conversational order — the two
+    // completed turns first, the freshly-replayed in-flight turn last.
+    const order = screen
+      .getAllByText(/^turn[123] reply$/)
+      .map(n => n.props.children)
+    expect(order).toEqual(['turn1 reply', 'turn2 reply', 'turn3 reply'])
+  } finally {
+    jest.useRealTimers()
+  }
 })
 
 test('clearing the conversation POSTs /clear and empties the chat', async () => {

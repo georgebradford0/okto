@@ -18,6 +18,14 @@ the git log.
 
 ### Fixed
 
+- Returning from the background (or connecting) mid agentic-loop no longer drops
+  the completed turns since your last message. On reconnect the client loads
+  `/history` and appends the rows one-per-tick; if the server's `ready`/replay for
+  the in-flight turn arrived before that staggered append finished, the replay's
+  shadow anchor snapshotted a half-applied list and `replay_end` then wiped every
+  completed turn in between — they vanished while the current turn showed. The
+  pending stagger queue is now folded into the anchor before the snapshot, so the
+  swap is lossless.
 - Sidebar worktree rows now update promptly when an agent tears a worktree down
   server-side (e.g. during a chat turn). Previously the sidebar only refetched a
   worktree list when the agent roster changed, and lair never pushes `agents` for
