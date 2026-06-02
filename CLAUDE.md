@@ -21,6 +21,12 @@ There is **no root changelog**. Each app keeps its own `CHANGELOG.md` (Keep-a-Ch
 
 When you make a user-facing change to an app, **add an entry under that app's `## [Unreleased]`** in the matching `### Added/Changed/Fixed/Removed/Security` subsection. When you bump an app's version, rename its `## [Unreleased]` heading to `## [<version>] - <YYYY-MM-DD>` and start a fresh empty `## [Unreleased]` above it. A change that spans apps gets an entry in each affected app's changelog.
 
+## Operator docs (`userdocs/`)
+
+`userdocs/` is the **operator-facing** documentation site (MkDocs Material), published to GitHub Pages by `.github/workflows/docs.yml` on push to `main`. It documents how to use the `okto` CLI to manage `lair`. (The repo-root `docs/` is a separate, **developer-internal** reference tree and is *not* part of this site.)
+
+**When you change the `okto` CLI (`cli/`)** — add, remove, or rename a command or flag, or change a default, prompt, or observable behavior — **update `userdocs/` in the same change so it doesn't drift.** At minimum keep `userdocs/cli-reference.md` accurate, plus any affected guide page (`getting-started.md`, `managing-lair.md`, `agents.md`, `mcp.md`, `tasks.md`, `notifications.md`, `customization.md`). The clap `about`/doc-comments in `cli/src/` and `userdocs/` are two views of the same surface and must stay consistent.
+
 ## Testing
 
 There is **no unit/integration layer by design** — the only tests are **end-to-end** tests that drive the real `lair` binary as a black box. They live in the `tests/` crate (`okto-tests`):
