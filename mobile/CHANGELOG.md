@@ -9,6 +9,8 @@ the git log.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-06-02
+
 ### Added
 - **Wire-protocol awareness.** The app now reads the `wire_protocol` version the
   connected okto host advertises (in the `ready` frame) and compares it to the

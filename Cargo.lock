@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "okto-core",
  "openssl-sys",
@@ -2610,7 +2610,7 @@ dependencies = [
 
 [[package]]
 name = "lair"
-version = "0.21.5"
+version = "0.21.6"
 dependencies = [
  "anyhow",
  "axum",

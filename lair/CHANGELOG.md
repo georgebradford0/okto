@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.21.6] - 2026-06-02
+
 ### Added
 - **Wire protocol version advertised.** lair now reports `wire_protocol`
   (`okto_core::WIRE_PROTOCOL`) and `lair_version` on `GET /info` and in every
