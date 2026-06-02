@@ -81,6 +81,12 @@ interface Message {
   prevRole?:  Message['role']
 }
 
+// A FlatList row: either a single message bubble, or a coalesced run of
+// consecutive tool calls rendered as one collapsible ToolGroup.
+type RenderRow =
+  | { kind: 'msg';   key: string; message: Message }
+  | { kind: 'group'; key: string; tools: Message[] }
+
 // ── Logging ────────────────────────────────────────────────────────────────────
 
 const ts = () => new Date().toISOString().replace('T', ' ').slice(0, 23)
@@ -513,15 +519,99 @@ function ShimmerText({
   )
 }
 
+// A single tool row: a shimmering label (live while running, dimmed while
+// queued) that taps to reveal the tool's streamed/finished output. Shared by
+// the standalone single-tool bubble and the expanded ToolGroup list.
+const ToolRow = memo(function ToolRow({
+  message, paddingHorizontal = 16,
+}: {
+  message:           Message
+  paddingHorizontal?: number
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const running = !!message.running
+  const queued  = !running && message.output === undefined
+  return (
+    <Touchable
+      marginBottom={4} paddingHorizontal={paddingHorizontal}
+      onPress={() => setExpanded(v => !v)}
+      activeOpacity={0.6}
+    >
+      <ShimmerText
+        text={message.text}
+        running={running}
+        dim={queued}
+        numberOfLines={expanded ? undefined : 1}
+      />
+      {expanded && message.output != null && (
+        <View marginTop={6} paddingLeft={2}>
+          <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+            <Text fontSize={12} lineHeight={18} color="$typography600" style={{ fontFamily: MONO }} selectable>{message.output}</Text>
+          </ScrollView>
+        </View>
+      )}
+    </Touchable>
+  )
+})
+
+// A run of consecutive tool calls, collapsed into one block so a long agentic
+// loop doesn't flood the transcript. Collapsed: while a step is running we show
+// just that step's shimmer plus an `n/total` progress counter; once idle we show
+// a muted "N tool calls" summary. Tap to expand the full list of ToolRows (each
+// independently expandable for its output). A lone tool renders inline (no
+// group chrome) — see the renderRows grouping in ChatPane.
+const ToolGroup = memo(function ToolGroup({
+  tools,
+}: {
+  tools: Message[]
+}) {
+  const [open, setOpen] = useState(false)
+  const fadeAnim = useRef(new Animated.Value(0)).current
+  useEffect(() => {
+    Animated.timing(fadeAnim, { toValue: 1, duration: 180, useNativeDriver: true }).start()
+  }, [])
+
+  const total      = tools.length
+  const active     = tools.find(t => t.running)
+  const doneCount  = tools.filter(t => t.output !== undefined).length
+
+  return (
+    <Animated.View style={{ opacity: fadeAnim }}>
+      <Touchable
+        paddingHorizontal={16}
+        marginBottom={open ? 6 : 4}
+        onPress={() => setOpen(v => !v)}
+        activeOpacity={0.6}
+      >
+        {active && !open ? (
+          // Live + collapsed: surface the running step, hide the rest.
+          <View flexDirection="row" alignItems="center" gap={8}>
+            <View flex={1}>
+              <ShimmerText text={active.text} running dim={false} numberOfLines={1} />
+            </View>
+            <Text fontSize={11} color="$typography400" style={{ fontFamily: MONO }}>{Math.min(doneCount + 1, total)}/{total}</Text>
+          </View>
+        ) : (
+          <Text fontSize={13} color="$typography500" style={{ fontFamily: MONO }}>
+            {open ? '▾' : '▸'} {total} tool calls
+          </Text>
+        )}
+      </Touchable>
+      {open && (
+        <View marginBottom={4}>
+          {tools.map(t => <ToolRow key={t.id} message={t} paddingHorizontal={28} />)}
+        </View>
+      )}
+    </Animated.View>
+  )
+})
+
 const MessageBubble = memo(function MessageBubble({
   message, prevRole,
 }: {
   message:   Message
   prevRole?: Message['role']
 }) {
-  // Collapsed by default; tap expands to see tool output. Running tools show
-  // a pulsing dot so the user knows live output is available.
-  const [toolExpanded, setToolExpanded] = useState(false)
   const fadeAnim = useRef(new Animated.Value(0)).current
   const baseTextStyle = message.role === 'user' ? s.textBlock : s.assistantTextBlock
   const renderedText = useMemo(() => renderText(message.text, baseTextStyle), [message.text, message.role])
@@ -574,29 +664,9 @@ const MessageBubble = memo(function MessageBubble({
     )
   }
   if (message.role === 'tool') {
-    const running = !!message.running
-    const queued  = !running && message.output === undefined
     return (
       <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
-        <Touchable
-          marginBottom={4} paddingHorizontal={16}
-          onPress={() => setToolExpanded(v => !v)}
-          activeOpacity={0.6}
-        >
-          <ShimmerText
-            text={message.text}
-            running={running}
-            dim={queued}
-            numberOfLines={toolExpanded ? undefined : 1}
-          />
-          {toolExpanded && message.output != null && (
-            <View marginTop={6} paddingLeft={2}>
-              <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled showsVerticalScrollIndicator={false}>
-                <Text fontSize={12} lineHeight={18} color="$typography600" style={{ fontFamily: MONO }} selectable>{message.output}</Text>
-              </ScrollView>
-            </View>
-          )}
-        </Touchable>
+        <ToolRow message={message} />
       </Animated.View>
     )
   }
@@ -1012,7 +1082,7 @@ const ChatPane = memo(function ChatPane({
   // backoff reconnect kicks in. Symmetrical to the server-side check.
   const clientPingNextRef    = useRef<number>(0)
   const clientPongAckedRef   = useRef<number>(0)
-  const listRef           = useRef<FlatList<Message>>(null)
+  const listRef           = useRef<FlatList<RenderRow>>(null)
   const isAtBottomRef     = useRef(true)
   const contentHeightRef  = useRef(0)
   const listHeightRef     = useRef(0)
@@ -1372,7 +1442,7 @@ const ChatPane = memo(function ChatPane({
     log(`[chat] loadHistory GET ${baseUrl}/history${attempt > 0 ? ` (attempt ${attempt + 1})` : ''}`)
     fetch(`${baseUrl}/history`, { signal: controller.signal })
       .then(r => { log(`[chat] loadHistory HTTP ${r.status}`); return r.json() })
-      .then((data: { messages: Array<{ role: string; text: string; cost_usd?: number; output?: string }> }) => {
+      .then((data: { messages: Array<{ role: string; text: string; cost_usd?: number; output?: string; display?: string }> }) => {
         log(`[chat] history loaded ${data.messages.length} messages`)
         // Mark history loaded for this baseUrl so the gated WS effect can run.
         setHistoryReadyFor(baseUrl)
@@ -1383,7 +1453,10 @@ const ChatPane = memo(function ChatPane({
         const msgs: Message[] = withPrevRoles(data.messages.map((m, i) => ({
           id:   `h${i}`,
           role: m.role as Message['role'],
-          text: m.text,
+          // Tool rows carry a friendly `display` ("Editing file (…)") that
+          // mirrors what the live stream showed; prefer it so a finished tool
+          // never reverts to the raw `name(arg)` text.
+          text: m.display ?? m.text,
           ...(m.cost_usd != null ? { cost: m.cost_usd } : {}),
           ...(m.output    != null ? { output: m.output } : {}),
         })))
@@ -1713,11 +1786,33 @@ const ChatPane = memo(function ChatPane({
     }
   }, [isPending])
 
-  const renderMessageItem = useCallback(({ item }: { item: Message }) => (
-    <MessageBubble
-      message={item}
-      prevRole={item.prevRole}
-    />
+  // Coalesce runs of ≥2 consecutive tool rows into a single ToolGroup so a long
+  // agentic loop doesn't flood the transcript; a lone tool renders inline. The
+  // group's stable key is its first tool's id so the FlatList row survives as
+  // later tools stream in and extend the run.
+  const renderRows = useMemo<RenderRow[]>(() => {
+    const rows: RenderRow[] = []
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i].role === 'tool') {
+        const run: Message[] = []
+        while (i < messages.length && messages[i].role === 'tool') { run.push(messages[i]); i++ }
+        i--
+        if (run.length === 1) {
+          rows.push({ kind: 'msg', key: run[0].id, message: run[0] })
+        } else {
+          rows.push({ kind: 'group', key: `grp:${run[0].id}`, tools: run })
+        }
+      } else {
+        rows.push({ kind: 'msg', key: messages[i].id, message: messages[i] })
+      }
+    }
+    return rows
+  }, [messages])
+
+  const renderMessageItem = useCallback(({ item }: { item: RenderRow }) => (
+    item.kind === 'group'
+      ? <ToolGroup tools={item.tools} />
+      : <MessageBubble message={item.message} prevRole={item.message.prevRole} />
   ), [])
 
   return (
@@ -1725,8 +1820,8 @@ const ChatPane = memo(function ChatPane({
       <View flex={1}>
         <FlatList
           ref={listRef}
-          data={messages}
-          keyExtractor={m => m.id}
+          data={renderRows}
+          keyExtractor={r => r.key}
           renderItem={renderMessageItem}
           contentContainerStyle={[
             { paddingVertical: 18 },

@@ -319,6 +319,26 @@ pub fn derive_display_label(name: &str) -> String {
     out
 }
 
+/// Human-readable label for a tool name when we only have the recorded name and
+/// not the active tool list (e.g. projecting persisted history in
+/// `messages_to_history`). Mirrors the curated `display_label`s of the built-in
+/// tools in [`tool_definitions`] and falls back to [`derive_display_label`] for
+/// everything else (MCP / unknown tools) — so a finished tool row reads the same
+/// friendly phrase ("Editing file") the live stream showed, never the raw name.
+pub fn display_label(name: &str) -> String {
+    match name {
+        "bash"       => "Running command".into(),
+        "read_file"  => "Reading file".into(),
+        "edit_file"  => "Editing file".into(),
+        "write_file" => "Writing file".into(),
+        "glob"       => "Finding files".into(),
+        "grep"       => "Searching files".into(),
+        "web_fetch"  => "Fetching URL".into(),
+        "web_search" => "Searching the web".into(),
+        _            => derive_display_label(name),
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ApiMessage {
     pub role:    String,

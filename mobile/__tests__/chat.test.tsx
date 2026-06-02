@@ -138,6 +138,48 @@ test('replies to a server ping with a matching pong', async () => {
   expect(ws.frames()).toContainEqual({ type: 'pong', id: 42 })
 })
 
+test('a run of consecutive tool calls collapses into one group, expandable on tap', async () => {
+  const { ws } = await connectMaster()
+  typeAndSend('do a bunch of things')
+
+  // Three tools stream back-to-back; only the first runs, the rest queue.
+  await act(async () => {
+    ws.mockServerEvent({ type: 'tool_use', tool_use_id: 't1', tool: 'edit_file', input: { path: 'a.ts' }, display: 'Editing file' })
+    ws.mockServerEvent({ type: 'tool_use', tool_use_id: 't2', tool: 'bash',      input: { command: 'ls' }, display: 'Running command' })
+    ws.mockServerEvent({ type: 'tool_use', tool_use_id: 't3', tool: 'read_file', input: { path: 'b.ts' }, display: 'Reading file' })
+  })
+
+  // Collapsed: the running step shows with an n/total counter; the queued
+  // steps are hidden so the transcript isn't flooded.
+  const runningLabel = await screen.findByText('Editing file (a.ts)')
+  expect(runningLabel).toBeOnTheScreen()
+  expect(screen.getByText('1/3')).toBeOnTheScreen()
+  expect(screen.queryByText('Running command (ls)')).toBeNull()
+  expect(screen.queryByText('Reading file (b.ts)')).toBeNull()
+
+  // Tap the group header → expands to reveal every step.
+  await act(async () => { fireEvent.press(runningLabel) })
+  expect(await screen.findByText(/3 tool calls/)).toBeOnTheScreen()
+  expect(screen.getByText('Editing file (a.ts)')).toBeOnTheScreen()
+  expect(screen.getByText('Running command (ls)')).toBeOnTheScreen()
+  expect(screen.getByText('Reading file (b.ts)')).toBeOnTheScreen()
+})
+
+test('a finished tool call from /history renders its friendly label, not the raw tool name', async () => {
+  // /history carries a `display` phrase on tool rows; the client prefers it over
+  // the raw `name(arg)` text so a reloaded/finished tool reads like it did live.
+  onFetch('/history', () => ({
+    messages: [
+      { role: 'user', text: 'edit it' },
+      { role: 'tool', text: 'edit_file(src/x.ts)', display: 'Editing file (src/x.ts)', output: 'ok' },
+    ],
+  }))
+  await connectMaster()
+
+  expect(await screen.findByText('Editing file (src/x.ts)')).toBeOnTheScreen()
+  expect(screen.queryByText('edit_file(src/x.ts)')).toBeNull()
+})
+
 test('joining an in-flight multi-turn loop keeps completed turns when ready lands mid history-stagger', async () => {
   // Regression: a connect (or foreground return) that lands while the agent is
   // mid agentic-loop. /history carries every COMPLETED turn since the last user

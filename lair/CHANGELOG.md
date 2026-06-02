@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+- **Friendly tool labels in `/history`.** Tool rows returned by `GET /history`
+  (and the agent-side equivalent) now carry an additive `display` field with the
+  same natural-language phrase the live `/stream` sends (e.g. "Editing file
+  (src/x.rs)"). `text` is unchanged (raw `name(arg)`) so existing clients are
+  unaffected; the mobile client prefers `display` so a finished tool no longer
+  reverts to the bare tool name after a history reload. Covered by
+  `tests/tests/tools.rs`.
+
 ### Changed
 - **Auto-named agents.** When a new agent is created without an explicit `name`
   (via the `create_agent` tool or `POST /agents`), lair now asks the model for a

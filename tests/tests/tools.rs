@@ -51,6 +51,29 @@ async fn bash_tool_runs_and_has_a_real_side_effect() {
 
     let tool_use = events.iter().find(|e| e["type"] == "tool_use").unwrap();
     assert_eq!(tool_use["tool"], "bash");
+    // The streamed tool_use carries the friendly label the mobile client renders
+    // in place of the raw tool name.
+    assert_eq!(tool_use["display"], "Running command", "tool_use missing friendly display");
+
+    // /history projects the same friendly phrase on the persisted tool row via a
+    // `display` field (text stays the raw `name(arg)` for older clients), so a
+    // finished tool never reverts to the bare tool name after a reconcile.
+    let (status, body) = lair.http_get("/history").await.expect("GET /history");
+    assert_eq!(status, 200, "history status: {body}");
+    let hist: serde_json::Value = serde_json::from_str(&body).expect("history json");
+    let tool_row = hist["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("a tool row in /history");
+    assert_eq!(
+        tool_row["display"].as_str().unwrap_or_default(),
+        "Running command (echo e2e-tool-ok > ".to_string()
+            + marker.to_str().unwrap()
+            + ")",
+        "history tool row missing friendly display; got {tool_row}",
+    );
 
     // The real side effect: the file exists with the content the tool wrote.
     let mut contents = None;

@@ -155,7 +155,7 @@ pub fn load_tasks(data_dir: &Path, log_prefix: &str) -> Vec<TaskRecord> {
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 pub struct HistMsg {
     pub role: String,
     pub text: String,
@@ -163,6 +163,11 @@ pub struct HistMsg {
     pub cost_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+    /// Friendly label for `tool` rows (e.g. "Editing file (src/x.rs)"), so a
+    /// finished tool reads like the live stream did rather than the raw
+    /// `name(arg)` in `text`. Additive: `text` is unchanged for older clients.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
 }
 
 /// Project the persisted `ApiMessage` log into the wire-shape `mobile/src/wire.ts`
@@ -192,46 +197,51 @@ pub fn messages_to_history(messages: &[ApiMessage], last_cost_usd: Option<f64>) 
                 let text: String = m.content.iter()
                     .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
                     .collect();
-                if !text.is_empty() { result.push(HistMsg { role: "user".to_string(), text, cost_usd: None, output: None }); }
+                if !text.is_empty() { result.push(HistMsg { role: "user".to_string(), text, ..Default::default() }); }
             }
             "interrupted" => {
-                result.push(HistMsg { role: "interrupted".to_string(), text: "interrupted".to_string(), cost_usd: None, output: None });
+                result.push(HistMsg { role: "interrupted".to_string(), text: "interrupted".to_string(), ..Default::default() });
             }
             "bg_complete" => {
                 let text: String = m.content.iter()
                     .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
                     .collect();
-                result.push(HistMsg { role: "bg_complete".to_string(), text, cost_usd: None, output: None });
+                result.push(HistMsg { role: "bg_complete".to_string(), text, ..Default::default() });
             }
             "bg_progress" => {
                 let text: String = m.content.iter()
                     .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
                     .collect();
-                result.push(HistMsg { role: "bg_progress".to_string(), text, cost_usd: None, output: None });
+                result.push(HistMsg { role: "bg_progress".to_string(), text, ..Default::default() });
             }
             "error" => {
                 let text: String = m.content.iter()
                     .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
                     .collect();
-                result.push(HistMsg { role: "error".to_string(), text, cost_usd: None, output: None });
+                result.push(HistMsg { role: "error".to_string(), text, ..Default::default() });
             }
             "assistant" => {
                 let text: String = m.content.iter()
                     .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
                     .collect();
-                if !text.is_empty() { result.push(HistMsg { role: "assistant".to_string(), text, cost_usd: None, output: None }); }
+                if !text.is_empty() { result.push(HistMsg { role: "assistant".to_string(), text, ..Default::default() }); }
                 for block in &m.content {
                     if let ContentBlock::ToolUse { id, name, input } = block {
                         let preview = input.as_object()
                             .and_then(|map| map.values().next())
                             .and_then(|v| v.as_str())
                             .map(|s| s.trim().to_string());
-                        let text = match preview {
-                            Some(p) => format!("{name}({p})"),
-                            None    => name.clone(),
+                        // `text` stays the raw `name(arg)` projection (unchanged
+                        // for older clients); `display` carries the same friendly
+                        // phrase the live stream sent, so a finished tool row no
+                        // longer reverts to the bare tool name.
+                        let label = crate::display_label(name);
+                        let (text, display) = match preview {
+                            Some(p) => (format!("{name}({p})"), format!("{label} ({p})")),
+                            None    => (name.clone(),           label),
                         };
                         let output = tool_outputs.get(id).cloned();
-                        result.push(HistMsg { role: "tool".to_string(), text, cost_usd: None, output });
+                        result.push(HistMsg { role: "tool".to_string(), text, output, display: Some(display), ..Default::default() });
                     }
                 }
             }

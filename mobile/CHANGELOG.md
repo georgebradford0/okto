@@ -15,9 +15,18 @@ the git log.
   bordered chip. The pulsing/queued status dots are gone; while a
   tool is running, a soft light band sweeps across the label text (a "shimmer")
   to signal live activity. Tapping the label still expands the streamed output.
+- Consecutive tool calls now collapse into a single group so a long agentic loop
+  no longer floods the transcript. While the loop runs, the group shows just the
+  current step's shimmering label plus an `n/total` counter; once idle it shows a
+  muted "N tool calls" summary. Tap to expand the full list (each step still
+  expands independently for its output). A lone tool still renders inline.
 
 ### Fixed
 
+- Finished tool calls now keep their friendly natural-language label ("Editing
+  file (…)") instead of reverting to the raw tool name (`edit_file(…)`) after a
+  history reload. `/history` tool rows now carry the same `display` phrase the
+  live stream sent, and the client prefers it over the raw `name(arg)` text.
 - Returning from the background (or connecting) mid agentic-loop no longer drops
   the completed turns since your last message. On reconnect the client loads
   `/history` and appends the rows one-per-tick; if the server's `ready`/replay for
