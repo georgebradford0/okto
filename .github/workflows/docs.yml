@@ -1,0 +1,53 @@
+name: docs
+
+# Build the operator-facing MkDocs site (userdocs/) and deploy it to GitHub
+# Pages. Runs on pushes to main that touch the docs, and on manual dispatch.
+#
+# One-time setup: in the repo's Settings → Pages, set "Source" to "GitHub
+# Actions". No branch or PAT needed — deployment uses the Pages OIDC token.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'userdocs/**'
+      - 'mkdocs.yml'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+# Allow the deploy job to publish to Pages via the OIDC token.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two deploys at once; let an in-progress run finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install MkDocs Material
+        run: pip install "mkdocs-material==9.*"
+      - name: Build site (strict)
+        run: mkdocs build --strict --site-dir _site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

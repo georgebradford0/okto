@@ -27,3 +27,7 @@ node_modules/
 # macOS Finder metadata
 .DS_Store
 **/.DS_Store
+
+# MkDocs build output (userdocs → GitHub Pages)
+/site/
+/_site/
