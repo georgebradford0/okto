@@ -1446,6 +1446,124 @@ pub async fn call_turn(
     }
 }
 
+/// Best-effort: ask the model for a short, memorable agent name derived from
+/// the spawn context (git URL + startup prompt). Returns a registry-safe slug,
+/// or `None` on any failure (no API key, network/API error, empty or garbage
+/// reply) so the caller can fall back to its deterministic default name. This
+/// is a single tool-less model call whose output is never streamed to a client.
+pub async fn generate_agent_name(
+    git_url:        Option<&str>,
+    startup_prompt: Option<&str>,
+) -> Option<String> {
+    let api_key = resolve_api_key()?;
+    let backend = ApiBackend::resolve();
+    let model   = resolve_model();
+
+    let mut ctx = String::new();
+    if let Some(u) = git_url        { ctx.push_str(&format!("Git repository: {u}\n")); }
+    if let Some(p) = startup_prompt { ctx.push_str(&format!("Task / purpose: {p}\n")); }
+    if ctx.is_empty() {
+        ctx.push_str("A general-purpose coding agent with no specific repository or task.\n");
+    }
+
+    let system = "You name coding agents. Reply with ONLY a single short, \
+        memorable name in lowercase kebab-case: two or three words joined by \
+        hyphens, using only letters and digits (e.g. \"crimson-otter\" or \
+        \"auth-refactor\"). No \"lair-\" prefix, no quotes, no punctuation, no \
+        explanation — output just the name.";
+    let user_text = format!("{ctx}\nName this agent.");
+    let messages = vec![ApiMessage {
+        role:    "user".to_string(),
+        content: vec![ContentBlock::Text { text: user_text }],
+    }];
+
+    // Throwaway channel + cancel: this call streams nothing to any client; we
+    // just collect the final text blocks. Drain the receiver so sends never
+    // block on a full channel.
+    let (tx, mut rx) = mpsc::channel::<ChatEvent>(64);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let cancel = CancellationToken::new();
+
+    let blocks = match &backend {
+        ApiBackend::Anthropic => {
+            let body = serde_json::json!({
+                "model":      model,
+                "max_tokens": 32,
+                "stream":     true,
+                "system":     [{"type":"text","text":system}],
+                "messages":   messages.iter().map(|m| serde_json::to_value(m).unwrap()).collect::<Vec<_>>(),
+            });
+            let resp = http_client()
+                .post(anthropic_url())
+                .header("x-api-key",         &api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type",      "application/json")
+                .header("accept",            "text/event-stream")
+                .json(&body).send().await.ok()?;
+            if !resp.status().is_success() {
+                warn!("[core/generate_agent_name] API error {}", resp.status());
+                return None;
+            }
+            stream_anthropic(resp, &cancel, &tx, &[]).await.ok()?.0
+        }
+        ApiBackend::OpenAi { api_url } => {
+            let body = serde_json::json!({
+                "model":          model,
+                "max_tokens":     32,
+                "stream":         true,
+                "stream_options": { "include_usage": true },
+                "messages":       messages_to_openai(system, &messages),
+            });
+            let resp = http_client()
+                .post(api_url)
+                .header("Authorization", format!("Bearer {api_key}"))
+                .header("content-type",  "application/json")
+                .header("accept",        "text/event-stream")
+                .json(&body).send().await.ok()?;
+            if !resp.status().is_success() {
+                warn!("[core/generate_agent_name] API error {}", resp.status());
+                return None;
+            }
+            stream_openai(resp, &cancel, &tx, &[]).await.ok()?.0
+        }
+    };
+
+    let raw: String = blocks.iter().filter_map(|b| match b {
+        ContentBlock::Text { text } => Some(text.as_str()),
+        _ => None,
+    }).collect::<Vec<_>>().join(" ");
+
+    let name = sanitize_agent_name(&raw);
+    match &name {
+        Some(n) => info!("[core/generate_agent_name] model named agent '{n}' (raw: {raw:?})"),
+        None    => warn!("[core/generate_agent_name] model reply yielded no usable name (raw: {raw:?})"),
+    }
+    name
+}
+
+/// Turn a raw model reply into a registry-safe agent name slug: trim, lowercase,
+/// collapse each run of non-alphanumeric chars into a single hyphen, drop a
+/// leading `lair-` prefix and any surrounding hyphens, and cap the length.
+/// Returns `None` if nothing usable remains.
+pub fn sanitize_agent_name(raw: &str) -> Option<String> {
+    let mut slug = String::new();
+    let mut prev_hyphen = false;
+    for c in raw.trim().to_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c);
+            prev_hyphen = false;
+        } else if !slug.is_empty() && !prev_hyphen {
+            slug.push('-');
+            prev_hyphen = true;
+        }
+    }
+    let trimmed = slug.trim_matches('-');
+    let trimmed = trimmed.strip_prefix("lair-").unwrap_or(trimmed);
+    let capped: String = trimmed.chars().take(40).collect();
+    let capped = capped.trim_matches('-').to_string();
+    if capped.is_empty() { None } else { Some(capped) }
+}
+
 /// Send a message and run the tool loop until Claude stops with end_turn.
 /// Returns (final_text, total_cost_usd, updated_messages).
 /// MCP is disabled; only built-in tools are available.

@@ -224,6 +224,11 @@ impl LairProcess {
         tunnel::http_post(self.noise_port, path).await
     }
 
+    /// HTTP POST with a JSON body over the tunnel against lair's own routes.
+    pub async fn http_post_json(&self, path: &str, body: &str) -> anyhow::Result<(u16, String)> {
+        tunnel::http_post_json(self.noise_port, path, body).await
+    }
+
     /// Open a chat WebSocket to lair's top-level `/stream`.
     pub async fn chat(&self) -> anyhow::Result<tunnel::ChatWs> {
         tunnel::ChatWs::connect(self.noise_port, "/stream").await
