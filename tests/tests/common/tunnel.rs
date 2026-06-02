@@ -151,6 +151,20 @@ pub async fn http_post(noise_port: u16, path: &str) -> anyhow::Result<(u16, Stri
     http_request(noise_port, "POST", path).await
 }
 
+/// One-shot HTTP POST with a JSON body over a fresh tunnel. Returns (status, body).
+pub async fn http_post_json(
+    noise_port: u16,
+    path: &str,
+    body: &str,
+) -> anyhow::Result<(u16, String)> {
+    tokio::time::timeout(
+        HTTP_TIMEOUT,
+        http_request_inner_body(noise_port, "POST", path, body),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("HTTP POST {path} timed out after {HTTP_TIMEOUT:?}"))?
+}
+
 /// Overall ceiling for a single one-shot HTTP request over the tunnel. Bounds
 /// the call so a stuck connection surfaces as an error instead of hanging.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -165,9 +179,20 @@ pub async fn http_request(noise_port: u16, method: &str, path: &str) -> anyhow::
 }
 
 async fn http_request_inner(noise_port: u16, method: &str, path: &str) -> anyhow::Result<(u16, String)> {
+    http_request_inner_body(noise_port, method, path, "").await
+}
+
+async fn http_request_inner_body(
+    noise_port: u16,
+    method: &str,
+    path: &str,
+    body: &str,
+) -> anyhow::Result<(u16, String)> {
     let mut stream = open_tunnel(noise_port).await?;
     let req = format!(
-        "{method} {path} HTTP/1.1\r\nHost: lair\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: lair\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
     );
     stream.write_all(req.as_bytes()).await?;
 

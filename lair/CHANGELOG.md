@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+- **Auto-named agents.** When a new agent is created without an explicit `name`
+  (via the `create_agent` tool or `POST /agents`), lair now asks the model for a
+  short, memorable name derived from the spawn context (git URL + startup
+  prompt) — a single tool-less model call. Passing `name` still uses it verbatim
+  and skips the call. If model naming fails for any reason, lair falls back to
+  the previous deterministic default (`lair-<repo-slug>`, or `lair-workload`).
+  Generated names that collide with an existing agent get a numeric suffix
+  rather than failing the spawn. Covered by e2e tests
+  (`tests/tests/agent_create.rs`).
+
 ## [0.21.4] - 2026-06-01
 
 ### Added
