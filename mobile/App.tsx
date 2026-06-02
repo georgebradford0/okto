@@ -38,6 +38,7 @@ import {
   type ServerEvent,
   type TaskRecord,
   type WorktreeMeta,
+  WIRE_PROTOCOL,
   encodeClientFrame,
   parseServerEvent,
 } from './src/wire'
@@ -1046,6 +1047,10 @@ const ChatPane = memo(function ChatPane({
     return cached ? withPrevRoles(cached as Message[]) : []
   })
   const [status,         setStatus]         = useState<ConnStatus>('connecting')
+  // Wire-protocol version advertised by the connected lair (from the `ready`
+  // frame); null until the first `ready`. Compared against this build's
+  // WIRE_PROTOCOL to surface an "update" banner on a mismatch.
+  const [lairProtocol,   setLairProtocol]   = useState<number | null>(null)
   // Ref mirror of `status` so handleStreamEvent (a useCallback that doesn't
   // depend on `status`) can read the current value without closure staleness.
   // Kept in lockstep by updateStatus below.
@@ -1159,6 +1164,11 @@ const ChatPane = memo(function ChatPane({
 
     switch (event.type) {
       case 'ready': {
+        // Record the wire-protocol version the lair we're connected to speaks
+        // (absent on lairs older than protocol 1 → treated as 0). The banner
+        // above the transcript compares it to WIRE_PROTOCOL (what this build
+        // speaks) and tells the user which side to update on a mismatch.
+        setLairProtocol(typeof event.wire_protocol === 'number' ? event.wire_protocol : 0)
         // Server greets us; status becomes 'streaming' if we joined an in-flight
         // turn (events for it will arrive next), else 'ready' for input.
         updateStatus(event.resumed ? 'streaming' : 'ready')
@@ -1815,8 +1825,22 @@ const ChatPane = memo(function ChatPane({
       : <MessageBubble message={item.message} prevRole={item.message.prevRole} />
   ), [])
 
+  // Advisory when the connected lair speaks a different wire protocol than this
+  // build. lair stays backward-compatible across versions, so this is a soft
+  // nudge (not a hard block): point the user at whichever side is behind.
+  const wireNotice = lairProtocol == null || lairProtocol === WIRE_PROTOCOL
+    ? null
+    : lairProtocol < WIRE_PROTOCOL
+      ? 'Your okto host is on an older version. Update it (okto lair update) for full compatibility.'
+      : 'This app is older than your okto host. Update the app for full compatibility.'
+
   return (
     <View flex={1} backgroundColor="$background50">
+      {wireNotice && (
+        <View backgroundColor="$primary50" paddingHorizontal={16} paddingVertical={8} borderBottomWidth={1} borderColor="$outline200">
+          <Text fontFamily="$body" fontSize={12} lineHeight={17} color="$primary700">⚠ {wireNotice}</Text>
+        </View>
+      )}
       <View flex={1}>
         <FlatList
           ref={listRef}

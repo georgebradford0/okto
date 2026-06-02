@@ -249,6 +249,8 @@ async fn info_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Va
         "pubkey":               state.pubkey_b32,
         "relay_signing_pubkey": state.relay_signer.pubkey_b32(),
         "relay_url":            state.relay_url,
+        "wire_protocol":        okto_core::WIRE_PROTOCOL,
+        "lair_version":         env!("CARGO_PKG_VERSION"),
     }))
 }
 
@@ -667,7 +669,7 @@ async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
         (replay, resumed)
     };
 
-    let ready = serde_json::json!({"type":"ready","session_id":"","resumed":resumed,"model":resolve_model()}).to_string();
+    let ready = serde_json::json!({"type":"ready","session_id":"","resumed":resumed,"model":resolve_model(),"wire_protocol":okto_core::WIRE_PROTOCOL}).to_string();
     if ws_tx.send(WsMessage::Text(ready)).await.is_err() {
         debug!("[lair/stream] client disconnected before ready frame");
         return;

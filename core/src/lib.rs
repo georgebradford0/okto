@@ -51,6 +51,28 @@ pub use ssh::{
 pub mod registry;
 pub use registry::{AgentRecord, AgentStatus, Registry};
 
+// ── Wire protocol version ───────────────────────────────────────────────────────
+
+/// Revision of the wire protocol spoken between the clients (mobile, desktop)
+/// and lair/agent: the `/stream` WebSocket [`ChatEvent`] frames plus the `/info`
+/// and `/history` JSON shapes.
+///
+/// **This is deliberately independent of the per-app marketing versions**
+/// (`lair/Cargo.toml`, mobile `versionName`, …). Bump it **only** on a
+/// *breaking* wire change — removing or renaming a field, changing the meaning
+/// of an existing one, or requiring a new event the other side must understand
+/// to function. Purely **additive** changes (a new optional field, a new event
+/// type, a new endpoint) are backward-compatible and must **not** bump it.
+///
+/// lair advertises this on `GET /info` and in every `ready` frame and is
+/// expected to remain backward-compatible across all client versions (old
+/// clients keep working). Each client mirrors the value it was built against in
+/// its `wire.ts` (`mobile/src/wire.ts`, `desktop/src/wire.ts`) — kept in lockstep
+/// by a CI check — and references the lair's advertised version to warn the user
+/// when one side is behind. See `PROTOCOL.md` and CLAUDE.md ("Wire protocol
+/// versioning").
+pub const WIRE_PROTOCOL: u32 = 1;
+
 // ── Shared HTTP client ────────────────────────────────────────────────────────
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();

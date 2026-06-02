@@ -6,10 +6,21 @@
 //
 // JSON tagging: `{"type": "<snake_case>", ...fields}` (matches serde tag="type").
 
+// ── Wire protocol version ─────────────────────────────────────────────────────
+
+// Revision of the wire protocol this client was built against. MUST stay in
+// lockstep with `okto_core::WIRE_PROTOCOL` (core/src/lib.rs) — a CI check
+// (`__tests__/wireProtocol.test.tsx`) fails the build if they diverge. lair
+// advertises its own version on `/info` and in every `ready` frame; we compare
+// the two to warn the user when one side is behind (see `App.tsx`). Bump only
+// on a breaking wire change — see PROTOCOL.md / CLAUDE.md.
+export const WIRE_PROTOCOL = 1
+
 // ── Server → client events ────────────────────────────────────────────────────
 
 export type ServerEvent =
-  | { type: 'ready';         session_id: string; resumed: boolean; model: string }
+  // `wire_protocol` is optional: lairs older than protocol 1 don't send it.
+  | { type: 'ready';         session_id: string; resumed: boolean; model: string; wire_protocol?: number }
   | { type: 'replay_end' }
   | { type: 'text';          text: string }
   | { type: 'tool_use';      tool_use_id: string; tool: string; input: unknown; display?: string }

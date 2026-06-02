@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+- **Wire protocol version advertised.** lair now reports `wire_protocol`
+  (`okto_core::WIRE_PROTOCOL`) and `lair_version` on `GET /info` and in every
+  `ready` frame, so clients can detect when they're talking to an
+  incompatible-vintage host. lair stays backward-compatible across all client
+  versions and never rejects a client on version. See `PROTOCOL.md`. Covered by
+  e2e (`tests/tests/boot.rs`).
+
 ## [0.21.5] - 2026-06-02
 
 ### Added

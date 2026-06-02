@@ -28,6 +28,34 @@ async fn info_route_returns_json() {
     let v: serde_json::Value =
         serde_json::from_str(&body).unwrap_or_else(|e| panic!("info body not JSON ({e}): {body:?}"));
     assert!(v.is_object(), "expected a JSON object from /info, got {v}");
+    // /info advertises the wire-protocol version clients negotiate against; it
+    // must match the compiled-in core constant.
+    assert_eq!(
+        v["wire_protocol"].as_u64(),
+        Some(okto_core::WIRE_PROTOCOL as u64),
+        "/info should advertise wire_protocol = {}; got {v}",
+        okto_core::WIRE_PROTOCOL,
+    );
+}
+
+#[tokio::test]
+async fn ready_frame_advertises_wire_protocol() {
+    let lair = LairProcess::start(vec![]).await.expect("lair to start");
+    let mut chat = lair.chat().await.expect("open chat ws");
+    // The first frame on a fresh connection is `ready`; it carries the
+    // wire-protocol version so a client can reference what the lair speaks.
+    let ev = loop {
+        let ev = chat.next_event().await.unwrap().expect("a frame");
+        if ev["type"] == "ready" {
+            break ev;
+        }
+    };
+    assert_eq!(
+        ev["wire_protocol"].as_u64(),
+        Some(okto_core::WIRE_PROTOCOL as u64),
+        "ready frame should carry wire_protocol = {}; got {ev}",
+        okto_core::WIRE_PROTOCOL,
+    );
 }
 
 #[tokio::test]

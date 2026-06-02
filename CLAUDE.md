@@ -168,7 +168,7 @@ Wire frames (see `core/src/lib.rs::ChatEvent` and `mobile/src/wire.ts`):
 
 | `type`            | Direction | Payload |
 |-------------------|-----------|---------|
-| `ready`           | s → c     | `session_id`, `resumed`. Sent on each WS open. |
+| `ready`           | s → c     | `session_id`, `resumed`, `model`, `wire_protocol`. Sent on each WS open. |
 | `text`            | s → c     | Streamed model text deltas. |
 | `tool_use` / `tool_output` / `tool_result` | s → c | Tool invocation lifecycle. |
 | `done` / `interrupted` / `error` | s → c | Turn terminators. |
@@ -181,6 +181,15 @@ Wire frames (see `core/src/lib.rs::ChatEvent` and `mobile/src/wire.ts`):
 | `cancel_task`     | c → s     | Cancel a running background task. |
 
 Lair listens on `NOISE_PORT` (default 8443 in prod) and forwards Noise traffic to its own HTTP server on `127.0.0.1:8000`.
+
+### Wire protocol versioning
+
+The wire (the `ChatEvent` frames above + the `/info` and `/history` JSON shapes) carries a single integer version, **separate from every app's marketing version**, so breaking changes can be aligned across artifacts that release on independent cadences (lair image, iOS, Android, desktop). Full rules + history live in **`PROTOCOL.md`**.
+
+- **Source of truth:** `okto_core::WIRE_PROTOCOL` (`core/src/lib.rs`). Mirrored as `WIRE_PROTOCOL` in `mobile/src/wire.ts` and `desktop/src/wire.ts` — kept in lockstep by a jest guard in each client (`__tests__/wireProtocol.test.tsx`) that reads the Rust constant and fails the build on drift.
+- **lair advertises** its version on `GET /info` (`wire_protocol`) and in every `ready` frame (plus `lair_version`, the marketing version — display only, never used for compatibility). **lair is the compatibility bearer: it stays backward-compatible across all client versions and never rejects a client on version.**
+- **Clients reference it:** each build knows the protocol it speaks (`WIRE_PROTOCOL`) and reads the connected lair's advertised version from the `ready` frame; mobile shows an advisory banner when the two differ, pointing the user at whichever side is behind.
+- **Bump `WIRE_PROTOCOL` on any breaking wire change** — removing/renaming a field, changing a field's meaning, or requiring a new event the other side must understand. Purely **additive** changes (a new optional field/event/endpoint) are backward-compatible and must **not** bump it. When you bump it: update both `wire.ts` mirrors (CI enforces equality), add a row to `PROTOCOL.md`'s history table, and note it in the affected `CHANGELOG.md`s.
 
 ### Lair management API (CLI ↔ lair on loopback)
 

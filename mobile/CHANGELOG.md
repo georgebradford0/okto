@@ -9,6 +9,14 @@ the git log.
 
 ## [Unreleased]
 
+### Added
+- **Wire-protocol awareness.** The app now reads the `wire_protocol` version the
+  connected okto host advertises (in the `ready` frame) and compares it to the
+  version this build speaks. On a mismatch a slim advisory banner points you at
+  whichever side is behind ("update your okto host" / "update the app"). It's a
+  heads-up, not a hard block — the backend stays backward-compatible. See
+  `PROTOCOL.md`.
+
 ## [0.2.1] - 2026-06-02
 
 ### Changed

@@ -5,6 +5,11 @@ Changes to the okto desktop (Tauri) app. Current version: see `package.json` /
 
 ## [Unreleased]
 
+### Added
+- Mirror the `WIRE_PROTOCOL` constant from `okto_core` (and accept the optional
+  `wire_protocol` field on the `ready` frame), kept in lockstep by a jest guard
+  (`__tests__/wireProtocol.test.tsx`). See `PROTOCOL.md`.
+
 ## [0.4.5] - 2026-05-31
 
 ### Fixed
