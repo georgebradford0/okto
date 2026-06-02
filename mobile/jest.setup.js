@@ -39,6 +39,21 @@ jest.mock('react-native-reanimated', () => {
   }
 })
 
+// ── react-native-svg → inert host stubs (shimmer overlay needs no real SVG) ───
+jest.mock('react-native-svg', () => {
+  const RN = require('react-native')
+  const Stub = () => null
+  return {
+    __esModule: true,
+    default: RN.View,
+    Svg: RN.View,
+    Defs: Stub,
+    LinearGradient: Stub,
+    Stop: Stub,
+    Rect: Stub,
+  }
+})
+
 // ── keyboard-controller → passthrough provider + zeroed animation ─────────────
 jest.mock('react-native-keyboard-controller', () => ({
   KeyboardProvider: ({ children }) => children,

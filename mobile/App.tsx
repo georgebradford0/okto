@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
-import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useId, memo, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Animated,
@@ -21,6 +21,7 @@ import {
 } from 'react-native'
 import { KeyboardProvider, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller'
 import Reanimated, { useAnimatedStyle } from 'react-native-reanimated'
+import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from 'react-native-svg'
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Camera, useCameraDevice, useCodeScanner } from 'react-native-vision-camera'
 import NoiseConnection from './src/NativeNoiseConnection'
@@ -442,26 +443,74 @@ function containerDisplayName(name: string): string {
 
 // ── MessageBubble ─────────────────────────────────────────────────────────────
 
-// Small pulsing accent dot — signals a tool is still running and has live
-// output the user can expand to watch.
-function PulsingDot() {
-  const opacity = useRef(new Animated.Value(1)).current
+// Tool label rendered as plain monospace text (no chip). While the tool runs, a
+// soft light band sweeps across the glyphs — a "shimmer" that signals live
+// output the user can expand to watch, replacing the old pulsing dot. Queued
+// tools render dimmed; finished tools render plain. The label is always a single
+// <Text> node so it stays selectable and queryable.
+function ShimmerText({
+  text, running, dim, numberOfLines,
+}: {
+  text:          string
+  running:       boolean
+  dim:           boolean
+  numberOfLines?: number
+}) {
+  const [size, setSize] = useState({ w: 0, h: 0 })
+  const sweep = useRef(new Animated.Value(0)).current
+  // Unique gradient id per instance so concurrent shimmers don't collide.
+  const gradId = `shimmer-${useId().replace(/[^a-zA-Z0-9]/g, '')}`
+
   useEffect(() => {
+    if (!running || size.w === 0) return
+    sweep.setValue(0)
     const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(opacity, { toValue: 0.3, duration: 600, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-        Animated.timing(opacity, { toValue: 1, duration: 600, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-      ]),
+      Animated.timing(sweep, {
+        toValue: 1,
+        duration: 1500,
+        easing: Easing.inOut(Easing.ease),
+        useNativeDriver: true,
+      }),
     )
     loop.start()
     return () => loop.stop()
-  }, [opacity])
-  return <Animated.View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: C.accent, opacity, marginRight: 6 }} />
-}
+  }, [running, size.w, sweep])
 
-// Static dimmed dot — signals a tool is queued (will run after the current one finishes).
-function QueuedDot() {
-  return <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: C.accent, opacity: 0.35, marginRight: 6 }} />
+  const band = Math.max(48, size.w * 0.45)
+  const translateX = sweep.interpolate({
+    inputRange:  [0, 1],
+    outputRange: [-band, size.w + band],
+  })
+
+  return (
+    <View style={{ alignSelf: 'flex-start', maxWidth: '100%', overflow: 'hidden' }}>
+      <Text
+        onLayout={e => setSize({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}
+        fontSize={13} fontWeight="600" letterSpacing={0.2} color="$primary700"
+        style={{ fontFamily: MONO, opacity: dim ? 0.45 : 1 }}
+        selectable numberOfLines={numberOfLines} ellipsizeMode="tail"
+      >
+        {text}
+      </Text>
+      {running && size.w > 0 && (
+        <Animated.View
+          pointerEvents="none"
+          style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: band, transform: [{ translateX }] }}
+        >
+          <Svg width={band} height={size.h || 20}>
+            <Defs>
+              <SvgLinearGradient id={gradId} x1="0" y1="0" x2="1" y2="0">
+                <Stop offset="0" stopColor="#ffffff" stopOpacity={0} />
+                <Stop offset="0.5" stopColor="#ffffff" stopOpacity={0.7} />
+                <Stop offset="1" stopColor="#ffffff" stopOpacity={0} />
+              </SvgLinearGradient>
+            </Defs>
+            <Rect x="0" y="0" width={band} height={size.h || 20} fill={`url(#${gradId})`} />
+          </Svg>
+        </Animated.View>
+      )}
+    </View>
+  )
 }
 
 const MessageBubble = memo(function MessageBubble({
@@ -525,28 +574,28 @@ const MessageBubble = memo(function MessageBubble({
     )
   }
   if (message.role === 'tool') {
+    const running = !!message.running
+    const queued  = !running && message.output === undefined
     return (
       <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
         <Touchable
           marginBottom={4} paddingHorizontal={16}
           onPress={() => setToolExpanded(v => !v)}
-          activeOpacity={0.7}
+          activeOpacity={0.6}
         >
-          <View borderRadius={12} borderWidth={1} borderLeftWidth={3} borderColor="$outline200" borderLeftColor="$primary600" backgroundColor="$background50" paddingHorizontal={14} paddingVertical={10}>
-            <View flexDirection="row" alignItems="center">
-              {message.running && <PulsingDot />}
-              {!message.running && message.output === undefined && <QueuedDot />}
-              <Text flex={1} fontSize={13} fontWeight="600" letterSpacing={0.2} color="$primary700" style={{ fontFamily: MONO }} selectable numberOfLines={toolExpanded ? undefined : 1} ellipsizeMode="tail">{message.text}</Text>
-              <Text marginLeft={6} fontSize={14} color="$primary600" style={{ transform: [{ rotate: toolExpanded ? '90deg' : '0deg' }] }}>›</Text>
+          <ShimmerText
+            text={message.text}
+            running={running}
+            dim={queued}
+            numberOfLines={toolExpanded ? undefined : 1}
+          />
+          {toolExpanded && message.output != null && (
+            <View marginTop={6} paddingLeft={2}>
+              <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+                <Text fontSize={12} lineHeight={18} color="$typography600" style={{ fontFamily: MONO }} selectable>{message.output}</Text>
+              </ScrollView>
             </View>
-            {toolExpanded && message.output != null && (
-              <View marginTop={8} borderTopWidth={1} borderColor="$outline200" paddingTop={8}>
-                <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled showsVerticalScrollIndicator={false}>
-                  <Text fontSize={12} lineHeight={18} color="$typography600" style={{ fontFamily: MONO }} selectable>{message.output}</Text>
-                </ScrollView>
-              </View>
-            )}
-          </View>
+          )}
         </Touchable>
       </Animated.View>
     )

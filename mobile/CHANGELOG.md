@@ -9,6 +9,13 @@ the git log.
 
 ## [Unreleased]
 
+### Changed
+
+- Tool calls in the chat now render as plain monospace text instead of a
+  bordered chip. The pulsing/queued status dots are gone; while a
+  tool is running, a soft light band sweeps across the label text (a "shimmer")
+  to signal live activity. Tapping the label still expands the streamed output.
+
 ### Fixed
 
 - Sidebar worktree rows now update promptly when an agent tears a worktree down
