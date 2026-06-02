@@ -1,6 +1,6 @@
 [package]
 name        = "lair"
-version     = "0.21.4"
+version     = "0.21.5"
 edition     = "2021"
 description = "okto merged HTTP/WebSocket server — runs either the lair (parent) or agent (child) role from a single binary"
 

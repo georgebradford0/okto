@@ -9,6 +9,8 @@ the git log.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-02
+
 ### Changed
 
 - Tool calls in the chat now render as plain monospace text instead of a

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.21.5] - 2026-06-02
+
 ### Added
 - **Friendly tool labels in `/history`.** Tool rows returned by `GET /history`
   (and the agent-side equivalent) now carry an additive `display` field with the
