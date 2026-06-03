@@ -14,6 +14,10 @@ on:
 
 env:
   IMAGE: ghcr.io/georgebradford0/lair
+  # Run JS actions still bundled for Node 20 (actions/cache@v4, docker/*) on
+  # Node 24, silencing the deprecation annotations until those actions ship
+  # Node 24-native releases. Node 24 becomes the runner default 2026-06-16.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # Gate the image release on the full e2e suite (offline: no docker, no
