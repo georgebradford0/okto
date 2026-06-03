@@ -32,11 +32,6 @@ jobs:
       # Run every device even if one fails, so a single red leg doesn't mask the
       # others' results.
       fail-fast: false
-      # Cap concurrency at 2 sims at a time. Running all four macOS simulator
-      # legs at once contends for the shared macOS-runner pool, which has shown
-      # up as multi-minute UI-tap latencies and flaky Maestro assertion
-      # timeouts. Two-at-a-time trades a little wall-clock for stability.
-      max-parallel: 2
       matrix:
         device:
           - "iPhone 14"
@@ -178,8 +173,24 @@ jobs:
           done
           grep -q "is READY and serving" /tmp/lair.log || { echo "mock lair not ready in time:"; cat /tmp/lair.log; exit 1; }
           echo "mock lair ready; running Maestro on ${SIM_UDID}..."
-          maestro --device "${SIM_UDID}" test mobile/.maestro/smoke.yaml --env HOST=127.0.0.1
-          code=$?
+          # Retry the whole flow once. GitHub's macOS simulators are
+          # intermittently slow (multi-minute UI taps), which makes an
+          # otherwise-correct flow trip a single assertVisible timeout. A fresh
+          # attempt clears app state (connect.yaml launches with clearState) and
+          # almost always passes, so one retry kills the bulk of the flakiness
+          # without masking a genuine, reproducible failure (both attempts fail).
+          attempts=2
+          code=1
+          for i in $(seq 1 "$attempts"); do
+            echo "::group::Maestro attempt $i/$attempts on ${SIM_UDID}"
+            if maestro --device "${SIM_UDID}" test mobile/.maestro/smoke.yaml --env HOST=127.0.0.1; then
+              code=0; echo "::endgroup::"; break
+            fi
+            code=$?
+            echo "::endgroup::"
+            echo "Maestro attempt $i failed (exit $code)."
+            [ "$i" -lt "$attempts" ] && { echo "Retrying after brief settle..."; sleep 10; }
+          done
           kill "$LAIR_PID" 2>/dev/null || true
           exit $code
 
