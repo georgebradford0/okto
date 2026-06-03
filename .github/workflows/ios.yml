@@ -16,12 +16,22 @@ jobs:
 
   # Build the app for the simulator, then gate on the Maestro e2e smoke flow
   # (launch → connect → send a message → assert the agent reply) driven against
-  # a fully-offline mock lair. `distribute` needs this job, so a failing flow
-  # blocks the TestFlight upload.
+  # a fully-offline mock lair, once per device in the matrix. `distribute` needs
+  # this job, so a failing flow on ANY device blocks the TestFlight upload.
   build:
-    name: Build & e2e (Simulator)
+    name: Build & e2e (${{ matrix.device }})
     runs-on: macos-26
     needs: test
+
+    strategy:
+      # Run every device even if one fails, so a single red leg doesn't mask the
+      # others' results.
+      fail-fast: false
+      matrix:
+        device:
+          - "iPhone 17 Pro"
+          - "iPhone 17"
+          - "iPhone Air"
 
     defaults:
       run:
@@ -98,20 +108,30 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: cargo build -p lair --bin lair
 
-      # Pick whatever iPhone simulator the runner image actually ships (the exact
-      # model/OS varies by Xcode version) rather than hardcoding a name, and
+      # Select the matrix device by name, creating it from its device type + the
+      # newest installed iOS runtime if the image doesn't already ship it (so a
+      # leg doesn't hard-fail just because that model wasn't pre-created), and
       # expose its UDID to the install + Maestro steps.
       - name: Select & boot simulator
+        env:
+          DEVICE: ${{ matrix.device }}
         run: |
           UDID=$(xcrun simctl list devices available -j \
-            | jq -r '[.devices[][] | select(.isAvailable and (.name|startswith("iPhone")))][0].udid')
-          if [ -z "$UDID" ] || [ "$UDID" = "null" ]; then
-            echo "no available iPhone simulator:"; xcrun simctl list devices available; exit 1
+            | jq -r --arg n "$DEVICE" '[.devices[][] | select(.isAvailable and .name==$n)][0].udid // empty')
+          if [ -z "$UDID" ]; then
+            RUNTIME=$(xcrun simctl list runtimes -j \
+              | jq -r '[.runtimes[] | select(.isAvailable and (.identifier|contains(".iOS-")))] | sort_by(.version) | last | .identifier')
+            TYPE="com.apple.CoreSimulator.SimDeviceType.$(echo "$DEVICE" | sed 's/[() ]\{1,\}/-/g; s/-$//')"
+            echo "Creating '$DEVICE' ($TYPE) on $RUNTIME"
+            UDID=$(xcrun simctl create "$DEVICE" "$TYPE" "$RUNTIME") || {
+              echo "could not create '$DEVICE'; device types + runtimes:"
+              xcrun simctl list devicetypes | grep -i iphone || true
+              xcrun simctl list runtimes
+              exit 1
+            }
           fi
-          echo "Using simulator $UDID"
+          echo "Using simulator '$DEVICE' = $UDID"
           echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
-          echo "--- installed runtimes ---"; xcrun simctl list runtimes
-          echo "--- chosen device ---"; xcrun simctl list devices available | grep -B1 "$UDID" || true
           xcrun simctl boot "$UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$UDID"
 
@@ -156,7 +176,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: maestro-ios
+          name: maestro-ios-${{ matrix.device }}
           path: |
             ~/.maestro/tests
             /tmp/lair.log

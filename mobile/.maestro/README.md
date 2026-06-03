@@ -83,11 +83,12 @@ maestro studio                                                  # interactive au
 
 ## CI
 
-The iOS release workflow (`.github/workflows/ios.yml`) runs `smoke.yaml` on a
-simulator as a gate: its `build` job builds the app, boots an `iPhone 16` sim,
-installs the app, boots the mock lair, and drives the flow with
-`HOST=127.0.0.1`. `distribute` (TestFlight) `needs: build`, so a failing flow
-blocks the upload. The Android emulator runs are local-only.
+The iOS release workflow (`.github/workflows/ios.yml`) runs `smoke.yaml` as a
+gate across a `strategy.matrix` of iPhone simulators: its `build` job builds the
+app once per device, boots that sim, installs the app, boots the mock lair, and
+drives the flow with `HOST=127.0.0.1`. `distribute` (TestFlight) `needs: build`,
+so a failing flow on any device blocks the upload. The Android emulator runs are
+local-only.
 
 ## Adding flows
 
