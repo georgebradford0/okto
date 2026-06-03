@@ -9,6 +9,10 @@ the git log.
 
 ## [Unreleased]
 
+### Changed
+- The on-screen wordmark (connection screen + sidebar) now reads **OKTO**
+  instead of "OCTO", matching the app name.
+
 ## [0.2.2] - 2026-06-02
 
 ### Added

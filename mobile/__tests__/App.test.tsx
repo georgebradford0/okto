@@ -9,7 +9,7 @@ beforeEach(() => resetServer())
 
 test('renders the setup screen on a cold start', async () => {
   renderApp()
-  expect(await screen.findByText('OCTO')).toBeOnTheScreen()
+  expect(await screen.findByText('OKTO')).toBeOnTheScreen()
   expect(screen.getByText(/Tap the mark to scan/)).toBeOnTheScreen()
   expect(screen.getByPlaceholderText('2:host:port:key')).toBeOnTheScreen()
 })

@@ -84,7 +84,7 @@ describe('tunnel failure', () => {
 describe('QR scanning', () => {
   test('opening the scanner and cancelling returns to setup', async () => {
     renderApp()
-    await screen.findByText('OCTO')
+    await screen.findByText('OKTO')
     fireEvent.press(screen.getByTestId('scan-trigger'))
 
     expect(await screen.findByText('Scan Session QR')).toBeOnTheScreen()
@@ -94,7 +94,7 @@ describe('QR scanning', () => {
 
   test('a scanned QR code connects', async () => {
     renderApp()
-    await screen.findByText('OCTO')
+    await screen.findByText('OKTO')
     fireEvent.press(screen.getByTestId('scan-trigger'))
     await screen.findByText('Scan Session QR')
 

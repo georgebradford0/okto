@@ -2665,7 +2665,7 @@ function AppInner() {
       <SafeAreaView style={{ flex: 1, backgroundColor: 'rgb(246,246,246)' }} edges={['top', 'bottom']}>
         <View flex={1} alignItems="center" justifyContent="center" gap={14} paddingHorizontal={40}>
           <AppIcon />
-          <Text marginTop={20} paddingLeft={8} fontFamily="$heading" fontSize={40} fontWeight="800" letterSpacing={8} color="$typography900">OCTO</Text>
+          <Text marginTop={20} paddingLeft={8} fontFamily="$heading" fontSize={40} fontWeight="800" letterSpacing={8} color="$typography900">OKTO</Text>
           <View marginVertical={6} height={2} width={36} borderRadius={999} backgroundColor="$primary600" opacity={0.7} />
           <Text overflow="hidden" borderRadius={12} backgroundColor="$error50" paddingHorizontal={14} paddingVertical={10} textAlign="center" fontFamily="$body" fontSize={13} lineHeight={19} color="$error600">{tunnelError}</Text>
           <Touchable marginTop={16} borderRadius={14} backgroundColor="$typography900" paddingHorizontal={40} paddingVertical={14} onPress={() => setConn(null)}>
@@ -2685,7 +2685,7 @@ function AppInner() {
             <Touchable testID="scan-trigger" onPress={requestCameraAndScan} activeOpacity={0.85}>
               <AppIcon pulse />
             </Touchable>
-            <Text marginTop={20} paddingLeft={8} fontFamily="$heading" fontSize={40} fontWeight="800" letterSpacing={8} color="$typography900">OCTO</Text>
+            <Text marginTop={20} paddingLeft={8} fontFamily="$heading" fontSize={40} fontWeight="800" letterSpacing={8} color="$typography900">OKTO</Text>
             <View marginVertical={6} height={2} width={36} borderRadius={999} backgroundColor="$primary600" opacity={0.7} />
             <Text fontSize={10.5} fontWeight="600" textTransform="uppercase" letterSpacing={2.4} color="$typography500" style={{ fontFamily: MONO }}>Distributed Coding Agents</Text>
             <Text marginTop={14} maxWidth={300} textAlign="center" fontFamily="$body" fontSize={14} lineHeight={22} color="$typography600">Tap the mark to scan your session QR code.</Text>
@@ -2884,7 +2884,7 @@ function AppInner() {
             >
               <View flexDirection="row" alignItems="center" justifyContent="space-between" borderBottomWidth={1} borderColor="$outline200" paddingHorizontal={20} paddingVertical={20}>
                 <View>
-                  <Text paddingLeft={5} fontFamily="$heading" fontSize={22} fontWeight="800" letterSpacing={5} color="$typography900">OCTO</Text>
+                  <Text paddingLeft={5} fontFamily="$heading" fontSize={22} fontWeight="800" letterSpacing={5} color="$typography900">OKTO</Text>
                   <Text marginTop={6} fontSize={10} fontWeight="600" textTransform="uppercase" letterSpacing={1.8} color="$typography500" style={{ fontFamily: MONO }}>Agent Console</Text>
                 </View>
                 <Touchable onPress={closeSidebar} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
