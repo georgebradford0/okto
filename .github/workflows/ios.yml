@@ -79,7 +79,7 @@ jobs:
             -workspace ios/okto.xcworkspace \
             -scheme okto \
             -configuration Debug \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath ios/build \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
@@ -92,14 +92,30 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: cargo build -p lair --bin lair
 
-      - name: Boot simulator & install app
+      # Pick whatever iPhone simulator the runner image actually ships (the exact
+      # model/OS varies by Xcode version) rather than hardcoding a name, and
+      # expose its UDID to the install + Maestro steps.
+      - name: Select & boot simulator
         run: |
-          xcrun simctl boot "iPhone 16" 2>/dev/null || true
-          xcrun simctl bootstatus "iPhone 16" || true
-          APP=$(find ios/build/Build/Products/Debug-iphonesimulator -maxdepth 1 -name 'okto.app' -type d | head -1)
-          test -n "$APP" || { echo "okto.app not found under ios/build"; exit 1; }
+          UDID=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices[][] | select(.isAvailable and (.name|startswith("iPhone")))][0].udid')
+          if [ -z "$UDID" ] || [ "$UDID" = "null" ]; then
+            echo "no available iPhone simulator:"; xcrun simctl list devices available; exit 1
+          fi
+          echo "Using simulator $UDID"
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$UDID"
+
+      - name: Install app on simulator
+        run: |
+          APP=$(find ios/build -name 'okto.app' -type d -path '*-iphonesimulator/*' | head -1)
+          [ -n "$APP" ] || APP=$(find ios/build -name 'okto.app' -type d | head -1)
+          if [ -z "$APP" ]; then
+            echo "okto.app not found; ios/build product tree:"; find ios/build -maxdepth 5 -name '*.app' 2>/dev/null; exit 1
+          fi
           echo "Installing $APP"
-          xcrun simctl install "iPhone 16" "$APP"
+          xcrun simctl install "$SIM_UDID" "$APP"
 
       # Start the offline mock lair, wait until it serves on :9000, then drive the
       # Maestro smoke flow against it. lair + maestro share one shell so the
@@ -117,8 +133,8 @@ jobs:
             sleep 2
           done
           grep -q "is READY and serving" /tmp/lair.log || { echo "mock lair not ready in time:"; cat /tmp/lair.log; exit 1; }
-          echo "mock lair ready; running Maestro…"
-          maestro test mobile/.maestro/smoke.yaml --env HOST=127.0.0.1
+          echo "mock lair ready; running Maestro on $SIM_UDID…"
+          maestro --device "$SIM_UDID" test mobile/.maestro/smoke.yaml --env HOST=127.0.0.1
           code=$?
           kill "$LAIR_PID" 2>/dev/null || true
           exit $code
