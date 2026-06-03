@@ -1,0 +1,38 @@
+# Reusable subflow: launch the app fresh and connect to a local mock lair via
+# the manual connect-string path (no camera needed — works on simulators).
+#
+# Parameterised by env vars (defaults target the iOS Simulator):
+#   HOST    host the simulator/emulator uses to reach the mock lair on the Mac
+#           - iOS Simulator   → 127.0.0.1   (shares the host network stack)
+#           - Android emulator → 10.0.2.2   (the emulator's host alias)
+#   DEV_PK  the fixed dev Noise pubkey lair serves under OKTO_DEV=1
+#           (identical to DEV_PUBKEY_BASE32 in core + DEV_CONN in App.tsx).
+#
+# Start the mock lair first (see scripts/maestro-e2e.sh or the README):
+#   cargo test -p okto-tests --test maestro_serve serve -- --ignored --nocapture
+appId: com.okto
+env:
+  HOST: 127.0.0.1
+  DEV_PK: 34577VOSZRDRTUB7XYTT6FS62Y4QYYVLQJCHP4XNDQA2763AU5YQ
+---
+- launchApp:
+    clearState: true            # forget any saved connection → land on the connect screen
+    permissions:
+      camera: deny              # we connect by pasting a string, not by scanning
+# In a release build there is no DEV auto-connect, so the manual connect screen
+# is shown. In a __DEV__ build on the iOS Simulator the app may already have
+# auto-connected to 127.0.0.1:9000 — in that case skip manual entry. Either way
+# we assert the chat screen below.
+- runFlow:
+    when:
+      visible:
+        id: "manual-connect-input"
+    commands:
+      - tapOn:
+          id: "manual-connect-input"
+      - inputText: "2:${HOST}:9000:${DEV_PK}"
+      - tapOn:
+          id: "manual-connect-button"
+# Connection succeeded once the chat composer is on screen.
+- assertVisible:
+    id: "chat-input"

@@ -1901,6 +1901,7 @@ const ChatPane = memo(function ChatPane({
         <View position="absolute" left={0} right={0} bottom={0} borderTopWidth={1} borderColor="$outline200" backgroundColor="$background50" paddingHorizontal={12} paddingBottom={12} paddingTop={10} onLayout={e => setInputAreaH(e.nativeEvent.layout.height)}>
           <View flexDirection="row" alignItems="flex-end" gap={10}>
             <TextInput
+              testID="chat-input"
               // Lock height to one line when empty so a `setInput('')` on send
               // collapses the box immediately — without this, iOS keeps the
               // previous multiline intrinsic size for ~a second. With a value
@@ -2690,6 +2691,7 @@ function AppInner() {
             <Text marginTop={14} maxWidth={300} textAlign="center" fontFamily="$body" fontSize={14} lineHeight={22} color="$typography600">Tap the mark to scan your session QR code.</Text>
             <Text marginTop={20} fontSize={10.5} fontWeight="600" textTransform="uppercase" letterSpacing={2.4} color="$typography500" style={{ fontFamily: MONO }}>or paste a connect string</Text>
             <TextInput
+              testID="manual-connect-input"
               style={{ fontFamily: MONO, marginTop: 6, width: '100%', maxWidth: 340, borderRadius: 14, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: '#fff', paddingHorizontal: 16, paddingVertical: 14, fontSize: 13.5, color: 'rgb(15,23,42)' }}
               value={manualConn}
               onChangeText={(t) => { setManualConn(t); if (manualError) setManualError(null) }}
@@ -2704,6 +2706,7 @@ function AppInner() {
             />
             {manualError ? <Text overflow="hidden" borderRadius={12} backgroundColor="$error50" paddingHorizontal={14} paddingVertical={10} textAlign="center" fontFamily="$body" fontSize={13} lineHeight={19} color="$error600">{manualError}</Text> : null}
             <Touchable
+              testID="manual-connect-button"
               marginTop={16} borderRadius={14} paddingHorizontal={40} paddingVertical={14} backgroundColor="$typography900" opacity={!manualConn.trim() ? 0.35 : undefined}
               onPress={handleManualConnect}
               disabled={!manualConn.trim()}

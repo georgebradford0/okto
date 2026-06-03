@@ -1,0 +1,26 @@
+# Happy-path smoke test: launch → connect → send a message → see the agent reply.
+# Runs identically on iOS Simulator and Android emulator; only HOST differs.
+#
+#   maestro test mobile/.maestro/smoke.yaml --env HOST=127.0.0.1   # iOS Simulator
+#   maestro test mobile/.maestro/smoke.yaml --env HOST=10.0.2.2    # Android emulator
+#
+# Requires the mock lair to be running (scripts/maestro-e2e.sh starts it for you).
+appId: com.okto
+env:
+  HOST: 127.0.0.1
+---
+# Reuse the connect subflow (inherits HOST; pins the dev pubkey).
+- runFlow:
+    file: connect.yaml
+    env:
+      HOST: "${HOST}"
+# Send a message to the mock agent.
+- tapOn:
+    id: "chat-input"
+- inputText: "Hello from Maestro"
+- tapOn:
+    id: "composer-send"
+# The mock lair's first scripted reply contains this phrase — proves the full
+# round-trip (WS turn → streamed text → rendered bubble) works end to end.
+- assertVisible: "fully offline"
+- takeScreenshot: maestro-smoke-reply

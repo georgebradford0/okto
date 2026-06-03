@@ -111,6 +111,8 @@ The `okto-tests` crate (`tests/`) holds the workspace's black-box e2e suites —
 
 The desktop **frontend** has its own behavioural suite — `desktop/__tests__/`, run under Jest + jsdom with `npm test -w desktop`. It renders the real `<App/>` via `@testing-library/react` over mocked Tauri / `WebSocket` / `fetch` boundaries (mirrors the mobile RTL suite). See `desktop/__tests__/README.md`.
 
+The mobile app additionally has **on-device e2e flows** driven by [Maestro](https://maestro.mobile.dev) (`mobile/.maestro/`), run on an iOS Simulator / Android emulator against a fully-offline **mock lair** — the real `lair` binary booted under `OKTO_DEV=1` (fixed dev keypair → constant connection string) behind the same mock LLM the Rust suite uses. The mock lair is the `#[ignore]`d `maestro_serve` test in `okto-tests` (`cargo test -p okto-tests --test maestro_serve serve -- --ignored --nocapture`); `mobile/scripts/maestro-e2e.sh` boots it and fans the flows across all booted devices in parallel. See `mobile/.maestro/README.md`. (Not wired into CI — it needs simulators/emulators.)
+
 The `cli.yml` release workflow runs the **CLI suites only** (the `cli_*` files, not the lair suites) as a `test` job that `build` depends on, so the CLI tests must pass before any CLI release binary is built or pushed. Locally, `cargo test-cli` (a `.cargo/config.toml` alias) runs that same CLI-only subset.
 
 ---
