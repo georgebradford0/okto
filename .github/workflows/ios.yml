@@ -32,6 +32,11 @@ jobs:
       # Run every device even if one fails, so a single red leg doesn't mask the
       # others' results.
       fail-fast: false
+      # Cap concurrency at 2 sims at a time. Running all four macOS simulator
+      # legs at once contends for the shared macOS-runner pool, which has shown
+      # up as multi-minute UI-tap latencies and flaky Maestro assertion
+      # timeouts. Two-at-a-time trades a little wall-clock for stability.
+      max-parallel: 2
       matrix:
         device:
           - "iPhone 14"
