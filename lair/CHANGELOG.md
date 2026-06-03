@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.21.7] - 2026-06-03
+
 ### Changed
 - **Agents are keyed by a route-safe `slug`, decoupled from the display
   `name`.** An agent's free-form `name` (which may contain spaces) is no longer
