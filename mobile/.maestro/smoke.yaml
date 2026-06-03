@@ -20,7 +20,10 @@ env:
 - inputText: "Hello from Maestro"
 - tapOn:
     id: "composer-send"
-# The mock lair's first scripted reply contains this phrase — proves the full
-# round-trip (WS turn → streamed text → rendered bubble) works end to end.
-- assertVisible: "fully offline"
+# An assistant reply bubble appearing proves the full round-trip (WS turn →
+# streamed text → rendered bubble) worked end to end. We assert on the bubble's
+# testID rather than its text: the reply is markdown-rendered, which doesn't
+# expose a clean accessibility string for text matching on iOS.
+- assertVisible:
+    id: "assistant-message"
 - takeScreenshot: maestro-smoke-reply

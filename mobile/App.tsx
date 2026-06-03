@@ -684,7 +684,7 @@ const MessageBubble = memo(function MessageBubble({
   }
   return (
     <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
-      <View paddingHorizontal={16} style={{ marginBottom: bubbleBottomMargin }}>
+      <View testID="assistant-message" paddingHorizontal={16} style={{ marginBottom: bubbleBottomMargin }}>
         {renderedText}
         {message.cost != null && (
           <Text marginLeft={2} marginTop={6} fontSize={10.5} letterSpacing={0.4} color="$typography400" style={{ fontFamily: MONO }}>{formatCost(message.cost)}</Text>
