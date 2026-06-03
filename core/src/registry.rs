@@ -48,8 +48,17 @@ impl AgentStatus {
 /// via the `.git` marker.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AgentRecord {
-    /// Stable, human-readable identifier. Doubles as the wire `id`.
+    /// Free-form, human-readable display label. May contain spaces and other
+    /// path-/URL-unsafe characters — it is *never* used to build a filesystem
+    /// path or a route. Use `slug` for that.
     pub name:           String,
+    /// Route-safe identifier derived from `name` (lowercase, hyphenated; see
+    /// `okto_core::sanitize_agent_name`). This is the registry key, the
+    /// on-disk dir name (`/data/agents/<slug>/`), the wire `id`, the route
+    /// param (`/agents/<slug>/…`), and what `parent` references. Stable for
+    /// the life of the agent.
+    #[serde(default)]
+    pub slug:           String,
     /// OS pid of the last spawned `lair --role agent` process. Local
     /// agents only — `None` for remote agents and for local agents whose
     /// process has exited.
@@ -89,7 +98,7 @@ pub struct AgentRecord {
     /// Opaque provider-specific blob (region, instance_type, image id, …).
     #[serde(default)]
     pub metadata:       serde_json::Value,
-    /// Name of the agent that spawned this one, if any. `None` when the
+    /// `slug` of the agent that spawned this one, if any. `None` when the
     /// agent was created by the operator (CLI / lair's own LLM); `Some(_)`
     /// when another agent spawned it via the agent-token-gated API. Used
     /// to drive cascade-terminate and to enforce depth / descendant caps.
@@ -128,7 +137,7 @@ impl Registry {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create registry dir {}", parent.display()))?;
         }
-        let agents = match fs::read_to_string(&path) {
+        let mut agents = match fs::read_to_string(&path) {
             Ok(text) if !text.trim().is_empty() => {
                 match serde_json::from_str::<RegistryFile>(&text) {
                     Ok(f) => f.agents,
@@ -140,75 +149,84 @@ impl Registry {
             }
             _ => Vec::new(),
         };
+        // Backfill `slug` for any row persisted before the field existed, so
+        // older registries deserialize into a usable state. Derive it from the
+        // display name; fall back to the name verbatim if nothing slug-able
+        // remains (preserves whatever dir the row already points at).
+        for a in &mut agents {
+            if a.slug.is_empty() {
+                a.slug = crate::sanitize_agent_name(&a.name).unwrap_or_else(|| a.name.clone());
+            }
+        }
         info!("[registry] loaded {} agent(s) from {}", agents.len(), path.display());
         Ok(Self { agents, path })
     }
 
     pub fn list(&self) -> &[AgentRecord] { &self.agents }
 
-    pub fn get(&self, name: &str) -> Option<&AgentRecord> {
-        self.agents.iter().find(|a| a.name == name)
+    pub fn get(&self, slug: &str) -> Option<&AgentRecord> {
+        self.agents.iter().find(|a| a.slug == slug)
     }
 
-    pub fn get_mut(&mut self, name: &str) -> Option<&mut AgentRecord> {
-        self.agents.iter_mut().find(|a| a.name == name)
+    pub fn get_mut(&mut self, slug: &str) -> Option<&mut AgentRecord> {
+        self.agents.iter_mut().find(|a| a.slug == slug)
     }
 
-    /// Insert or replace a row by name, preserving insertion order on updates.
+    /// Insert or replace a row by slug, preserving insertion order on updates.
     pub fn set(&mut self, record: AgentRecord) -> Result<()> {
-        let name = record.name.clone();
-        if let Some(slot) = self.agents.iter_mut().find(|a| a.name == record.name) {
+        let slug = record.slug.clone();
+        if let Some(slot) = self.agents.iter_mut().find(|a| a.slug == record.slug) {
             *slot = record;
-            debug!("[registry] updated agent '{name}'");
+            debug!("[registry] updated agent '{slug}'");
         } else {
             self.agents.push(record);
-            debug!("[registry] inserted agent '{name}'");
+            debug!("[registry] inserted agent '{slug}'");
         }
         self.save()
     }
 
     pub fn add(&mut self, record: AgentRecord) -> Result<()> {
-        if self.agents.iter().any(|a| a.name == record.name) {
-            warn!("[registry] add rejected: agent '{}' already exists", record.name);
-            anyhow::bail!("agent '{}' already exists in registry", record.name);
+        if self.agents.iter().any(|a| a.slug == record.slug) {
+            warn!("[registry] add rejected: agent '{}' already exists", record.slug);
+            anyhow::bail!("agent '{}' already exists in registry", record.slug);
         }
-        info!("[registry] added agent '{}' port={}", record.name, record.port);
+        info!("[registry] added agent '{}' port={}", record.slug, record.port);
         self.agents.push(record);
         self.save()
     }
 
-    pub fn remove(&mut self, name: &str) -> Result<bool> {
+    pub fn remove(&mut self, slug: &str) -> Result<bool> {
         let before = self.agents.len();
-        self.agents.retain(|a| a.name != name);
+        self.agents.retain(|a| a.slug != slug);
         let removed = self.agents.len() != before;
         if removed {
-            info!("[registry] removed agent '{name}'");
+            info!("[registry] removed agent '{slug}'");
             self.save()?;
         } else {
-            debug!("[registry] remove no-op: agent '{name}' not found");
+            debug!("[registry] remove no-op: agent '{slug}' not found");
         }
         Ok(removed)
     }
 
-    pub fn update_status(&mut self, name: &str, status: AgentStatus) -> Result<bool> {
-        let Some(r) = self.get_mut(name) else { return Ok(false); };
+    pub fn update_status(&mut self, slug: &str, status: AgentStatus) -> Result<bool> {
+        let Some(r) = self.get_mut(slug) else { return Ok(false); };
         if r.status == status { return Ok(false); }
-        info!("[registry] agent '{name}' status {} -> {}", r.status.as_wire_str(), status.as_wire_str());
+        info!("[registry] agent '{slug}' status {} -> {}", r.status.as_wire_str(), status.as_wire_str());
         r.status = status;
         self.save()?;
         Ok(true)
     }
 
-    pub fn update_last_seen(&mut self, name: &str, ts: u64) -> Result<bool> {
-        let Some(r) = self.get_mut(name) else { return Ok(false); };
+    pub fn update_last_seen(&mut self, slug: &str, ts: u64) -> Result<bool> {
+        let Some(r) = self.get_mut(slug) else { return Ok(false); };
         r.last_seen = ts;
         Ok(true)
     }
 
-    pub fn update_pid(&mut self, name: &str, pid: Option<u32>) -> Result<bool> {
-        let Some(r) = self.get_mut(name) else { return Ok(false); };
+    pub fn update_pid(&mut self, slug: &str, pid: Option<u32>) -> Result<bool> {
+        let Some(r) = self.get_mut(slug) else { return Ok(false); };
         if r.pid == pid { return Ok(false); }
-        debug!("[registry] agent '{name}' pid {:?} -> {:?}", r.pid, pid);
+        debug!("[registry] agent '{slug}' pid {:?} -> {:?}", r.pid, pid);
         r.pid = pid;
         self.save()?;
         Ok(true)
@@ -221,13 +239,13 @@ impl Registry {
         range.into_iter().find(|p| !used.contains(p))
     }
 
-    /// Depth of `name` in the parent chain: 0 for top-level (no parent), 1
+    /// Depth of `slug` in the parent chain: 0 for top-level (no parent), 1
     /// for a direct child of a top-level agent, etc. Returns `None` if
-    /// `name` is not in the registry. Unknown / dangling parents short-circuit
+    /// `slug` is not in the registry. Unknown / dangling parents short-circuit
     /// to the depth where the chain breaks (treated as top-level above the
     /// break) — they don't loop.
-    pub fn depth_of(&self, name: &str) -> Option<usize> {
-        let mut current = self.get(name)?.parent.clone();
+    pub fn depth_of(&self, slug: &str) -> Option<usize> {
+        let mut current = self.get(slug)?.parent.clone();
         let mut depth = 0usize;
         // Hard cap on chain walks to prevent any accidental cycle.
         for _ in 0..256 {
@@ -246,21 +264,21 @@ impl Registry {
         Some(depth)
     }
 
-    /// All direct children of `name` (one level below).
-    pub fn direct_children(&self, name: &str) -> Vec<String> {
+    /// Slugs of all direct children of `slug` (one level below).
+    pub fn direct_children(&self, slug: &str) -> Vec<String> {
         self.agents.iter()
-            .filter(|a| a.parent.as_deref() == Some(name))
-            .map(|a| a.name.clone())
+            .filter(|a| a.parent.as_deref() == Some(slug))
+            .map(|a| a.slug.clone())
             .collect()
     }
 
-    /// Transitive descendants of `name`, ordered leaves-first (so callers
-    /// can terminate them in order without orphaning intermediate nodes).
-    /// Excludes `name` itself.
-    pub fn descendants_leaves_first(&self, name: &str) -> Vec<String> {
+    /// Transitive descendants of `slug` (as slugs), ordered leaves-first (so
+    /// callers can terminate them in order without orphaning intermediate
+    /// nodes). Excludes `slug` itself.
+    pub fn descendants_leaves_first(&self, slug: &str) -> Vec<String> {
         // BFS by level, then reverse so leaves come first.
         let mut levels: Vec<Vec<String>> = Vec::new();
-        let mut frontier = self.direct_children(name);
+        let mut frontier = self.direct_children(slug);
         while !frontier.is_empty() {
             let next: Vec<String> = frontier.iter()
                 .flat_map(|n| self.direct_children(n))

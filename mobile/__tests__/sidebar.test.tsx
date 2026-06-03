@@ -71,6 +71,22 @@ test('tapping a running agent opens its proxied chat', async () => {
   expect(childWs.frames().at(-1)).toEqual({ type: 'user_message', text: 'hey agent' })
 })
 
+test('routes by id and displays name when they differ (spaced display name)', async () => {
+  const { ws } = await connectMaster()
+  // id is a route-safe slug; name is the free-form display label.
+  await pushAgents(ws, [{ id: 'my-agent', name: 'My Agent', status: 'running', kind: 'local' }])
+  await openSidebar()
+
+  // The sidebar shows the display name…
+  await act(async () => {
+    fireEvent.press(await screen.findByText('My Agent'))
+  })
+
+  // …but the proxy stream is opened at the id (slug), never the spaced name.
+  await waitFor(() => expect(lastWs().url).toContain('/agents/my-agent/stream'))
+  expect(lastWs().url).not.toContain('My Agent')
+})
+
 test('tapping a stopped agent starts it and shows the starting overlay', async () => {
   const { ws } = await connectMaster()
   await pushAgents(ws, [STOPPED])

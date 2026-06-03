@@ -12,6 +12,25 @@ fn registry_with_one_agent() -> String {
     json!({
         "agents": [{
             "name": "worker",
+            "slug": "worker",
+            "pid": 4242,
+            "port": 30100,
+            "status": "running",
+            "binary_version": "0.20.0",
+            "created_at": 1_700_000_000u64,
+            "last_seen": 1_700_000_000u64
+        }]
+    })
+    .to_string()
+}
+
+/// A registry whose display `name` (with spaces) differs from its route-safe
+/// `slug` — used to verify the CLI resolves a friendly name to the slug.
+fn registry_with_spaced_name() -> String {
+    json!({
+        "agents": [{
+            "name": "My Worker",
+            "slug": "my-worker",
             "pid": 4242,
             "port": 30100,
             "status": "running",
@@ -30,10 +49,29 @@ async fn list_renders_the_registry() {
 
     let out = cli.run(&["agents", "list"]).await;
     out.assert_ok();
+    assert!(out.stdout.contains("ID"), "missing ID column header: {}", out.stdout);
     assert!(out.stdout.contains("NAME"), "missing table header: {}", out.stdout);
     assert!(out.stdout.contains("worker"), "missing agent row: {}", out.stdout);
     assert!(out.stdout.contains("running"), "missing status: {}", out.stdout);
     assert!(out.stdout.contains("local"), "expected a local agent: {}", out.stdout);
+}
+
+#[tokio::test]
+async fn stop_resolves_a_display_name_to_its_slug() {
+    let cli = OktoCli::new();
+    let mock = MockMgmt::start().await;
+    cli.write_launch(8443, mock.port);
+    // The registry maps "My Worker" → slug "my-worker"; addressing the agent by
+    // its friendly name must hit the slug-keyed management route.
+    cli.write(".okto/lair/agents.json", &registry_with_spaced_name());
+
+    let out = cli.run(&["agents", "stop", "My Worker"]).await;
+    out.assert_ok();
+    assert!(
+        mock.saw("POST", "/agents/my-worker/stop"),
+        "expected the slug-keyed route, got: {:?}",
+        mock.requests(),
+    );
 }
 
 #[tokio::test]

@@ -754,7 +754,9 @@ async fn stream_logs(name: &str, follow: bool) -> Result<()> {
     if name == "lair" {
         return service::stream_lair_logs(follow).await;
     }
-    let path = service::agents_dir().join(name).join("agent.log");
+    // The per-agent dir is keyed by slug; resolve a display name to it.
+    let slug = agents::resolve_slug(name);
+    let path = service::agents_dir().join(&slug).join("agent.log");
     if !path.exists() {
         anyhow::bail!("no log file at {}", path.display());
     }

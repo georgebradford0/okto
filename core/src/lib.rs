@@ -71,7 +71,7 @@ pub use registry::{AgentRecord, AgentStatus, Registry};
 /// by a CI check — and references the lair's advertised version to warn the user
 /// when one side is behind. See `PROTOCOL.md` and CLAUDE.md ("Wire protocol
 /// versioning").
-pub const WIRE_PROTOCOL: u32 = 1;
+pub const WIRE_PROTOCOL: u32 = 2;
 
 // ── Shared HTTP client ────────────────────────────────────────────────────────
 
