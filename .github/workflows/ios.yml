@@ -29,9 +29,10 @@ jobs:
       fail-fast: false
       matrix:
         device:
-          - "iPhone 17 Pro"
+          - "iPhone 14"
+          - "iPhone 15"
+          - "iPhone 16"
           - "iPhone 17"
-          - "iPhone Air"
 
     defaults:
       run:
