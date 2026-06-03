@@ -1,5 +1,10 @@
 name: Mobile Tests
 
+env:
+  # Force JS actions still bundled for Node 20 onto Node 24 to silence the
+  # deprecation annotations. Node 24 becomes the runner default 2026-06-16.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 # Reusable gate: runs the mobile jest suite on cheap Ubuntu. Called by the iOS
 # and Android workflows so a failing test blocks the build/release jobs before
 # any expensive native toolchain spins up.

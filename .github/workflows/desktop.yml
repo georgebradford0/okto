@@ -1,5 +1,10 @@
 name: Desktop Release
 
+env:
+  # Force JS actions still bundled for Node 20 onto Node 24 to silence the
+  # deprecation annotations. Node 24 becomes the runner default 2026-06-16.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   workflow_dispatch:
 
