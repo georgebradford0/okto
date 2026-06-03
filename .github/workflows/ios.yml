@@ -73,12 +73,18 @@ jobs:
       - name: Install CocoaPods
         run: cd ios && pod install --repo-update
 
+      # Build Release (not Debug): Release embeds the JS bundle into the app, so
+      # it runs standalone on the simulator without a Metro packager — a Debug
+      # build would launch to a blank/error screen in CI with no dev server.
+      # Release also has __DEV__=false, so there's no dev auto-connect and the
+      # app shows the manual connect screen the flow drives (same as App Review).
       - name: Build for simulator (no signing)
         run: |
           xcodebuild \
             -workspace ios/okto.xcworkspace \
             -scheme okto \
-            -configuration Debug \
+            -configuration Release \
+            -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath ios/build \
             CODE_SIGN_IDENTITY="" \
