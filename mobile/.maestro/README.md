@@ -81,6 +81,14 @@ maestro test mobile/.maestro/smoke.yaml --env HOST=10.0.2.2    # Android emulato
 maestro studio                                                  # interactive authoring
 ```
 
+## CI
+
+The iOS release workflow (`.github/workflows/ios.yml`) runs `smoke.yaml` on a
+simulator as a gate: its `build` job builds the app, boots an `iPhone 16` sim,
+installs the app, boots the mock lair, and drives the flow with
+`HOST=127.0.0.1`. `distribute` (TestFlight) `needs: build`, so a failing flow
+blocks the upload. The Android emulator runs are local-only.
+
 ## Adding flows
 
 Give any element you need to select a stable `testID` in `App.tsx`, then select

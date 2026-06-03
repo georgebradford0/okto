@@ -14,8 +14,12 @@ jobs:
     name: Mobile tests
     uses: ./.github/workflows/mobile-test.yml
 
+  # Build the app for the simulator, then gate on the Maestro e2e smoke flow
+  # (launch → connect → send a message → assert the agent reply) driven against
+  # a fully-offline mock lair. `distribute` needs this job, so a failing flow
+  # blocks the TestFlight upload.
   build:
-    name: Build iOS (Simulator)
+    name: Build & e2e (Simulator)
     runs-on: macos-26
     needs: test
 
@@ -38,6 +42,23 @@ jobs:
       - name: Install JS dependencies
         working-directory: ${{ github.workspace }}
         run: npm ci
+
+      # Rust toolchain + cache — needed to build the mock lair the e2e flow
+      # connects to.
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ github.workspace }}
+
+      - name: Install Maestro
+        working-directory: ${{ github.workspace }}
+        run: |
+          export MAESTRO_VERSION=2.6.0
+          curl -fsSL "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
 
       - name: Install xcpretty
         run: gem install xcpretty --no-document
@@ -64,6 +85,53 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             | xcpretty
+
+      # Compile the lair binary up front so the e2e step (which builds it lazily)
+      # fails fast and clearly on a Rust error, and benefits from the cache.
+      - name: Pre-build mock lair
+        working-directory: ${{ github.workspace }}
+        run: cargo build -p lair --bin lair
+
+      - name: Boot simulator & install app
+        run: |
+          xcrun simctl boot "iPhone 16" 2>/dev/null || true
+          xcrun simctl bootstatus "iPhone 16" || true
+          APP=$(find ios/build/Build/Products/Debug-iphonesimulator -maxdepth 1 -name 'okto.app' -type d | head -1)
+          test -n "$APP" || { echo "okto.app not found under ios/build"; exit 1; }
+          echo "Installing $APP"
+          xcrun simctl install "iPhone 16" "$APP"
+
+      # Start the offline mock lair, wait until it serves on :9000, then drive the
+      # Maestro smoke flow against it. lair + maestro share one shell so the
+      # background server reliably outlives neither too early nor into later steps.
+      - name: Maestro e2e (smoke)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -uo pipefail
+          cargo test -p okto-tests --test maestro_serve serve -- --ignored --nocapture > /tmp/lair.log 2>&1 &
+          LAIR_PID=$!
+          echo "Waiting for mock lair to become ready…"
+          for _ in $(seq 1 150); do
+            grep -q "is READY and serving" /tmp/lair.log && break
+            kill -0 "$LAIR_PID" 2>/dev/null || { echo "mock lair exited early:"; cat /tmp/lair.log; exit 1; }
+            sleep 2
+          done
+          grep -q "is READY and serving" /tmp/lair.log || { echo "mock lair not ready in time:"; cat /tmp/lair.log; exit 1; }
+          echo "mock lair ready; running Maestro…"
+          maestro test mobile/.maestro/smoke.yaml --env HOST=127.0.0.1
+          code=$?
+          kill "$LAIR_PID" 2>/dev/null || true
+          exit $code
+
+      - name: Upload Maestro artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-ios
+          path: |
+            ~/.maestro/tests
+            /tmp/lair.log
+          if-no-files-found: ignore
 
   distribute:
     name: TestFlight
