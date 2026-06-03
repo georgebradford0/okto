@@ -76,3 +76,44 @@ async fn explicit_name_skips_the_model_call() {
 
     let _ = lair.http_post("/agents/my-exact-agent/stop").await;
 }
+
+#[tokio::test]
+async fn explicit_name_with_spaces_is_slugged() {
+    // A free-form display name with spaces must be turned into a route-safe
+    // slug for the on-disk dir and the wire id, while the display name itself
+    // is kept verbatim.
+    let lair = LairProcess::start_with_env(vec![Turn::text("should-not-be-used")], FAST_CREATE)
+        .await
+        .expect("lair to start");
+
+    let (status, body) = lair
+        .http_post_json("/agents", r#"{"name":"My Cool Agent"}"#)
+        .await
+        .expect("POST /agents");
+
+    // Explicit name → no naming model call.
+    assert_eq!(lair.mock.request_count(), 0, "explicit name must not trigger a model call");
+    // The raw spaced name is preserved as the display label in the response.
+    assert!(
+        body.contains("My Cool Agent"),
+        "expected display name preserved in response (status {status}): {body}",
+    );
+
+    // The per-agent dir is created (before the privilege-drop spawn, which
+    // EPERMs under the non-root harness) at the *slug*, never the spaced name.
+    let agents_root = lair.home.join("agents");
+    assert!(
+        agents_root.join("my-cool-agent").is_dir(),
+        "expected the on-disk dir to be the slug 'my-cool-agent' under {}",
+        agents_root.display(),
+    );
+    assert!(
+        !agents_root.join("My Cool Agent").exists(),
+        "the raw spaced name must never become a directory under {}",
+        agents_root.display(),
+    );
+
+    // Best-effort cleanup in case the child actually spawned (root host) —
+    // addressed by slug, never the spaced name.
+    let _ = lair.http_post("/agents/my-cool-agent/stop").await;
+}

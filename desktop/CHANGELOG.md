@@ -5,6 +5,12 @@ Changes to the okto desktop (Tauri) app. Current version: see `package.json` /
 
 ## [Unreleased]
 
+### Changed
+- Bump the mirrored `WIRE_PROTOCOL` 1 → 2: the `agents` event's `id` is now a
+  route-safe slug that may differ from the display `name`. The desktop client
+  already routes by `id` and renders `name`, so behavior is unchanged — this is
+  the protocol-version mirror + jest guard update. See `PROTOCOL.md`.
+
 ## [0.4.6] - 2026-06-02
 
 ### Added

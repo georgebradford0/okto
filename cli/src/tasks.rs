@@ -91,14 +91,15 @@ pub async fn list(agent: Option<&str>) -> Result<()> {
 
     match agent {
         Some(a) => {
-            let rows = read_tasks(&agent_tasks_path(a));
+            let slug = crate::agents::resolve_slug(a);
+            let rows = read_tasks(&agent_tasks_path(&slug));
             if rows.is_empty() {
-                println!("No tasks for agent '{a}'.");
+                println!("No tasks for agent '{slug}'.");
                 return Ok(());
             }
             header();
             println!("{}", "-".repeat(80));
-            print_rows(a, &rows);
+            print_rows(&slug, &rows);
         }
         None => {
             // Aggregate: lair + every agent in the registry.
@@ -157,7 +158,10 @@ fn mgmt_request(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
 
 pub async fn stop(id: &str, agent: Option<&str>) -> Result<()> {
     let url = match agent {
-        Some(a) => format!("{}/agents/{}/tasks/{}/cancel", service::lair_http_url(), a, id),
+        Some(a) => {
+            let slug = crate::agents::resolve_slug(a);
+            format!("{}/agents/{}/tasks/{}/cancel", service::lair_http_url(), slug, id)
+        }
         None    => format!("{}/tasks/{}/cancel", service::lair_http_url(), id),
     };
     debug!("[tasks] POST {url}");

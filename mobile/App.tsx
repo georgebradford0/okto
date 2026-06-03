@@ -2070,7 +2070,7 @@ function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, o
   }, [reconcile])
   // Stable so ChatPane's memo isn't broken every render. Reports this agent's
   // name up at each turn boundary for a worktree-list refresh.
-  const handleTurnEnd = useCallback(() => { onTurnEnd?.(child.name) }, [onTurnEnd, child.name])
+  const handleTurnEnd = useCallback(() => { onTurnEnd?.(child.id) }, [onTurnEnd, child.id])
 
   return (
     // No SafeAreaView here: this screen is rendered as an overlay inside
@@ -2111,7 +2111,7 @@ function ChildChatScreen({ child, worktree, tunnelPort, tunnelError, cacheKey, o
 
         {tunnelPort ? (
           <ChatPane
-            baseUrl={`http://127.0.0.1:${tunnelPort}/agents/${child.name}${worktree ? `/worktrees/${worktree.id}` : ''}`}
+            baseUrl={`http://127.0.0.1:${tunnelPort}/agents/${child.id}${worktree ? `/worktrees/${worktree.id}` : ''}`}
             cacheKey={cacheKey}
             onStatusChange={setChatStatus}
             clearRef={clearRef}
@@ -2410,19 +2410,19 @@ function AppInner() {
   // agent's chat. Mirrors desktop's reconcileWorktrees. Guard on the agent
   // name too: worktree ids are per-agent slugs, so two agents can share one
   // (e.g. both "feature-x").
-  const reconcileActiveWorktree = useCallback((agentName: string, live: WorktreeMeta[]) => {
+  const reconcileActiveWorktree = useCallback((agentId: string, live: WorktreeMeta[]) => {
     const wt = activeWorktreeRef.current
     const child = activeChildRef.current
-    if (wt && child?.name === agentName && !live.some(w => w.id === wt.id)) {
+    if (wt && child?.id === agentId && !live.some(w => w.id === wt.id)) {
       openChatRef.current(child)
     }
   }, [])
 
   // Apply a freshly-fetched worktree list for one agent: update the sidebar
   // nesting and drop a now-ghost worktree chat if one is active.
-  const applyWorktrees = useCallback((agentName: string, wts: WorktreeMeta[]) => {
-    setWorktrees(prev => ({ ...prev, [agentName]: wts }))
-    reconcileActiveWorktree(agentName, wts)
+  const applyWorktrees = useCallback((agentId: string, wts: WorktreeMeta[]) => {
+    setWorktrees(prev => ({ ...prev, [agentId]: wts }))
+    reconcileActiveWorktree(agentId, wts)
   }, [reconcileActiveWorktree])
 
   // Fetch each agent's worktrees whenever the agent list (or tunnel) changes,
@@ -2430,16 +2430,16 @@ function AppInner() {
   // Also prune stale entries for agents no longer in `containers`.
   useEffect(() => {
     if (tunnelPort == null) return
-    const names = new Set(containers.map(c => c.name))
+    const ids = new Set(containers.map(c => c.id))
     setWorktrees(prev => {
-      const stale = Object.keys(prev).filter(k => !names.has(k))
-      return stale.length ? Object.fromEntries(Object.entries(prev).filter(([k]) => names.has(k))) : prev
+      const stale = Object.keys(prev).filter(k => !ids.has(k))
+      return stale.length ? Object.fromEntries(Object.entries(prev).filter(([k]) => ids.has(k))) : prev
     })
     const ac = new AbortController()
     for (const c of containers) {
-      fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(c.name)}/worktrees`, { signal: ac.signal })
+      fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(c.id)}/worktrees`, { signal: ac.signal })
         .then(r => r.ok ? r.json() : Promise.reject(new Error('http')))
-        .then((wts: WorktreeMeta[]) => applyWorktrees(c.name, wts))
+        .then((wts: WorktreeMeta[]) => applyWorktrees(c.id, wts))
         .catch(() => { /* transient; next push retries */ })
     }
     return () => ac.abort()
@@ -2450,46 +2450,46 @@ function AppInner() {
   // (e.g. the agent ran a tool that removed one), and lair only pushes
   // `agents` on registry changes — never for worktree-only changes — so the
   // sidebar nesting would otherwise lag until the next unrelated agents push.
-  const refetchWorktrees = useCallback((agentName: string) => {
+  const refetchWorktrees = useCallback((agentId: string) => {
     if (tunnelPort == null) return
-    fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(agentName)}/worktrees`)
+    fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(agentId)}/worktrees`)
       .then(r => r.ok ? r.json() : Promise.reject(new Error('http')))
-      .then((wts: WorktreeMeta[]) => applyWorktrees(agentName, wts))
+      .then((wts: WorktreeMeta[]) => applyWorktrees(agentId, wts))
       .catch(() => {})
   }, [tunnelPort, applyWorktrees])
 
-  const createWorktree = useCallback((agentName: string, branch: string) => {
+  const createWorktree = useCallback((agentId: string, branch: string) => {
     const b = branch.trim()
     if (tunnelPort == null || !b) return
-    fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(agentName)}/worktrees`, {
+    fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(agentId)}/worktrees`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ branch: b }),
     })
       .then(r => r.ok ? r.json() : Promise.reject(new Error('http')))
       .then((meta: WorktreeMeta) => {
         setWorktrees(prev => ({
           ...prev,
-          [agentName]: [...(prev[agentName] ?? []).filter(w => w.id !== meta.id), meta],
+          [agentId]: [...(prev[agentId] ?? []).filter(w => w.id !== meta.id), meta],
         }))
-        const c = containers.find(x => x.name === agentName)
+        const c = containers.find(x => x.id === agentId)
         if (c) { setShowSidebar(false); sidebarAnim.setValue(0); openChatRef.current(c, meta) }
       })
       .catch(() => {})
   }, [tunnelPort, containers, sidebarAnim])
 
-  const deleteWorktree = useCallback((agentName: string, wt: WorktreeMeta) => {
+  const deleteWorktree = useCallback((agentId: string, wt: WorktreeMeta) => {
     if (tunnelPort == null) return
     // Optimistically drop the row, then fall back to the parent agent's chat
     // if we were viewing this worktree (same path as a worktree removed
     // elsewhere — see reconcileActiveWorktree).
-    setWorktrees(prev => ({ ...prev, [agentName]: (prev[agentName] ?? []).filter(w => w.id !== wt.id) }))
-    if (activeChildRef.current?.name === agentName && activeWorktreeRef.current?.id === wt.id) {
+    setWorktrees(prev => ({ ...prev, [agentId]: (prev[agentId] ?? []).filter(w => w.id !== wt.id) }))
+    if (activeChildRef.current?.id === agentId && activeWorktreeRef.current?.id === wt.id) {
       openChatRef.current(activeChildRef.current)
     }
-    fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(agentName)}/worktrees/${encodeURIComponent(wt.id)}`,
+    fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(agentId)}/worktrees/${encodeURIComponent(wt.id)}`,
       { method: 'DELETE' })
-      .then(() => fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(agentName)}/worktrees`))
+      .then(() => fetch(`http://127.0.0.1:${tunnelPort}/agents/${encodeURIComponent(agentId)}/worktrees`))
       .then(r => r.ok ? r.json() : Promise.reject(new Error('http')))
-      .then((wts: WorktreeMeta[]) => applyWorktrees(agentName, wts))
+      .then((wts: WorktreeMeta[]) => applyWorktrees(agentId, wts))
       .catch(() => {})
   }, [tunnelPort, applyWorktrees])
 
@@ -2577,7 +2577,7 @@ function AppInner() {
               // data dir is being removed too, so the next /history fetch
               // would 404; leaving stale rows in MMKV would resurrect a
               // ghost chat if the user later spawns a same-named agent.
-              clearCachedHistory(`agent:${lairPk}:${c.name}`)
+              clearCachedHistory(`agent:${lairPk}:${c.id}`)
             }
           },
         },
@@ -2810,8 +2810,8 @@ function AppInner() {
               tunnelPort={tunnelPort}
               tunnelError={tunnelError}
               cacheKey={outgoingWorktree
-                ? `worktree:${lairPk}:${outgoingChild.name}:${outgoingWorktree.id}`
-                : `agent:${lairPk}:${outgoingChild.name}`}
+                ? `worktree:${lairPk}:${outgoingChild.id}:${outgoingWorktree.id}`
+                : `agent:${lairPk}:${outgoingChild.id}`}
               onOpenSidebar={openSidebar}
               initialDraft={draftsRef.current[`${outgoingChild.id}${outgoingWorktree ? `::${outgoingWorktree.id}` : ''}`]}
               onDraftChange={d => { draftsRef.current[`${outgoingChild.id}${outgoingWorktree ? `::${outgoingWorktree.id}` : ''}`] = d }}
@@ -2829,8 +2829,8 @@ function AppInner() {
               tunnelPort={tunnelPort}
               tunnelError={tunnelError}
               cacheKey={activeWorktree
-                ? `worktree:${lairPk}:${activeChild.name}:${activeWorktree.id}`
-                : `agent:${lairPk}:${activeChild.name}`}
+                ? `worktree:${lairPk}:${activeChild.id}:${activeWorktree.id}`
+                : `agent:${lairPk}:${activeChild.id}`}
               onOpenSidebar={openSidebar}
               initialDraft={draftsRef.current[`${activeChild.id}${activeWorktree ? `::${activeWorktree.id}` : ''}`]}
               onDraftChange={d => { draftsRef.current[`${activeChild.id}${activeWorktree ? `::${activeWorktree.id}` : ''}`] = d }}
@@ -2920,7 +2920,7 @@ function AppInner() {
                 )}
                 {containers.map(c => {
                   const active = childMounted && activeChild?.id === c.id && !activeWorktree
-                  const cWorktrees = worktrees[c.name] ?? []
+                  const cWorktrees = worktrees[c.id] ?? []
                   return (
                   <React.Fragment key={c.id}>
                   <Touchable
@@ -2946,7 +2946,7 @@ function AppInner() {
                     {c.status === 'running' && (
                       <Touchable
                         hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                        onPress={() => { setCreatingWtFor(prev => prev === c.name ? null : c.name); setNewBranchDraft('') }}
+                        onPress={() => { setCreatingWtFor(prev => prev === c.id ? null : c.id); setNewBranchDraft('') }}
                       >
                         <Text paddingHorizontal={4} fontSize={18} fontWeight="600" color="$typography500">＋</Text>
                       </Touchable>
@@ -2965,7 +2965,7 @@ function AppInner() {
                           `Removes the "${wt.branch}" worktree and deletes its branch. This cannot be undone.`,
                           [
                             { text: 'Cancel', style: 'cancel' },
-                            { text: 'Delete', style: 'destructive', onPress: () => deleteWorktree(c.name, wt) },
+                            { text: 'Delete', style: 'destructive', onPress: () => deleteWorktree(c.id, wt) },
                           ],
                         )}
                         delayLongPress={500}
@@ -2980,7 +2980,7 @@ function AppInner() {
                     )
                   })}
 
-                  {creatingWtFor === c.name && (
+                  {creatingWtFor === c.id && (
                     <View flexDirection="row" alignItems="center" gap={10} borderBottomWidth={1} borderColor="$outline200" backgroundColor="$background0" paddingVertical={14} paddingLeft={34} paddingRight={20}>
                       <TextInput
                         style={{ fontFamily: MONO, flex: 1, borderRadius: 6, borderWidth: 1, borderColor: 'rgb(221,220,219)', backgroundColor: 'rgb(246,246,246)', paddingHorizontal: 8, paddingVertical: 4, fontSize: 13, color: 'rgb(15,23,42)' }}
@@ -2992,7 +2992,7 @@ function AppInner() {
                         autoCapitalize="none"
                         autoCorrect={false}
                         returnKeyType="done"
-                        onSubmitEditing={() => { createWorktree(c.name, newBranchDraft); setCreatingWtFor(null); setNewBranchDraft('') }}
+                        onSubmitEditing={() => { createWorktree(c.id, newBranchDraft); setCreatingWtFor(null); setNewBranchDraft('') }}
                         onBlur={() => { setCreatingWtFor(null); setNewBranchDraft('') }}
                       />
                     </View>

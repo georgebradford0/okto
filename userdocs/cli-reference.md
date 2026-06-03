@@ -89,12 +89,17 @@ Print the version of the **running** lair binary (requires lair running).
 
 | Command | Description |
 |---------|-------------|
-| `okto agents list` | List agents (name, kind, status, port, pid, host). Reads `agents.json`; works offline. |
-| `okto agents start <name>` | Start a stopped agent. |
-| `okto agents stop <name>` | Stop a running agent. |
-| `okto agents delete <name> [-y]` | Delete an agent and its data/workspace (irreversible; `-y` skips prompt). |
+| `okto agents list` | List agents (id, name, kind, status, port, pid, host). Reads `agents.json`; works offline. |
+| `okto agents start <id\|name>` | Start a stopped agent. |
+| `okto agents stop <id\|name>` | Stop a running agent. |
+| `okto agents delete <id\|name> [-y]` | Delete an agent and its data/workspace (irreversible; `-y` skips prompt). |
 
 > Agents are **created from the mobile chat**, not the CLI. See [Agents](agents.md).
+>
+> Each agent has a free-form **name** (may contain spaces) and a route-safe
+> **id** (a slug derived from the name, also its on-disk dir name). `start` /
+> `stop` / `delete` and `okto tasks --agent` accept either the id or an
+> unambiguous name.
 
 ## MCP servers — `okto mcp`
 

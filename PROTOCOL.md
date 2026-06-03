@@ -58,3 +58,4 @@ relevant `CHANGELOG.md`s.
 | Protocol | Introduced | Notes |
 |----------|-----------|-------|
 | **1** | lair 0.21.6 / mobile 0.2.2 / desktop 0.4.6 | Baseline. lair advertises `wire_protocol` + `lair_version` on `/info` and in `ready`; clients mirror `WIRE_PROTOCOL` and reference the lair's. A lair predating this (≤ 0.21.5) sends no `wire_protocol`, which clients treat as `0` (legacy). The additive `display` field on `/history` tool rows (shipped in lair 0.21.5) needed no bump — it was backward-compatible. |
+| **2** | lair 0.21.7 / mobile 0.2.3 / desktop 0.4.7 | The `agents` event's `id` is now a **route-safe slug** that may differ from the free-form `name` (previously `id === name`). Clients must build agent proxy URLs (`/agents/<id>/…`) from `id`, not `name`, and `parent` now references a parent's `id` (slug). Bumped because the meaning of `id` changed — a client that routed by `name` (older mobile) breaks against an agent whose name isn't already slug-shaped. |

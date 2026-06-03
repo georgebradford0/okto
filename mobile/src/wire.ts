@@ -14,7 +14,7 @@
 // advertises its own version on `/info` and in every `ready` frame; we compare
 // the two to warn the user when one side is behind (see `App.tsx`). Bump only
 // on a breaking wire change — see PROTOCOL.md / CLAUDE.md.
-export const WIRE_PROTOCOL = 1
+export const WIRE_PROTOCOL = 2
 
 // ── Server → client events ────────────────────────────────────────────────────
 
@@ -57,11 +57,11 @@ export type ClientFrame =
  *  direct port/pubkey/host for an agent because lair proxies all traffic.
  *  `kind` is `"local"` or `"remote"`; advisory, the proxy URL is the same. */
 export interface AgentInfo {
-  id:      string  // = name; used in the proxy URL
-  name:    string
+  id:      string  // route-safe slug; used in the proxy URL (may differ from name)
+  name:    string  // free-form display label shown in the sidebar
   status:  string  // 'running' | 'stopped' | 'pending'
   kind:    string  // 'local' | 'remote'
-  parent?: string  // name of the spawning agent, if any (omitted for operator-spawned roots)
+  parent?: string  // id (slug) of the spawning agent, if any (omitted for operator-spawned roots)
 }
 
 /** One git worktree of an agent, from GET /agents/:name/worktrees.

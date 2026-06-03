@@ -64,19 +64,22 @@ const DEFAULT_RELAY_URL:      &str = "https://oktorelay.directto.link";
 fn data_dir() -> PathBuf { okto_core::data_dir() }
 
 /// Wire-shape pushed to mobile as part of an `agents` event. Just identity
-/// + status — no host/port/pubkey because mobile only ever talks to lair
-/// and reaches children through `/agents/:name/stream` proxy URLs.
+/// + status — no host/port/pubkey because clients only ever talk to lair
+/// and reach children through `/agents/:slug/stream` proxy URLs.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 struct AgentWire {
+    /// Route-safe slug. Clients use this to build every proxy URL
+    /// (`/agents/<id>/…`). May differ from `name`.
     id:     String,
+    /// Free-form display label shown in the sidebar. Never used in a URL.
     name:   String,
     status: String,
     /// `"local"` or `"remote"`. Surfaced so the mobile sidebar can label
     /// remote agents distinctly if it wants — purely advisory.
     kind:   &'static str,
-    /// Name of the agent that spawned this one, if any. Mobile uses this to
-    /// render the agent list as a tree (operator-spawned agents at the root,
-    /// agent-spawned children nested under their parent).
+    /// `slug` of the agent that spawned this one, if any. Clients can use this
+    /// to render the agent list as a tree (operator-spawned agents at the
+    /// root, agent-spawned children nested under their parent's `id`).
     #[serde(skip_serializing_if = "Option::is_none")]
     parent: Option<String>,
 }
@@ -202,15 +205,16 @@ async fn require_mgmt_token(
 }
 
 /// Caller identity attached to agent-token-gated requests. Threaded through
-/// as a request extension so handlers know which agent authenticated.
+/// as a request extension so handlers know which agent authenticated. `slug`
+/// is the caller's route-safe id (the registry key).
 #[derive(Clone)]
 struct AgentCaller {
-    name: String,
+    slug: String,
 }
 
 /// Capability-token middleware for the agent-spawned-agent endpoints. Looks
 /// up the supplied `X-Okto-Agent-Token` in the persisted store, resolves it
-/// to the calling agent's name, and attaches that name as a request
+/// to the calling agent's slug, and attaches that slug as a request
 /// extension so the handler can fill in `parent` and enforce descendant
 /// scoping. Unlike `require_mgmt_token`, this is always strict — there is no
 /// "open by default" mode.
@@ -227,14 +231,14 @@ async fn require_agent_token(
         warn!("[lair/auth] rejected {} {}: missing X-Okto-Agent-Token", req.method(), req.uri().path());
         return (StatusCode::FORBIDDEN, "missing X-Okto-Agent-Token").into_response();
     };
-    let name = state.agent_tokens.lock().unwrap()
+    let slug = state.agent_tokens.lock().unwrap()
         .name_for_token(&token).map(str::to_string);
-    let Some(name) = name else {
+    let Some(slug) = slug else {
         warn!("[lair/auth] rejected {} {}: invalid X-Okto-Agent-Token", req.method(), req.uri().path());
         return (StatusCode::FORBIDDEN, "invalid X-Okto-Agent-Token").into_response();
     };
-    debug!("[lair/auth] agent-token request authenticated as '{name}': {} {}", req.method(), req.uri().path());
-    req.extensions_mut().insert(AgentCaller { name });
+    debug!("[lair/auth] agent-token request authenticated as '{slug}': {} {}", req.method(), req.uri().path());
+    req.extensions_mut().insert(AgentCaller { slug });
     next.run(req).await
 }
 
@@ -874,18 +878,18 @@ async fn proxy_agent_cancel_task(
     proxy_agent_http(&state, &name, reqwest::Method::POST, &format!("/tasks/{id}/cancel")).await
 }
 
-/// Re-spawn a stopped agent by name. Re-uses its existing data_dir/workspace.
-async fn start_agent_by_name(state: &AppState, name: &str) -> Result<(), String> {
-    info!("[lair/start_agent] starting agent='{name}'");
-    let record = state.registry.lock().unwrap().get(name).cloned()
+/// Re-spawn a stopped agent by slug. Re-uses its existing data_dir/workspace.
+async fn start_agent_by_name(state: &AppState, slug: &str) -> Result<(), String> {
+    info!("[lair/start_agent] starting agent='{slug}'");
+    let record = state.registry.lock().unwrap().get(slug).cloned()
         .ok_or_else(|| {
-            warn!("[lair/start_agent] agent='{name}' not found in registry");
-            format!("agent '{name}' not found")
+            warn!("[lair/start_agent] agent='{slug}' not found in registry");
+            format!("agent '{slug}' not found")
         })?;
     if record.is_remote() {
-        warn!("[lair/start_agent] agent='{name}' is remote — start/stop not managed by lair");
+        warn!("[lair/start_agent] agent='{slug}' is remote — start/stop not managed by lair");
         return Err(format!(
-            "agent '{name}' is a remote agent — start/stop is managed by the cloud \
+            "agent '{slug}' is a remote agent — start/stop is managed by the cloud \
              provider, not lair. Use the provisioning MCP to bring its VM up/down."
         ));
     }
@@ -894,7 +898,7 @@ async fn start_agent_by_name(state: &AppState, name: &str) -> Result<(), String>
     // `Running`, but spawning again would put a second process on the same
     // port. The poller will flip it to `Running` once `/health` answers.
     if record.pid.map(AgentSupervisor::is_alive).unwrap_or(false) {
-        info!("[lair/start_agent] agent='{name}' already running (pid={:?}) — no-op", record.pid);
+        info!("[lair/start_agent] agent='{slug}' already running (pid={:?}) — no-op", record.pid);
         return Ok(());
     }
     let cfg = okto_core::read_config();
@@ -905,10 +909,11 @@ async fn start_agent_by_name(state: &AppState, name: &str) -> Result<(), String>
     // If this agent already has a capability token (was originally spawned
     // by another agent), re-issue it on restart so its descendants can still
     // call back. Operator-spawned agents have no token row and stay that way.
-    let agent_token = state.agent_tokens.lock().unwrap().get(&record.name).map(str::to_string);
+    let agent_token = state.agent_tokens.lock().unwrap().get(&record.slug).map(str::to_string);
     let lair_internal_url = state.lair_internal_url.clone();
     let params = SpawnParams {
         name:              &record.name,
+        slug:              &record.slug,
         port:              record.port,
         git_url:           None,
         startup_prompt:    None,
@@ -926,15 +931,15 @@ async fn start_agent_by_name(state: &AppState, name: &str) -> Result<(), String>
         mcp:               None,
     };
     let pid = state.supervisor.spawn(&params).await.map_err(|e| {
-        error!("[lair/start_agent] spawn failed for agent='{name}': {e:#}");
+        error!("[lair/start_agent] spawn failed for agent='{slug}': {e:#}");
         e.to_string()
     })?;
     {
         let mut reg = state.registry.lock().unwrap();
-        let _ = reg.update_pid(name, Some(pid));
-        let _ = reg.update_status(name, AgentStatus::Pending);
+        let _ = reg.update_pid(slug, Some(pid));
+        let _ = reg.update_status(slug, AgentStatus::Pending);
     }
-    info!("[lair/start_agent] agent='{name}' started pid={pid} port={}", record.port);
+    info!("[lair/start_agent] agent='{slug}' started pid={pid} port={}", record.port);
     state.poll_trigger.notify_one();
     Ok(())
 }
@@ -944,28 +949,28 @@ async fn start_agent_by_name(state: &AppState, name: &str) -> Result<(), String>
 /// remove their registry rows. Descendants are torn down even when the
 /// initial target is a remote agent (its local sub-agents — if any — would
 /// still live in this container).
-async fn terminate_agent_by_name(state: &AppState, name: &str) -> Result<(), String> {
-    info!("[lair/terminate] terminating agent='{name}' (cascade)");
+async fn terminate_agent_by_name(state: &AppState, slug: &str) -> Result<(), String> {
+    info!("[lair/terminate] terminating agent='{slug}' (cascade)");
     // Snapshot the registry tree once; we don't want a race to spawn a new
     // descendant mid-tear-down.
     let (target, descendants) = {
         let reg = state.registry.lock().unwrap();
-        let Some(target) = reg.get(name).cloned() else {
-            warn!("[lair/terminate] agent='{name}' not found in registry");
-            return Err(format!("agent '{name}' not found"));
+        let Some(target) = reg.get(slug).cloned() else {
+            warn!("[lair/terminate] agent='{slug}' not found in registry");
+            return Err(format!("agent '{slug}' not found"));
         };
-        let descendants = reg.descendants_leaves_first(name);
+        let descendants = reg.descendants_leaves_first(slug);
         (target, descendants)
     };
     if !descendants.is_empty() {
-        info!("[lair/terminate] agent='{name}' has {} descendant(s) to tear down", descendants.len());
+        info!("[lair/terminate] agent='{slug}' has {} descendant(s) to tear down", descendants.len());
     }
 
     if target.is_remote() && descendants.is_empty() {
         return Err(format!(
-            "'{name}' is a remote agent — terminate_agent only destroys local processes. \
+            "'{slug}' is a remote agent — terminate_agent only destroys local processes. \
              Use the provisioning MCP's terminate-instance method first, then call \
-             forget_agent('{name}') to clean up the registry row."
+             forget_agent('{slug}') to clean up the registry row."
         ));
     }
 
@@ -977,7 +982,7 @@ async fn terminate_agent_by_name(state: &AppState, name: &str) -> Result<(), Str
         if is_remote {
             // Remote descendants: we can drop the registry row + token here,
             // but the VM itself needs operator action via the cloud MCP.
-            warn!("[lair/terminate] '{desc}' is a remote descendant of '{name}'; dropping registry row only — operator must terminate the VM via the cloud MCP.");
+            warn!("[lair/terminate] '{desc}' is a remote descendant of '{slug}'; dropping registry row only — operator must terminate the VM via the cloud MCP.");
         } else if let Err(e) = state.supervisor.terminate(desc).await {
             warn!("[lair/terminate] descendant '{desc}': {e}");
         }
@@ -991,15 +996,15 @@ async fn terminate_agent_by_name(state: &AppState, name: &str) -> Result<(), Str
     // Then the original target itself. Remote-with-descendants drops the row
     // here too; the operator should clean up the VM separately.
     if !target.is_remote() {
-        state.supervisor.terminate(name).await.map_err(|e| e.to_string())?;
+        state.supervisor.terminate(slug).await.map_err(|e| e.to_string())?;
     }
     {
         let mut reg = state.registry.lock().unwrap();
-        let _ = reg.remove(name);
+        let _ = reg.remove(slug);
     }
-    let _ = state.agent_tokens.lock().unwrap().remove(name);
+    let _ = state.agent_tokens.lock().unwrap().remove(slug);
 
-    info!("[lair/terminate] agent='{name}' and descendants torn down");
+    info!("[lair/terminate] agent='{slug}' and descendants torn down");
     state.poll_trigger.notify_one();
     Ok(())
 }
@@ -1137,13 +1142,13 @@ async fn poll_agents(state: Arc<AppState>, ready_tx: watch::Sender<bool>) {
             let now = okto_core::now_secs();
             let mut out = Vec::with_capacity(classified.len());
             for (record, status) in &classified {
-                if reg.get(&record.name).is_none() { continue; }
-                let _ = reg.update_status(&record.name, *status);
+                if reg.get(&record.slug).is_none() { continue; }
+                let _ = reg.update_status(&record.slug, *status);
                 if *status == AgentStatus::Running {
-                    let _ = reg.update_last_seen(&record.name, now);
+                    let _ = reg.update_last_seen(&record.slug, now);
                 }
                 out.push(AgentWire {
-                    id:     record.name.clone(),
+                    id:     record.slug.clone(),
                     name:   record.name.clone(),
                     status: status.as_wire_str().to_string(),
                     kind:   if record.is_remote() { "remote" } else { "local" },
@@ -1272,6 +1277,22 @@ async fn child_http_base(record: &AgentRecord, lair_priv: Vec<u8>) -> Result<Str
 async fn lookup_record(state: &AppState, name: &str) -> Result<AgentRecord, Response> {
     state.registry.lock().unwrap().get(name).cloned()
         .ok_or_else(|| (StatusCode::NOT_FOUND, format!("agent '{name}' not found")).into_response())
+}
+
+/// Resolve a caller-supplied agent reference to its canonical `slug`. Accepts
+/// either the slug itself (exact match — the common case, since the wire `id`
+/// is the slug) or a unique display `name`. Used by the LLM-facing tool
+/// executors so the model can pass whichever it has on hand. Returns `None`
+/// when nothing matches or a display name is ambiguous across rows.
+fn resolve_agent_slug(reg: &Registry, reference: &str) -> Option<String> {
+    if reg.get(reference).is_some() {
+        return Some(reference.to_string());
+    }
+    let mut by_name = reg.list().iter().filter(|a| a.name == reference);
+    match (by_name.next(), by_name.next()) {
+        (Some(only), None) => Some(only.slug.clone()),
+        _                  => None, // no match, or ambiguous display name
+    }
 }
 
 async fn proxy_agent_http(
@@ -1962,7 +1983,7 @@ async fn exec_create_agent(state: Arc<AppState>, input: serde_json::Value) -> St
 
 /// Core create-agent logic shared by the lair-LLM tool, the CLI endpoint,
 /// and the agent-token-gated `POST /agents/child` endpoint. `parent` is the
-/// name of the agent that requested this spawn, or `None` for operator-level
+/// `slug` of the agent that requested this spawn, or `None` for operator-level
 /// spawns. When `parent` is `Some`, a fresh capability token is minted for
 /// the new child so *it* can spawn grandchildren in turn.
 async fn exec_create_agent_for_parent(
@@ -1985,19 +2006,26 @@ async fn exec_create_agent_for_parent(
         None => "lair-workload".to_string(),
     };
 
-    let child_name = match input.get("name").and_then(|v| v.as_str()) {
-        // Explicit operator-supplied name: use it verbatim. A collision is an
-        // error (unchanged behavior).
+    // Each agent carries a free-form display `name` and a route-safe `slug`.
+    // The slug is what keys the registry, builds the on-disk dir, and appears
+    // on the wire — so collision checks and the dedupe loop run on the slug.
+    let (child_name, child_slug) = match input.get("name").and_then(|v| v.as_str()) {
+        // Explicit operator-supplied name: keep it verbatim as the display
+        // label, derive a route-safe slug from it. A slug collision is an
+        // error.
         Some(name) => {
             let name = name.to_string();
-            if state.registry.lock().unwrap().get(&name).is_some() {
-                return Err(format!("agent '{name}' already exists"));
+            let slug = okto_core::sanitize_agent_name(&name).unwrap_or_else(fallback_name);
+            if state.registry.lock().unwrap().get(&slug).is_some() {
+                return Err(format!("agent '{slug}' already exists"));
             }
-            name
+            (name, slug)
         }
         // No explicit name: ask the model to name the agent from its spawn
         // context, falling back to the deterministic default on any failure.
-        // De-dupe against the registry so a name clash doesn't fail the spawn.
+        // `generate_agent_name`/`fallback_name` already return slug-shaped
+        // strings, so the slug doubles as the display name here. De-dupe
+        // against the registry so a clash doesn't fail the spawn.
         None => {
             let base = okto_core::generate_agent_name(git_url.as_deref(), startup_prompt.as_deref())
                 .await
@@ -2009,7 +2037,7 @@ async fn exec_create_agent_for_parent(
                 candidate = format!("{base}-{n}");
                 n += 1;
             }
-            candidate
+            (candidate.clone(), candidate)
         }
     };
 
@@ -2025,7 +2053,7 @@ async fn exec_create_agent_for_parent(
     };
 
     info!(
-        "[lair/create_agent] creating {child_name} port={port} parent={} git={}",
+        "[lair/create_agent] creating slug={child_slug} name={child_name:?} port={port} parent={} git={}",
         parent.as_deref().unwrap_or("(operator)"),
         git_url.as_deref().unwrap_or("(none)"),
     );
@@ -2080,8 +2108,8 @@ async fn exec_create_agent_for_parent(
     // child running with a token that was never written to disk.
     let agent_token = if parent.is_some() {
         Some(state.agent_tokens.lock().unwrap()
-            .ensure(&child_name, okto_core::now_secs())
-            .map_err(|e| format!("mint agent token for '{child_name}': {e:#}"))?)
+            .ensure(&child_slug, okto_core::now_secs())
+            .map_err(|e| format!("mint agent token for '{child_slug}': {e:#}"))?)
     } else {
         None
     };
@@ -2089,6 +2117,7 @@ async fn exec_create_agent_for_parent(
     let lair_internal_url = state.lair_internal_url.clone();
     let params = SpawnParams {
         name:              &child_name,
+        slug:              &child_slug,
         port,
         git_url:           git_url.as_deref(),
         startup_prompt:    startup_prompt.as_deref(),
@@ -2108,6 +2137,7 @@ async fn exec_create_agent_for_parent(
             let now = okto_core::now_secs();
             let record = AgentRecord {
                 name:           child_name.clone(),
+                slug:           child_slug.clone(),
                 pid:            Some(pid),
                 port,
                 host:           None,
@@ -2124,11 +2154,11 @@ async fn exec_create_agent_for_parent(
             let add_result = state.registry.lock().unwrap().add(record);
             if let Err(e) = add_result {
                 error!("[lair/create_agent] registry add failed: {e:#}");
-                let _ = state.supervisor.stop(&child_name).await;
-                let _ = state.agent_tokens.lock().unwrap().remove(&child_name);
-                return Err(format!("registering '{child_name}': {e:#}"));
+                let _ = state.supervisor.stop(&child_slug).await;
+                let _ = state.agent_tokens.lock().unwrap().remove(&child_slug);
+                return Err(format!("registering '{child_slug}': {e:#}"));
             }
-            info!("[lair/create_agent] created {child_name} pid={pid}, waiting for /health");
+            info!("[lair/create_agent] created {child_slug} pid={pid}, waiting for /health");
             state.poll_trigger.notify_one();
 
             // Block until the child binds its loopback HTTP port and answers
@@ -2144,26 +2174,26 @@ async fn exec_create_agent_for_parent(
             match wait_for_agent_ready(port, pid, Duration::from_secs(ready_timeout)).await {
                 Ok(elapsed) => {
                     let _ = state.registry.lock().unwrap()
-                        .update_status(&child_name, AgentStatus::Running);
+                        .update_status(&child_slug, AgentStatus::Running);
                     state.poll_trigger.notify_one();
                     info!(
-                        "[lair/create_agent] {child_name} reachable on port {port} after {:.1}s",
+                        "[lair/create_agent] {child_slug} reachable on port {port} after {:.1}s",
                         elapsed.as_secs_f64(),
                     );
                     Ok(format!(
-                        "Created child '{child_name}' (pid {pid}) on loopback port {port}; reachable after {:.1}s.",
+                        "Created child '{child_name}' (id '{child_slug}', pid {pid}) on loopback port {port}; reachable after {:.1}s.",
                         elapsed.as_secs_f64(),
                     ))
                 }
                 Err(e) => {
-                    warn!("[lair/create_agent] {child_name} not reachable: {e}");
+                    warn!("[lair/create_agent] {child_slug} not reachable: {e}");
                     // Leave the agent in the registry so the operator can
                     // inspect logs and decide whether to terminate or wait —
                     // tearing it down here would race a slow-but-recovering
                     // bootstrap. The poller will reconcile status from here.
                     Err(format!(
-                        "child '{child_name}' (pid {pid}) was spawned but {e}. \
-                         Call terminate_agent('{child_name}') to clean up, or wait and retry.",
+                        "child '{child_name}' (id '{child_slug}', pid {pid}) was spawned but {e}. \
+                         Call terminate_agent('{child_slug}') to clean up, or wait and retry.",
                     ))
                 }
             }
@@ -2171,7 +2201,7 @@ async fn exec_create_agent_for_parent(
         Err(e) => {
             error!("[lair/create_agent] failed: {e:#}");
             // Spawn failed — release the token slot we reserved upfront.
-            let _ = state.agent_tokens.lock().unwrap().remove(&child_name);
+            let _ = state.agent_tokens.lock().unwrap().remove(&child_slug);
             Err(format!("{e:#}"))
         }
     }
@@ -2182,8 +2212,11 @@ async fn exec_mint_bootstrap_userdata(state: Arc<AppState>, input: serde_json::V
         Some(n) if !n.is_empty() => n.to_string(),
         _ => return "error: missing 'name' field".to_string(),
     };
-    if state.registry.lock().unwrap().get(&name).is_some() {
-        return format!("error: agent '{name}' already exists in the registry");
+    // Match the slug `register_remote_agent` will key on, so the pre-check
+    // catches a collision the same way the eventual insert would.
+    let slug = okto_core::sanitize_agent_name(&name).unwrap_or_else(|| name.clone());
+    if state.registry.lock().unwrap().get(&slug).is_some() {
+        return format!("error: agent '{slug}' already exists in the registry");
     }
 
     let agent_purpose  = input.get("agent_purpose") .and_then(|v| v.as_str()).map(str::to_string);
@@ -2329,6 +2362,12 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
         Some(n) if !n.is_empty() => n.to_string(),
         _ => return "error: missing 'name' field".to_string(),
     };
+    // Route-safe identifier derived from the display name. Keys the registry
+    // row and the wire `id`; `name` stays the free-form label.
+    let slug = match okto_core::sanitize_agent_name(&name) {
+        Some(s) => s,
+        None => return format!("error: name '{name}' has no route-safe characters to form an id"),
+    };
     let host = match input.get("host").and_then(|v| v.as_str()) {
         Some(h) if !h.is_empty() => h.to_string(),
         _ => return "error: missing 'host' field".to_string(),
@@ -2359,7 +2398,7 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
     // `Running` rows error out — the caller has to `forget_agent` (and
     // terminate the cloud instance) first to avoid clobbering a working
     // remote agent.
-    let prior = state.registry.lock().unwrap().get(&name).cloned();
+    let prior = state.registry.lock().unwrap().get(&slug).cloned();
     let (created_at, resuming) = match prior {
         Some(r) if matches!(r.status, AgentStatus::Pending) => {
             if r.host.as_deref() == Some(host.as_str()) {
@@ -2433,6 +2472,7 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
     {
         let pending = AgentRecord {
             name:           name.clone(),
+            slug:           slug.clone(),
             pid:            None,
             port:           info.port,
             host:           Some(host.clone()),
@@ -2521,6 +2561,7 @@ async fn exec_register_remote_agent(state: Arc<AppState>, input: serde_json::Val
 
     let record = AgentRecord {
         name:           name.clone(),
+        slug:           slug.clone(),
         pid:            None,
         port:           info.port,
         host:           Some(host.clone()),
@@ -2597,7 +2638,10 @@ async fn exec_forget_agent(state: Arc<AppState>, input: serde_json::Value) -> St
         _ => return "error: missing 'name' field".to_string(),
     };
 
-    let record = state.registry.lock().unwrap().get(&name).cloned();
+    let record = {
+        let reg = state.registry.lock().unwrap();
+        resolve_agent_slug(&reg, &name).and_then(|s| reg.get(&s).cloned())
+    };
     let record = match record {
         Some(r) => r,
         None    => return format!("'{name}' was not in the registry"),
@@ -2609,16 +2653,17 @@ async fn exec_forget_agent(state: Arc<AppState>, input: serde_json::Value) -> St
         );
     }
 
-    let removed = state.registry.lock().unwrap().remove(&name);
+    let slug = record.slug.clone();
+    let removed = state.registry.lock().unwrap().remove(&slug);
     match removed {
         Ok(true) => {
-            info!("[lair/forget_agent] removed registry row for remote agent='{name}'");
+            info!("[lair/forget_agent] removed registry row for remote agent='{slug}'");
             state.poll_trigger.notify_one();
-            format!("Forgot '{name}' — registry row removed; no VM action taken.")
+            format!("Forgot '{slug}' — registry row removed; no VM action taken.")
         }
-        Ok(false) => format!("'{name}' was not in the registry"),
+        Ok(false) => format!("'{slug}' was not in the registry"),
         Err(e)    => {
-            error!("[lair/forget_agent] removing '{name}' failed: {e:#}");
+            error!("[lair/forget_agent] removing '{slug}' failed: {e:#}");
             format!("error: {e:#}")
         }
     }
@@ -2629,29 +2674,34 @@ async fn exec_terminate_agent(state: Arc<AppState>, input: serde_json::Value) ->
         Some(n) => n.to_string(),
         None    => return "error: missing 'name' field".to_string(),
     };
-    match terminate_agent_by_name(&state, &name).await {
-        Ok(_)  => format!("Terminated '{name}' and removed its data + workspace directories."),
+    let slug = match resolve_agent_slug(&state.registry.lock().unwrap(), &name) {
+        Some(s) => s,
+        None    => return format!("error: no agent matches '{name}' (pass its id or an unambiguous name)"),
+    };
+    match terminate_agent_by_name(&state, &slug).await {
+        Ok(_)  => format!("Terminated '{slug}' and removed its data + workspace directories."),
         Err(e) => format!("error: {e}"),
     }
 }
 
 async fn exec_restart_all_agents(state: Arc<AppState>) -> String {
     // Skip remote agents — they run on VMs lair doesn't supervise directly.
-    let names: Vec<String> = state.registry.lock().unwrap()
-        .list().iter().filter(|r| !r.is_remote()).map(|r| r.name.clone()).collect();
-    if names.is_empty() {
+    // Collect slugs: that's the key both `stop` and `start_agent_by_name` use.
+    let slugs: Vec<String> = state.registry.lock().unwrap()
+        .list().iter().filter(|r| !r.is_remote()).map(|r| r.slug.clone()).collect();
+    if slugs.is_empty() {
         info!("[lair/restart_all] no local agents found");
         return "No local agents to restart.".to_string();
     }
     let mut restarted = Vec::new();
-    for name in &names {
-        if let Err(e) = state.supervisor.stop(name).await {
-            warn!("[lair/restart_all] stop {name}: {e:#}");
+    for slug in &slugs {
+        if let Err(e) = state.supervisor.stop(slug).await {
+            warn!("[lair/restart_all] stop {slug}: {e:#}");
         }
-        if let Err(e) = start_agent_by_name(&state, name).await {
-            error!("[lair/restart_all] start {name}: {e}");
+        if let Err(e) = start_agent_by_name(&state, slug).await {
+            error!("[lair/restart_all] start {slug}: {e}");
         } else {
-            restarted.push(name.clone());
+            restarted.push(slug.clone());
         }
     }
     state.poll_trigger.notify_one();
@@ -3021,40 +3071,40 @@ async fn agent_create_child(
     axum::Extension(caller): axum::Extension<AgentCaller>,
     Json(body):    Json<CreateChildAgentBody>,
 ) -> Response {
-    info!("[lair/http] POST /agents/child (caller='{}')", caller.name);
+    info!("[lair/http] POST /agents/child (caller='{}')", caller.slug);
     // Enforce spawn caps before doing any work.
     let cfg = okto_core::read_config();
     let (max_depth, max_descendants) = resolve_agent_spawn_caps(&cfg);
     {
         let reg = state.registry.lock().unwrap();
-        let caller_depth = reg.depth_of(&caller.name).unwrap_or(0);
+        let caller_depth = reg.depth_of(&caller.slug).unwrap_or(0);
         // The *new* child sits one level below the caller.
         if caller_depth + 1 > max_depth {
             warn!(
                 "[lair/http] agent='{}' spawn refused: depth {} exceeds max {max_depth}",
-                caller.name, caller_depth + 1,
+                caller.slug, caller_depth + 1,
             );
             return (
                 StatusCode::FORBIDDEN,
                 format!(
                     "agent spawn refused: would create depth {} (max {max_depth}). \
                      Caller '{}' is already at depth {caller_depth}.",
-                    caller_depth + 1, caller.name,
+                    caller_depth + 1, caller.slug,
                 ),
             ).into_response();
         }
-        let current_descendants = reg.descendants_leaves_first(&caller.name).len();
+        let current_descendants = reg.descendants_leaves_first(&caller.slug).len();
         if current_descendants + 1 > max_descendants {
             warn!(
                 "[lair/http] agent='{}' spawn refused: {current_descendants} descendant(s) exceeds max {max_descendants}",
-                caller.name,
+                caller.slug,
             );
             return (
                 StatusCode::FORBIDDEN,
                 format!(
                     "agent spawn refused: '{}' already has {current_descendants} \
                      transitive descendant(s) (max {max_descendants}).",
-                    caller.name,
+                    caller.slug,
                 ),
             ).into_response();
         }
@@ -3067,7 +3117,7 @@ async fn agent_create_child(
     if let Some(v) = body.startup_prompt { input.insert("startup_prompt".into(), serde_json::Value::String(v)); }
     if let Some(v) = body.mcp            { input.insert("mcp".into(),            v); }
 
-    match exec_create_agent_for_parent(state, serde_json::Value::Object(input), Some(caller.name.clone())).await {
+    match exec_create_agent_for_parent(state, serde_json::Value::Object(input), Some(caller.slug.clone())).await {
         Ok(msg) => (StatusCode::OK, msg).into_response(),
         Err(e)  => (StatusCode::BAD_REQUEST, e).into_response(),
     }
@@ -3082,19 +3132,19 @@ async fn agent_delete_child(
     State(state):   State<Arc<AppState>>,
     axum::Extension(caller): axum::Extension<AgentCaller>,
 ) -> Response {
-    info!("[lair/http] DELETE /agents/child/{name} (caller='{}')", caller.name);
+    info!("[lair/http] DELETE /agents/child/{name} (caller='{}')", caller.slug);
     let is_descendant = {
         let reg = state.registry.lock().unwrap();
-        reg.descendants_leaves_first(&caller.name).iter().any(|n| n == &name)
+        reg.descendants_leaves_first(&caller.slug).iter().any(|n| n == &name)
     };
     if !is_descendant {
-        warn!("[lair/http] agent='{}' refused terminate of '{name}': not a descendant", caller.name);
+        warn!("[lair/http] agent='{}' refused terminate of '{name}': not a descendant", caller.slug);
         return (
             StatusCode::FORBIDDEN,
             format!(
                 "agent terminate refused: '{name}' is not a descendant of '{}'. \
                  Agents may only terminate agents they (transitively) spawned.",
-                caller.name,
+                caller.slug,
             ),
         ).into_response();
     }
@@ -3234,11 +3284,11 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
         for record in snapshot {
             if let Some(pid) = record.pid {
                 if AgentSupervisor::is_alive(pid) {
-                    supervisor.adopt(&record.name, pid);
+                    supervisor.adopt(&record.slug, pid);
                     adopted += 1;
                 } else {
-                    let _ = reg_inner.update_pid(&record.name, None);
-                    let _ = reg_inner.update_status(&record.name, AgentStatus::Stopped);
+                    let _ = reg_inner.update_pid(&record.slug, None);
+                    let _ = reg_inner.update_status(&record.slug, AgentStatus::Stopped);
                     cleared += 1;
                 }
             }

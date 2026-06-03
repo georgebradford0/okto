@@ -43,6 +43,22 @@ test('selecting a child opens its proxied stream and routes the composer to it',
   expect(child.frames().at(-1)).toEqual({ type: 'user_message', text: 'hi child' })
 })
 
+test('routes by id and displays name when they differ (spaced display name)', async () => {
+  const { ws: master } = await connectMaster()
+  await act(async () => {
+    master.mockServerEvent(agentsFrame({ id: 'my-agent', name: 'My Agent' }))
+  })
+
+  // The sidebar row is keyed by the route-safe id, but shows the display name.
+  const row = await screen.findByTestId('sidebar-row-my-agent')
+  expect(row).toHaveTextContent('My Agent')
+
+  // Selecting it opens the proxy stream at the id (slug), never the name.
+  fireEvent.click(row)
+  await waitFor(() => expect(wsFor('/agents/my-agent/stream')).toBeTruthy())
+  expect(wsFor('/agents/My Agent/stream')).toBeFalsy()
+})
+
 test('a child stream event renders in the selected child chat', async () => {
   const { ws: master } = await connectMaster()
   await act(async () => {

@@ -201,7 +201,13 @@ fn seed_agent_ssh(agent_dir: &Path, uid: u32, gid: u32) -> Result<()> {
 /// readable.
 #[derive(Clone, Debug)]
 pub struct SpawnParams<'a> {
+    /// Free-form display label. Surfaced to the child as `AGENT_NAME` (its
+    /// self-identity) — *not* used to build any path. See `slug`.
     pub name:              &'a str,
+    /// Route-safe identifier. Drives every on-disk path for this agent
+    /// (`<agents_root>/<slug>/…`) and the wire `id`. Derived from `name` by
+    /// the caller via `okto_core::sanitize_agent_name`.
+    pub slug:              &'a str,
     /// Loopback HTTP port the child binds. Allocated from 30100–30199 by the
     /// registry. Lair proxies WS traffic to this port.
     pub port:              u16,
@@ -270,10 +276,10 @@ impl AgentSupervisor {
         }))
     }
 
-    pub fn agent_dir(&self, name: &str) -> PathBuf  { self.agents_root.join(name) }
-    pub fn data_dir(&self,  name: &str) -> PathBuf  { self.agent_dir(name).join("data") }
-    pub fn workspace_dir(&self, name: &str) -> PathBuf { self.agent_dir(name).join("workspace") }
-    pub fn log_path(&self, name: &str) -> PathBuf   { self.agent_dir(name).join("agent.log") }
+    pub fn agent_dir(&self, slug: &str) -> PathBuf  { self.agents_root.join(slug) }
+    pub fn data_dir(&self,  slug: &str) -> PathBuf  { self.agent_dir(slug).join("data") }
+    pub fn workspace_dir(&self, slug: &str) -> PathBuf { self.agent_dir(slug).join("workspace") }
+    pub fn log_path(&self, slug: &str) -> PathBuf   { self.agent_dir(slug).join("agent.log") }
 
     /// Spawn a child agent process. Caller is responsible for inserting the
     /// matching `AgentRecord` into the registry — the supervisor doesn't
@@ -286,9 +292,9 @@ impl AgentSupervisor {
             p.git_url.unwrap_or("(none)"),
             if p.agent_token.is_some() { "yes" } else { "no" },
         );
-        let agent_dir     = self.agent_dir(p.name);
-        let data_dir      = self.data_dir(p.name);
-        let workspace_dir = self.workspace_dir(p.name);
+        let agent_dir     = self.agent_dir(p.slug);
+        let data_dir      = self.data_dir(p.slug);
+        let workspace_dir = self.workspace_dir(p.slug);
         std::fs::create_dir_all(&data_dir)
             .with_context(|| format!("create {}", data_dir.display()))?;
         std::fs::create_dir_all(&workspace_dir)
@@ -346,7 +352,7 @@ impl AgentSupervisor {
             info!("[supervisor] seeded {} with {} MCP server(s)", mcp_path.display(), servers.len());
         }
 
-        let log_path = self.log_path(p.name);
+        let log_path = self.log_path(p.slug);
         let log_file = std::fs::OpenOptions::new()
             .create(true).append(true).open(&log_path)
             .with_context(|| format!("open log file at {}", log_path.display()))?;
@@ -421,17 +427,17 @@ impl AgentSupervisor {
             pid,
             child: Mutex::new(Some(child)),
         });
-        self.agents.lock().unwrap().insert(p.name.to_string(), proc);
+        self.agents.lock().unwrap().insert(p.slug.to_string(), proc);
         Ok(pid)
     }
 
     /// Stop a running agent. Sends SIGTERM, then SIGKILL after a short grace
     /// period. Idempotent.
-    pub async fn stop(&self, name: &str) -> Result<()> {
+    pub async fn stop(&self, slug: &str) -> Result<()> {
         let (pid, mut owned_child) = {
             let mut map = self.agents.lock().unwrap();
-            let Some(proc) = map.remove(name) else {
-                info!("[supervisor] stop({name}): no in-memory handle");
+            let Some(proc) = map.remove(slug) else {
+                info!("[supervisor] stop({slug}): no in-memory handle");
                 return Ok(());
             };
             let mut slot = proc.child.lock().unwrap();
@@ -440,32 +446,32 @@ impl AgentSupervisor {
 
         // SIGTERM first.
         // SAFETY: standard libc::kill signal call.
-        debug!("[agent_proc] stop({name}): sending SIGTERM to pid={pid}");
+        debug!("[agent_proc] stop({slug}): sending SIGTERM to pid={pid}");
         unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
         for _ in 0..30 {
             if !Self::is_alive(pid) { break; }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         if Self::is_alive(pid) {
-            warn!("[agent_proc] stop({name}): pid={pid} ignored SIGTERM after 3s grace, escalating to SIGKILL");
+            warn!("[agent_proc] stop({slug}): pid={pid} ignored SIGTERM after 3s grace, escalating to SIGKILL");
             unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL); }
         }
         if let Some(child) = owned_child.as_mut() {
             let _ = child.wait().await;
         }
-        info!("[supervisor] stopped agent='{name}' (pid={pid})");
+        info!("[supervisor] stopped agent='{slug}' (pid={pid})");
         Ok(())
     }
 
     /// Stop + delete the per-agent data + workspace + logs.
-    pub async fn terminate(&self, name: &str) -> Result<()> {
-        self.stop(name).await?;
-        let dir = self.agent_dir(name);
+    pub async fn terminate(&self, slug: &str) -> Result<()> {
+        self.stop(slug).await?;
+        let dir = self.agent_dir(slug);
         if dir.exists() {
             if let Err(e) = std::fs::remove_dir_all(&dir) {
                 warn!("[supervisor] remove_dir_all {}: {e}", dir.display());
             } else {
-                info!("[supervisor] terminated agent='{name}' and removed {}", dir.display());
+                info!("[supervisor] terminated agent='{slug}' and removed {}", dir.display());
             }
         }
         Ok(())
@@ -484,23 +490,23 @@ impl AgentSupervisor {
     /// across a lair restart). Inserts a placeholder `AgentProc` so future
     /// `stop` / `terminate` calls find a handle. The pid is checked with
     /// `is_alive` first; if it's dead, the entry is skipped.
-    pub fn adopt(&self, name: &str, pid: u32) {
+    pub fn adopt(&self, slug: &str, pid: u32) {
         if !Self::is_alive(pid) {
-            debug!("[supervisor] adopt({name}): recorded pid={pid} is no longer alive, skipping");
+            debug!("[supervisor] adopt({slug}): recorded pid={pid} is no longer alive, skipping");
             return;
         }
         let proc = Arc::new(AgentProc {
             pid,
             child: Mutex::new(None), // we don't own the handle; can't reap
         });
-        self.agents.lock().unwrap().insert(name.to_string(), proc);
-        info!("[supervisor] adopted existing agent='{name}' pid={pid}");
+        self.agents.lock().unwrap().insert(slug.to_string(), proc);
+        info!("[supervisor] adopted existing agent='{slug}' pid={pid}");
     }
 
     /// Tail the last `bytes` of an agent's log file. Used by the CLI's
     /// `okto logs <agent>` command. Returns the whole file if smaller.
-    pub fn log_tail(&self, name: &str, bytes: u64) -> Result<String> {
-        let path = self.log_path(name);
+    pub fn log_tail(&self, slug: &str, bytes: u64) -> Result<String> {
+        let path = self.log_path(slug);
         let metadata = std::fs::metadata(&path)
             .with_context(|| format!("stat {}", path.display()))?;
         let size = metadata.len();

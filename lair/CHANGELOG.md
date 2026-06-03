@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Changed
+- **Agents are keyed by a route-safe `slug`, decoupled from the display
+  `name`.** An agent's free-form `name` (which may contain spaces) is no longer
+  used to build its on-disk dir or the wire `id` / proxy route. Each
+  `AgentRecord` now carries a `slug` (derived from the name via
+  `okto_core::sanitize_agent_name`) that is the registry key, the
+  `/data/agents/<slug>/` path, the wire `id`, the route param, and the `parent`
+  back-reference. The `agents` event now sends `id` = slug and `name` = display
+  label. The `terminate_agent` / `forget_agent` tools accept either the slug or
+  an unambiguous display name. **Bumps `WIRE_PROTOCOL` 1 → 2** (the meaning of
+  the `agents` event's `id` changed). See `PROTOCOL.md`.
+
 ## [0.21.6] - 2026-06-02
 
 ### Added

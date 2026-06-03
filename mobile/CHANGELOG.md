@@ -9,6 +9,15 @@ the git log.
 
 ## [Unreleased]
 
+### Changed
+- **Route to agents by `id`, not `name`.** The app now builds every agent proxy
+  URL (chat stream, history, worktrees, …) and keys its per-agent state and
+  history cache off the `id` field from the `agents` event, which is now a
+  route-safe slug that can differ from the free-form display `name`. The sidebar
+  still shows `name`. Requires **wire protocol 2** (mirrors
+  `okto_core::WIRE_PROTOCOL`); the advisory banner flags older hosts. See
+  `PROTOCOL.md`.
+
 ## [0.2.2] - 2026-06-02
 
 ### Added

@@ -16,6 +16,27 @@ fn registry_path() -> PathBuf {
     service::lair_data_dir().join("agents.json")
 }
 
+/// Resolve a user-supplied agent reference to its route-safe `slug` (the
+/// identifier lair's management API is keyed on). Accepts either the slug
+/// itself (exact match) or a unique display `name`. Reads the on-disk
+/// registry directly, so it works whether or not lair is running. Falls back
+/// to the reference verbatim if the registry file is absent or unreadable, so
+/// a stale-but-running lair can still be addressed by slug.
+pub(crate) fn resolve_slug(reference: &str) -> String {
+    let path = registry_path();
+    let Ok(reg) = Registry::load(path) else { return reference.to_string(); };
+    if reg.get(reference).is_some() {
+        return reference.to_string();
+    }
+    let mut by_name = reg.list().iter().filter(|a| a.name == reference);
+    match (by_name.next(), by_name.next()) {
+        (Some(only), None) => only.slug.clone(),
+        // No match (let lair return a clean 404) or ambiguous display name
+        // (prefer the verbatim reference so the user sees lair's error).
+        _ => reference.to_string(),
+    }
+}
+
 pub async fn list() -> Result<()> {
     let path = registry_path();
     if !path.exists() {
@@ -34,11 +55,12 @@ pub async fn list() -> Result<()> {
         println!("No agents.");
         return Ok(());
     }
-    println!("{:<28} {:<8} {:<8} {:<6} {:<8} {}", "NAME", "KIND", "STATUS", "PORT", "PID", "HOST");
-    println!("{}", "-".repeat(80));
+    println!("{:<24} {:<24} {:<8} {:<8} {:<6} {:<8} {}", "ID", "NAME", "KIND", "STATUS", "PORT", "PID", "HOST");
+    println!("{}", "-".repeat(96));
     for a in agents {
         println!(
-            "{:<28} {:<8} {:<8} {:<6} {:<8} {}",
+            "{:<24} {:<24} {:<8} {:<8} {:<6} {:<8} {}",
+            a.slug,
             a.name,
             if a.is_remote() { "remote" } else { "local" },
             a.status.as_wire_str(),
@@ -71,7 +93,8 @@ fn mgmt_request(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
 }
 
 pub async fn start(name: &str) -> Result<()> {
-    let url = format!("{}/agents/{}/start", service::lair_http_url(), name);
+    let slug = resolve_slug(name);
+    let url = format!("{}/agents/{}/start", service::lair_http_url(), slug);
     debug!("[agents] POST {url}");
     let resp = mgmt_request(http_client().post(&url)).send().await
         .with_context(|| format!("POST {url}"))?;
@@ -88,7 +111,8 @@ pub async fn start(name: &str) -> Result<()> {
 }
 
 pub async fn stop(name: &str) -> Result<()> {
-    let url = format!("{}/agents/{}/stop", service::lair_http_url(), name);
+    let slug = resolve_slug(name);
+    let url = format!("{}/agents/{}/stop", service::lair_http_url(), slug);
     debug!("[agents] POST {url}");
     let resp = mgmt_request(http_client().post(&url)).send().await
         .with_context(|| format!("POST {url}"))?;
@@ -117,7 +141,8 @@ pub async fn delete(name: &str, yes: bool) -> Result<()> {
             return Ok(());
         }
     }
-    let url = format!("{}/agents/{}", service::lair_http_url(), name);
+    let slug = resolve_slug(name);
+    let url = format!("{}/agents/{}", service::lair_http_url(), slug);
     debug!("[agents] DELETE {url}");
     let resp = mgmt_request(http_client().delete(&url)).send().await
         .with_context(|| format!("DELETE {url}"))?;

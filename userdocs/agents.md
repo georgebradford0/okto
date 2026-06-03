@@ -18,16 +18,22 @@ The CLI manages the **lifecycle** of agents that already exist.
 ## Managing agents (`okto agents`)
 
 ```sh
-okto agents list                 # all agents: name, kind, status, port, pid, host
-okto agents start <name>         # start a stopped agent
-okto agents stop <name>          # stop a running agent
-okto agents delete <name>        # remove the agent + its data/workspace dirs
-okto agents delete <name> -y     # skip the confirmation prompt
+okto agents list                 # all agents: id, name, kind, status, port, pid, host
+okto agents start <id|name>      # start a stopped agent
+okto agents stop <id|name>       # stop a running agent
+okto agents delete <id|name>     # remove the agent + its data/workspace dirs
+okto agents delete <id|name> -y  # skip the confirmation prompt
 ```
 
 `okto agents list` reads `~/.okto/lair/agents.json` directly, so it works even
 when lair isn't running. `start`/`stop`/`delete` go through lair's management
 API.
+
+Each agent has a free-form **name** (the label you see in the app, which may
+contain spaces) and a route-safe **id** (a lowercase, hyphenated slug derived
+from the name — also the on-disk directory name under `~/.okto/agents/<id>/`).
+`okto agents list` shows both. The `start`/`stop`/`delete` commands accept
+**either** the id or an unambiguous name.
 
 !!! danger "delete is irreversible"
     `okto agents delete` wipes the agent's `data/` and `workspace/` directories.
