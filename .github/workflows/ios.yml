@@ -126,15 +126,15 @@ jobs:
           set -uo pipefail
           cargo test -p okto-tests --test maestro_serve serve -- --ignored --nocapture > /tmp/lair.log 2>&1 &
           LAIR_PID=$!
-          echo "Waiting for mock lair to become ready…"
+          echo "Waiting for mock lair to become ready..."
           for _ in $(seq 1 150); do
             grep -q "is READY and serving" /tmp/lair.log && break
             kill -0 "$LAIR_PID" 2>/dev/null || { echo "mock lair exited early:"; cat /tmp/lair.log; exit 1; }
             sleep 2
           done
           grep -q "is READY and serving" /tmp/lair.log || { echo "mock lair not ready in time:"; cat /tmp/lair.log; exit 1; }
-          echo "mock lair ready; running Maestro on $SIM_UDID…"
-          maestro --device "$SIM_UDID" test mobile/.maestro/smoke.yaml --env HOST=127.0.0.1
+          echo "mock lair ready; running Maestro on ${SIM_UDID}..."
+          maestro --device "${SIM_UDID}" test mobile/.maestro/smoke.yaml --env HOST=127.0.0.1
           code=$?
           kill "$LAIR_PID" 2>/dev/null || true
           exit $code
