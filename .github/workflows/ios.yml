@@ -104,6 +104,8 @@ jobs:
           fi
           echo "Using simulator $UDID"
           echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+          echo "--- installed runtimes ---"; xcrun simctl list runtimes
+          echo "--- chosen device ---"; xcrun simctl list devices available | grep -B1 "$UDID" || true
           xcrun simctl boot "$UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$UDID"
 
@@ -122,6 +124,11 @@ jobs:
       # background server reliably outlives neither too early nor into later steps.
       - name: Maestro e2e (smoke)
         working-directory: ${{ github.workspace }}
+        env:
+          # The XCUITest driver is slow to install on a cold simulator in CI;
+          # give it generous headroom (ms) and skip the analytics ping.
+          MAESTRO_DRIVER_STARTUP_TIMEOUT: "300000"
+          MAESTRO_CLI_NO_ANALYTICS: "1"
         run: |
           set -uo pipefail
           cargo test -p okto-tests --test maestro_serve serve -- --ignored --nocapture > /tmp/lair.log 2>&1 &
