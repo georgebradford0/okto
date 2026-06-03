@@ -87,8 +87,10 @@ async fn serve() {
         .env("ANTHROPIC_API_URL", mock.url())
         .env("ANTHROPIC_API_KEY", "test-key")
         .env("MODEL", "claude-test")
-        // Keep push notifications from reaching any real relay.
-        .env("OKTO_RELAY_URL", "http://127.0.0.1:1")
+        // Advertise no relay (like `okto init --disable-push`): the mobile
+        // client then skips push registration, so no iOS notification-permission
+        // dialog pops up to block the Maestro flow.
+        .env("OKTO_RELAY_URL", "")
         .env("RUST_LOG", "info")
         .env_remove("OPENAI_API_URL")
         .env_remove("OPENAI_API_KEY")
