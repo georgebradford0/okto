@@ -5,6 +5,8 @@ Changes to the okto desktop (Tauri) app. Current version: see `package.json` /
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-03
+
 ### Added
 - Render **peer messages** (inter-agent messages relayed through lair) in the
   chat as a distinct ✉ chip, from both the live `peer_message` event and on

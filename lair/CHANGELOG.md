@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-06-03
+
 ### Added
 - **Inter-agent messaging, routed through lair.** Lair's model gets a
   `send_message_to_agent(agent, message)` tool and every agent's main chat gets
