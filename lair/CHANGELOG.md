@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.22.2] - 2026-06-04
+
 ### Fixed
 - **`create_agent` is now transactional under interrupt.** Interrupting the turn
   while a `create_agent` tool call is in flight previously left a half-created
