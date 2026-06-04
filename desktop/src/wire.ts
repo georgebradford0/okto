@@ -37,6 +37,7 @@ export type ServerEvent =
   | { type: 'tasks';         tasks: TaskRecord[] }
   | { type: 'bg_complete';   task_id: string; text: string }
   | { type: 'bg_progress';   task_id: string; text: string }
+  | { type: 'peer_message';  from: string; text: string }
   | { type: 'ping';          id: number }
   | { type: 'pong';          id: number }
 

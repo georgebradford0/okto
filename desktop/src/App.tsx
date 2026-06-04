@@ -132,7 +132,7 @@ const initialStored: PersistedState | null = (() => {
 
 interface Message {
   id:        string
-  role:      'user' | 'assistant' | 'tool' | 'interrupted' | 'error' | 'bg_complete' | 'bg_progress'
+  role:      'user' | 'assistant' | 'tool' | 'interrupted' | 'error' | 'bg_complete' | 'bg_progress' | 'peer_message'
   text:      string
   /** Per-turn cost, attached to the last assistant message at done/interrupted. */
   cost?:     number
@@ -901,6 +901,13 @@ function App() {
         // text matches the persisted bg_progress row so /history reconciles
         // cleanly.
         applyMsgs(agentId, prev => appendMsg(prev, { id: uid(), role: 'bg_progress', text: ev.text }))
+        break
+      }
+      case 'peer_message': {
+        // A message relayed through lair (lair↔agent), injected into this chat.
+        // The event text is the same prefixed string persisted to history, so a
+        // later /history reload reconciles cleanly (same convention as bg_progress).
+        applyMsgs(agentId, prev => appendMsg(prev, { id: uid(), role: 'peer_message', text: ev.text }))
         break
       }
       // system / agents / ping / pong / tasks / cancel_task_ack: handled
@@ -2088,6 +2095,10 @@ function Row({ item }: { item: Message }) {
       const marker = item.role === 'bg_progress' ? '◈' : '◇'
       return <Text marginBottom={8} fontSize={12} color="$typography500">{marker} {firstLine}</Text>
     }
+    case 'peer_message':
+      // A message relayed through lair (lair↔agent); the text is self-describing
+      // ("[message from …] <body>"), so render the whole thing as a distinct chip.
+      return <Text marginBottom={8} fontSize={12} fontStyle="italic" color="$primary600">✉ {item.text}</Text>
   }
 }
 

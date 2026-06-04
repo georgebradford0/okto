@@ -430,6 +430,12 @@ pub enum ChatEvent {
     /// between turns; the model is separately woken to react to the same
     /// output via a `bg_progress` ApiMessage. `task_id` identifies the task.
     BgProgress         { task_id: String, text: String },
+    /// Server → client live notification that a peer message was injected into
+    /// this chat — from lair to an agent, or from an agent to lair. `from` is the
+    /// sender's display identity ("lair" or an agent name). Rendered like a
+    /// `bg_complete` chip; the model is separately woken to act on the same text
+    /// via a `peer_message` ApiMessage in history.
+    PeerMessage        { from: String, text: String },
     /// Server → client liveness probe. Client must reply with a Pong within the
     /// keepalive window or the server will drop the connection.
     Ping               { id: u64 },
@@ -955,11 +961,12 @@ pub struct StreamUsage {
 ///   the `input` is dropped (`{}`).
 pub fn compact_history(messages: &[ApiMessage], keep_full: usize) -> Vec<ApiMessage> {
     // Pre-pass: translate roles that are persisted-only (`bg_complete` /
-    // `bg_progress` for background-task injections) into roles the API
-    // understands. Done here rather than at the serialiser layer so every
-    // backend gets the same behaviour automatically.
+    // `bg_progress` for background-task injections, `peer_message` for
+    // lair↔agent messages) into roles the API understands. Done here rather
+    // than at the serialiser layer so every backend gets the same behaviour
+    // automatically.
     let messages: Vec<ApiMessage> = messages.iter().map(|m| match m.role.as_str() {
-        "bg_complete" | "bg_progress" => ApiMessage {
+        "bg_complete" | "bg_progress" | "peer_message" => ApiMessage {
             role:    "user".to_string(),
             content: m.content.clone(),
         },

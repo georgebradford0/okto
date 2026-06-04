@@ -9,6 +9,11 @@ the git log.
 
 ## [Unreleased]
 
+### Added
+- Render **peer messages** (inter-agent messages relayed through lair) in the
+  chat as a distinct ✉ chip, from both the live `peer_message` event and on
+  `/history` reload. Additive wire change — no `WIRE_PROTOCOL` bump.
+
 ### Changed
 - The on-screen wordmark (connection screen + sidebar) now reads **OKTO**
   instead of "OCTO", matching the app name.

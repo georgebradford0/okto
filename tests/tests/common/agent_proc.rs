@@ -131,6 +131,11 @@ impl AgentProcess {
         plain_http(self.http_port, "GET", path).await
     }
 
+    /// Plaintext HTTP POST with a JSON body against the agent's loopback server.
+    pub async fn http_post_json(&self, path: &str, body: &Value) -> anyhow::Result<(u16, String)> {
+        plain_http_body(self.http_port, "POST", path, &body.to_string()).await
+    }
+
     /// `GET /worktrees` parsed as a JSON array.
     pub async fn worktrees(&self) -> anyhow::Result<Vec<Value>> {
         let (status, body) = self.http_get("/worktrees").await?;
@@ -253,15 +258,23 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// One-shot plaintext HTTP request against `127.0.0.1:port`. Reads the response
 /// by `Content-Length`. Bounded so a stuck connection errors instead of hangs.
 async fn plain_http(port: u16, method: &str, path: &str) -> anyhow::Result<(u16, String)> {
-    tokio::time::timeout(HTTP_TIMEOUT, plain_http_inner(port, method, path))
+    tokio::time::timeout(HTTP_TIMEOUT, plain_http_inner(port, method, path, ""))
         .await
         .map_err(|_| anyhow::anyhow!("HTTP {method} {path} timed out after {HTTP_TIMEOUT:?}"))?
 }
 
-async fn plain_http_inner(port: u16, method: &str, path: &str) -> anyhow::Result<(u16, String)> {
+async fn plain_http_body(port: u16, method: &str, path: &str, body: &str) -> anyhow::Result<(u16, String)> {
+    tokio::time::timeout(HTTP_TIMEOUT, plain_http_inner(port, method, path, body))
+        .await
+        .map_err(|_| anyhow::anyhow!("HTTP {method} {path} timed out after {HTTP_TIMEOUT:?}"))?
+}
+
+async fn plain_http_inner(port: u16, method: &str, path: &str, body: &str) -> anyhow::Result<(u16, String)> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
     let req = format!(
-        "{method} {path} HTTP/1.1\r\nHost: agent\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: agent\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
     );
     stream.write_all(req.as_bytes()).await?;
 

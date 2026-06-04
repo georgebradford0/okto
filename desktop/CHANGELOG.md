@@ -5,6 +5,11 @@ Changes to the okto desktop (Tauri) app. Current version: see `package.json` /
 
 ## [Unreleased]
 
+### Added
+- Render **peer messages** (inter-agent messages relayed through lair) in the
+  chat as a distinct ✉ chip, from both the live `peer_message` event and on
+  `/history` reload. Additive wire change — no `WIRE_PROTOCOL` bump.
+
 ### Changed
 - Bump the mirrored `WIRE_PROTOCOL` 1 → 2: the `agents` event's `id` is now a
   route-safe slug that may differ from the display `name`. The desktop client

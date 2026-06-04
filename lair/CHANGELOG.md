@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Added
+- **Inter-agent messaging, routed through lair.** Lair's model gets a
+  `send_message_to_agent(agent, message)` tool and every agent's main chat gets
+  a `send_message_to_lair(message)` tool. A sent message is *injected* into the
+  recipient's conversation (a persisted-only `peer_message`) and wakes its model
+  to act on it at the next turn boundary — the same mechanism background-task
+  completions use. Delivery is asynchronous and fire-and-forget: any reply
+  arrives later as its own `[message from …]` injection, not as the tool result.
+  A new `peer_message` `ChatEvent` is fanned out live (additive — no
+  `WIRE_PROTOCOL` bump), and peer messages now appear in `/history`. Worktree
+  sessions neither send nor receive peer messages — main chats only.
+
+### Fixed
+- **Every agent now receives a capability token at spawn** (previously only
+  agent-spawned children did). This (a) gives every agent the credential the new
+  messaging channel needs, and (b) lets **top-level/operator-spawned agents
+  spawn children** within `agent_spawn_max_depth` — previously the
+  agent-spawn-agent feature could never bootstrap, because the only token-mint
+  path required an existing token. Spawn remains bounded purely by the
+  server-side depth/descendant caps.
+
 ## [0.21.7] - 2026-06-03
 
 ### Changed

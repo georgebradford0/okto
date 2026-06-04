@@ -1881,6 +1881,7 @@ fn lair_extra_tools(push_enabled: bool) -> Vec<AnthropicTool> {
         run_command_in_background_tool(),
         monitor_process_tool(),
         stop_monitor_tool(),
+        send_message_to_agent_tool(),
     ];
     // `send_notification` / `ask_question` both reach the operator through the
     // push relay; without a relay configured (`okto init --disable-push`)
@@ -1911,6 +1912,7 @@ fn lair_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
                 "run_command_in_background" => exec_run_command_in_background(state, input).await,
                 "monitor_process"           => exec_monitor_process(state, input).await,
                 "stop_monitor"              => exec_stop_monitor(state, input).await,
+                "send_message_to_agent"     => exec_send_message_to_agent(state, input).await,
                 "send_notification"         => exec_send_notification(state, input).await,
                 "ask_question"              => exec_ask_question(state, input).await,
                 other => format!("unknown tool: {other}"),
@@ -1922,6 +1924,75 @@ fn lair_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
 async fn exec_list_agents(state: Arc<AppState>) -> String {
     let records = state.registry.lock().unwrap().list().to_vec();
     serde_json::to_string_pretty(&records).unwrap_or_else(|e| format!("error: {e}"))
+}
+
+fn send_message_to_agent_tool() -> AnthropicTool {
+    AnthropicTool {
+        name: "send_message_to_agent".to_string(),
+        description: "Send a text message to one of your agents. The message is \
+            injected into that agent's main chat and wakes it to act on the message \
+            at its next turn boundary. Delivery is asynchronous: this returns once \
+            the message is handed off, and any reply the agent sends back arrives \
+            later as a separate '[message from agent ...]' in your own chat — not as \
+            this tool's result, so don't wait on it. Use `list_agents` to see which \
+            agents exist and their names."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "agent":   { "type": "string", "description": "The target agent's name or id, as shown by list_agents." },
+                "message": { "type": "string", "description": "The message text to deliver to that agent." }
+            },
+            "required": ["agent", "message"]
+        }),
+        display_label: Some("Messaging agent".into()),
+    }
+}
+
+/// `send_message_to_agent` tool — resolve the target agent and POST the message
+/// to its `/inject` endpoint (over loopback for local agents, or an ephemeral
+/// Noise tunnel for remote ones, via `child_http_base`). Fire-and-forget: the
+/// agent's reply, if any, comes back later through `/internal/agent-message` as
+/// its own injection into lair's chat.
+async fn exec_send_message_to_agent(state: Arc<AppState>, input: serde_json::Value) -> String {
+    let target = match input.get("agent").and_then(|v| v.as_str()).map(str::trim) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return "error: 'agent' is required".to_string(),
+    };
+    let message = match input.get("message").and_then(|v| v.as_str()) {
+        Some(s) if !s.trim().is_empty() => s.to_string(),
+        _ => return "error: 'message' is required".to_string(),
+    };
+    // Resolve the agent by slug first, then by display name.
+    let record = {
+        let reg = state.registry.lock().unwrap();
+        reg.get(&target).cloned()
+            .or_else(|| reg.list().iter().find(|r| r.name == target).cloned())
+    };
+    let Some(record) = record else {
+        return format!("error: no agent named '{target}' (use list_agents to see available agents).");
+    };
+    let base = match child_http_base(&record, state.lair_priv.clone()).await {
+        Ok(b)  => b,
+        Err(e) => return format!("error: cannot reach agent '{target}': {e}"),
+    };
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+    {
+        Ok(c)  => c,
+        Err(e) => return format!("error: build http client: {e}"),
+    };
+    let body = serde_json::json!({ "from": "lair", "text": message });
+    match client.post(format!("{base}/inject")).json(&body).send().await {
+        Ok(r) if r.status().is_success() => format!(
+            "Delivered to agent '{}'. It will process the message at its next turn; \
+             any reply arrives later in your chat as a message from that agent.",
+            record.name,
+        ),
+        Ok(r)  => format!("error: agent '{}' rejected the message ({})", record.name, r.status()),
+        Err(e) => format!("error: POST to agent '{}': {e}", record.name),
+    }
 }
 
 /// `send_notification` tool — lair holds the relay signing key, so it signs
@@ -1984,8 +2055,9 @@ async fn exec_create_agent(state: Arc<AppState>, input: serde_json::Value) -> St
 /// Core create-agent logic shared by the lair-LLM tool, the CLI endpoint,
 /// and the agent-token-gated `POST /agents/child` endpoint. `parent` is the
 /// `slug` of the agent that requested this spawn, or `None` for operator-level
-/// spawns. When `parent` is `Some`, a fresh capability token is minted for
-/// the new child so *it* can spawn grandchildren in turn.
+/// spawns (it's recorded in the registry for depth/descendant accounting). A
+/// capability token is minted for every child regardless of `parent` so it can
+/// message lair and spawn its own children within the depth caps.
 async fn exec_create_agent_for_parent(
     state:  Arc<AppState>,
     input:  serde_json::Value,
@@ -2100,19 +2172,19 @@ async fn exec_create_agent_for_parent(
     let cfg = okto_core::read_config();
     let gh_token = std::env::var("GH_TOKEN").ok().filter(|s| !s.is_empty());
 
-    // Mint a capability token only when the new child has a parent (i.e.
-    // it was spawned by another agent). Operator-spawned children stay
-    // tokenless and cannot themselves spawn descendants. Persisting the
-    // token before spawn means a crash between spawn and persist would
-    // leave a child running without spawn capability — preferable to a
-    // child running with a token that was never written to disk.
-    let agent_token = if parent.is_some() {
-        Some(state.agent_tokens.lock().unwrap()
-            .ensure(&child_slug, okto_core::now_secs())
-            .map_err(|e| format!("mint agent token for '{child_slug}': {e:#}"))?)
-    } else {
-        None
-    };
+    // Mint a capability token for *every* agent (top-level operator-spawned and
+    // agent-spawned alike). The token is the bearer credential for lair's
+    // agent-scoped endpoints, which now cover two capabilities:
+    //   - peer messaging (`POST /internal/agent-message`) — open to any agent;
+    //   - spawn / terminate (`POST /agents/child`) — bounded purely by the
+    //     server-side depth/descendant caps, so a top-level agent (depth 0) may
+    //     spawn within `max_depth`.
+    // Persisting the token before spawn means a crash between spawn and persist
+    // would leave a child running without its credential — preferable to one
+    // running with a token that was never written to disk.
+    let agent_token = Some(state.agent_tokens.lock().unwrap()
+        .ensure(&child_slug, okto_core::now_secs())
+        .map_err(|e| format!("mint agent token for '{child_slug}': {e:#}"))?);
 
     let lair_internal_url = state.lair_internal_url.clone();
     let params = SpawnParams {
@@ -3063,6 +3135,45 @@ struct CreateChildAgentBody {
     mcp:            Option<serde_json::Value>,
 }
 
+#[derive(Deserialize)]
+struct AgentMessageBody {
+    text: String,
+}
+
+/// `POST /internal/agent-message` — an agent sends a message to lair. The
+/// `require_agent_token` middleware authenticated the caller and attached its
+/// slug, so we know which agent it came from. We inject the text into lair's own
+/// chat as a persisted-only `peer_message` and wake lair's model to act on it,
+/// mirroring the background-task injection path. Fire-and-forget for the agent;
+/// lair replies, if at all, with its own `send_message_to_agent` tool.
+async fn agent_message_handler(
+    axum::Extension(caller): axum::Extension<AgentCaller>,
+    State(state):  State<Arc<AppState>>,
+    Json(body):    Json<AgentMessageBody>,
+) -> Response {
+    let text = body.text.trim().to_string();
+    if text.is_empty() {
+        return (StatusCode::BAD_REQUEST, "empty 'text'").into_response();
+    }
+    let from = state.registry.lock().unwrap().get(&caller.slug)
+        .map(|r| r.name.clone())
+        .unwrap_or_else(|| caller.slug.clone());
+    info!("[lair/agent-message] from agent='{from}' ({} chars)", text.len());
+    let injection = format!("[message from agent \"{from}\"]\n{text}");
+    state.turn_gate.lock().unwrap().pending_injections.push(ApiMessage {
+        role:    "peer_message".to_string(),
+        content: vec![ContentBlock::Text { text: injection.clone() }],
+    });
+    // Carry the full persisted text in the live event so the client chip matches
+    // the `/history` row on reload (same convention as `bg_complete`).
+    let ev = ChatEvent::PeerMessage { from, text: injection };
+    if let Some(json) = chat_event_to_wire_json(&ev) {
+        buffer_and_fanout(&state.stream_state, json.to_string());
+    }
+    try_continue_auto(state.clone());
+    (StatusCode::OK, "delivered").into_response()
+}
+
 /// Spawn a new agent whose parent is the caller. The caller is identified by
 /// `X-Okto-Agent-Token` (handled by the `require_agent_token` middleware,
 /// which attaches an `AgentCaller` extension).
@@ -3422,6 +3533,7 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
         let agent_protected = Router::new()
             .route("/agents/child",       post(agent_create_child))
             .route("/agents/child/:name", delete(agent_delete_child))
+            .route("/internal/agent-message", post(agent_message_handler))
             .route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 require_agent_token,

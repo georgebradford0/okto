@@ -257,6 +257,47 @@ async fn interrupt_handler(State(agent): State<Arc<Agent>>) -> StatusCode {
     interrupt_session(&agent.default_session())
 }
 
+#[derive(serde::Deserialize)]
+struct InjectBody {
+    #[serde(default)]
+    from: String,
+    text: String,
+}
+
+/// POST /inject — lair delivers a peer message into this agent's **main** chat.
+/// Loopback-only (lair reaches it via the registry / Noise tunnel); no auth
+/// beyond that boundary. The message is injected as a persisted-only
+/// `peer_message` and wakes the model at its next turn boundary, mirroring the
+/// background-task injection path. Worktree sessions never receive peer messages.
+async fn inject_handler(
+    State(agent): State<Arc<Agent>>,
+    Json(body):   Json<InjectBody>,
+) -> Response {
+    let text = body.text.trim().to_string();
+    if text.is_empty() {
+        return (StatusCode::BAD_REQUEST, "empty 'text'").into_response();
+    }
+    let from = match body.from.trim() {
+        "" => "lair".to_string(),
+        s  => s.to_string(),
+    };
+    let state = agent.default_session();
+    info!("[agent/inject] peer message from='{from}' ({} chars)", text.len());
+    let injection = format!("[message from {from}]\n{text}");
+    state.turn_gate.lock().unwrap().pending_injections.push(ApiMessage {
+        role:    "peer_message".to_string(),
+        content: vec![ContentBlock::Text { text: injection.clone() }],
+    });
+    // Carry the full persisted text in the live event so the client chip matches
+    // the `/history` row on reload (same convention as `bg_complete`).
+    let ev = ChatEvent::PeerMessage { from, text: injection };
+    if let Some(json) = chat_event_to_wire_json(&ev) {
+        buffer_and_fanout(&state.stream_state, json.to_string());
+    }
+    try_continue_auto(state);
+    (StatusCode::OK, "delivered").into_response()
+}
+
 fn cancel_task_session(s: &Arc<AppState>, id: &str) -> Json<serde_json::Value> {
     let fired = core_cancel_task(&s.stream_state, id);
     info!("[agent/cancel_task] id={id} fired={fired}");
@@ -348,7 +389,7 @@ fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
 
         state.stream_state.lock().unwrap().buffer.clear();
 
-        let extra_tools = build_tools_with_mcp(&state.mcp_pool, &make_extra_tools()).await;
+        let extra_tools = build_tools_with_mcp(&state.mcp_pool, &make_extra_tools(state.id.is_empty())).await;
         let executor    = chain_executor_with_mcp(state.mcp_pool.clone(), make_extra_executor(state.clone()));
 
         tokio::spawn(async move {
@@ -934,12 +975,21 @@ async fn update_config_handler(Json(patch): Json<Config>) -> StatusCode {
     StatusCode::OK
 }
 
-fn make_extra_tools() -> Vec<AnthropicTool> {
+/// `is_main` is true for the agent's main workspace session (`id == ""`) and
+/// false for worktree sessions. Peer messaging (`send_message_to_lair`) is
+/// offered only on the main session — worktrees don't send or receive peer
+/// messages.
+fn make_extra_tools(is_main: bool) -> Vec<AnthropicTool> {
     let mut tools = vec![
         run_command_in_background_tool(),
         monitor_process_tool(),
         stop_monitor_tool(),
     ];
+    // Peer messaging to lair — main session only, gated on the same capability
+    // token every agent now receives.
+    if is_main && has_message_capability() {
+        tools.push(send_message_to_lair_tool());
+    }
     // Mirror lair's gating (see `lair_extra_tools` in lair.rs). The agent
     // process inherits `OKTO_RELAY_URL` from lair via docker `--env-file`, so
     // an explicit empty value (set by `okto init --disable-push`) silences
@@ -997,6 +1047,14 @@ fn push_enabled() -> bool {
 /// agent-spawned children get one; operator-spawned (top-level) children do
 /// not, and therefore can't see the `spawn_agent` / `terminate_agent` tools.
 fn has_spawn_capability() -> bool {
+    std::env::var("OKTO_AGENT_TOKEN").ok().filter(|s| !s.is_empty()).is_some()
+        && std::env::var("LAIR_INTERNAL_URL").ok().filter(|s| !s.is_empty()).is_some()
+}
+
+/// True when this agent can reach lair's internal API to send peer messages.
+/// Every agent now receives a capability token, so this is the same check as
+/// `has_spawn_capability`; kept separate so the two capabilities can diverge.
+fn has_message_capability() -> bool {
     std::env::var("OKTO_AGENT_TOKEN").ok().filter(|s| !s.is_empty()).is_some()
         && std::env::var("LAIR_INTERNAL_URL").ok().filter(|s| !s.is_empty()).is_some()
 }
@@ -1131,6 +1189,7 @@ fn make_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
                 "stop_monitor"              => exec_stop_monitor(state, input).await,
                 "spawn_agent"               => exec_spawn_agent(input).await,
                 "terminate_agent"           => exec_terminate_agent(input).await,
+                "send_message_to_lair"      => exec_send_message_to_lair(input).await,
                 "create_worktree"           => exec_create_worktree(input).await,
                 "remove_worktree"           => exec_remove_worktree(input).await,
                 "send_notification"         => exec_send_notification(input).await,
@@ -1139,6 +1198,66 @@ fn make_extra_executor(state: Arc<AppState>) -> Option<Arc<dyn Fn(String, serde_
             }
         })
     }))
+}
+
+fn send_message_to_lair_tool() -> AnthropicTool {
+    AnthropicTool {
+        name: "send_message_to_lair".to_string(),
+        description: "Send a text message to lair (your orchestrator). The message \
+            is injected into lair's chat and wakes it to act on it. Use this to \
+            report progress or results, ask lair to coordinate with another agent, \
+            or hand work back. Delivery is asynchronous: this returns once the \
+            message is handed off, and any reply from lair arrives later as a \
+            separate '[message from lair]' in your chat — not as this tool's \
+            result, so don't wait on it."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "message": { "type": "string", "description": "The message text to send to lair." }
+            },
+            "required": ["message"]
+        }),
+        display_label: Some("Messaging lair".into()),
+    }
+}
+
+/// `send_message_to_lair` tool — POST the message to lair's
+/// `/internal/agent-message` endpoint, authenticated with this agent's
+/// capability token. Mirrors `exec_spawn_agent`'s transport. Fire-and-forget:
+/// lair's reply, if any, comes back later via this agent's `/inject` endpoint.
+async fn exec_send_message_to_lair(input: serde_json::Value) -> String {
+    let message = match input.get("message").and_then(|v| v.as_str()) {
+        Some(s) if !s.trim().is_empty() => s.to_string(),
+        _ => return "error: 'message' is required".to_string(),
+    };
+    let Some(token) = std::env::var("OKTO_AGENT_TOKEN").ok().filter(|s| !s.is_empty()) else {
+        warn!("[agent/send_message_to_lair] refused: no OKTO_AGENT_TOKEN in env");
+        return "error: this agent cannot message lair (no OKTO_AGENT_TOKEN in env).".to_string();
+    };
+    let Some(base)  = std::env::var("LAIR_INTERNAL_URL").ok().filter(|s| !s.is_empty()) else {
+        warn!("[agent/send_message_to_lair] refused: LAIR_INTERNAL_URL unset");
+        return "error: LAIR_INTERNAL_URL is unset; cannot reach lair.".to_string();
+    };
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+    {
+        Ok(c)  => c,
+        Err(e) => return format!("error: build http client: {e}"),
+    };
+    let url = format!("{base}/internal/agent-message");
+    let resp = client.post(&url)
+        .header("X-Okto-Agent-Token", token)
+        .json(&serde_json::json!({ "text": message }))
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() =>
+            "Delivered to lair. Any reply will arrive in your chat as a message from lair.".to_string(),
+        Ok(r)  => format!("error: lair rejected the message ({})", r.status()),
+        Err(e) => format!("error: POST {url}: {e}"),
+    }
 }
 
 async fn exec_spawn_agent(input: serde_json::Value) -> String {
@@ -1833,6 +1952,7 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/stream",      get(stream_handler))
         .route("/interrupt",   post(interrupt_handler))
         .route("/clear",       post(clear_handler))
+        .route("/inject",      post(inject_handler))
         .route("/tasks/:id/cancel", post(cancel_task_handler))
         .route("/branches",    get(get_branches_handler))
         .route("/completions", get(get_completions_handler))
@@ -1884,7 +2004,7 @@ pub async fn run() -> anyhow::Result<()> {
                     .filter(|m| m.role != "interrupted" && m.role != "error")
                     .cloned()
                     .collect();
-                let extra_tools = build_tools_with_mcp(&state_sp.mcp_pool, &make_extra_tools()).await;
+                let extra_tools = build_tools_with_mcp(&state_sp.mcp_pool, &make_extra_tools(state_sp.id.is_empty())).await;
                 let executor    = chain_executor_with_mcp(state_sp.mcp_pool.clone(), make_extra_executor(state_sp.clone()));
                 match send_message(
                     messages,

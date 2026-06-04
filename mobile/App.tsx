@@ -74,7 +74,7 @@ interface ContainerInfo {
 
 interface Message {
   id:         string
-  role:       'user' | 'assistant' | 'tool' | 'session' | 'interrupted' | 'error' | 'bg_complete' | 'bg_progress'
+  role:       'user' | 'assistant' | 'tool' | 'session' | 'interrupted' | 'error' | 'bg_complete' | 'bg_progress' | 'peer_message'
   text:       string
   cost?:      number
   output?:    string
@@ -664,6 +664,18 @@ const MessageBubble = memo(function MessageBubble({
       </Animated.View>
     )
   }
+  if (message.role === 'peer_message') {
+    // A message relayed through lair from a peer (lair↔agent). The text is
+    // self-describing ("[message from …] <body>"); render the whole thing as a
+    // distinct chip so the operator can see the cross-talk the model is acting on.
+    return (
+      <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
+        <View paddingHorizontal={16} paddingLeft={28} style={{ marginBottom: bubbleBottomMargin }}>
+          <Text selectable fontFamily="$body" fontSize={12.5} fontStyle="italic" lineHeight={19} color="$primary600">✉ {message.text}</Text>
+        </View>
+      </Animated.View>
+    )
+  }
   if (message.role === 'tool') {
     return (
       <Animated.View style={{ opacity: fadeAnim, marginTop: extraTopMargin }}>
@@ -1208,7 +1220,7 @@ const ChatPane = memo(function ChatPane({
             let anchor = cleaned
             for (let i = cleaned.length - 1; i >= 0; i--) {
               const role = cleaned[i].role
-              if (role === 'user' || role === 'bg_complete' || role === 'bg_progress') {
+              if (role === 'user' || role === 'bg_complete' || role === 'bg_progress' || role === 'peer_message') {
                 anchor = cleaned.slice(0, i + 1)
                 break
               }
@@ -1404,6 +1416,12 @@ const ChatPane = memo(function ChatPane({
           : appendMsg(prev, { id, role: 'bg_complete' as const, text: event.text }))
         break
       }
+      case 'peer_message':
+        // A message relayed through lair (lair↔agent), injected into this chat.
+        // The event text is the same prefixed string persisted to history, so a
+        // later /history reload reconciles cleanly (same convention as bg_progress).
+        applyMsgs(prev => appendMsg(prev, { id: uid(), role: 'peer_message' as const, text: event.text }))
+        break
       case 'bg_progress':
         // A monitored task produced new output mid-run. Each event is distinct
         // output, so it gets its own chip. The event text matches the persisted

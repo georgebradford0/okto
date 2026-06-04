@@ -214,6 +214,12 @@ pub fn messages_to_history(messages: &[ApiMessage], last_cost_usd: Option<f64>) 
                     .collect();
                 result.push(HistMsg { role: "bg_progress".to_string(), text, ..Default::default() });
             }
+            "peer_message" => {
+                let text: String = m.content.iter()
+                    .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
+                    .collect();
+                result.push(HistMsg { role: "peer_message".to_string(), text, ..Default::default() });
+            }
             "error" => {
                 let text: String = m.content.iter()
                     .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
