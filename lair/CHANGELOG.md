@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-06-04
+
 ### Fixed
 - **Interrupt handling no longer races the turn boundary.** The per-turn cancel
   token now lives inside the `TurnGate`, so installing the next turn's token,
