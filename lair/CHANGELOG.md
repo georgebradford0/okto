@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.22.3] - 2026-06-04
+
 ### Changed
 - `build_system_prompt` now checks for both `CLAUDE.md` and `SYSTEM.md` in the repo root; if both exist, both are included in the system prompt.
 
