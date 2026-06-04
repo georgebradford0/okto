@@ -15,6 +15,9 @@ the git log.
   `/history` reload. Additive wire change — no `WIRE_PROTOCOL` bump.
 
 ### Changed
+- Tool-call bubbles for **Reading file**, **Editing file**, and **Writing file**
+  now show just the filename (without the full path prefix) to keep the display
+  compact.
 - The on-screen wordmark (connection screen + sidebar) now reads **OKTO**
   instead of "OCTO", matching the app name.
 - **Route to agents by `id`, not `name`.** The app now builds every agent proxy

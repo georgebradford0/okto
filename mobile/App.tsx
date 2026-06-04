@@ -1271,7 +1271,13 @@ const ChatPane = memo(function ChatPane({
           ? String(Object.values(event.input as Record<string, unknown>)[0] ?? '').trim()
           : ''
         const label = event.display ?? event.tool
-        const toolText = firstVal ? `${label} (${firstVal})` : label
+        // For file tools, show just the filename (no path prefix) in the
+        // tool-call label so the bubble stays compact.
+        const isFileTool = label === 'Reading file' || label === 'Editing file' || label === 'Writing file'
+        const displayVal = isFileTool && firstVal
+          ? firstVal.split('/').pop()!
+          : firstVal
+        const toolText = displayVal ? `${label} (${displayVal})` : label
         log(`[chat] tool_use tool=${event.tool} id=${event.tool_use_id}`)
         // Use the wire tool_use_id directly as the Message id so subsequent
         // tool_output / tool_result events route to the right bubble even when
