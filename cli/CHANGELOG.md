@@ -7,6 +7,24 @@ the git log.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-06-04
+
+### Fixed
+- **`okto lair update` reliably restarts local agents on the new image.** The
+  post-update respawn now addresses each agent by its route-safe `slug` (the key
+  lair's management API uses) instead of its display `name`. Previously it passed
+  the name and relied on a second registry load to translate it — which fails
+  against a slug-keyed lair when the two differ (e.g. an agent named
+  `Callos Repo` with slug `callos-repo` returned `400 ... not found`). Note the
+  fix must be installed on the host CLI to take effect; an older CLI paired with
+  a newer lair image still exhibits the bug.
+
+### Changed
+- Agent display **name** is decoupled from its route-safe **slug** across the
+  CLI: commands that take an agent reference (`agents start/stop/delete`,
+  `tasks --agent`, `mcp --agent`, …) accept either the slug or a unique display
+  name and resolve it against the on-disk registry.
+
 ## [0.7.2] - 2026-05-31
 
 ### Added

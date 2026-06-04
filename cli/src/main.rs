@@ -637,12 +637,18 @@ async fn update_lair(image_override: Option<String>) -> Result<()> {
     // restart (lair just re-opens its outbound Noise tunnel to them on
     // demand). Read the registry from disk directly rather than going via
     // the mgmt API, mirroring `agents::list`.
-    let local_agents_to_restart: Vec<String> = if service::is_running() {
+    // Capture each agent's route-safe `slug` (lair's registry key), not its
+    // display `name`. We already hold the loaded record here, so pass the slug
+    // straight through to the start endpoint rather than re-deriving it from the
+    // name after the restart — that round-trip is what broke when an older CLI
+    // (pre-slug) sent a display name to a slug-keyed lair. `(name, slug)` keeps
+    // the friendly name for the progress/error messages.
+    let local_agents_to_restart: Vec<(String, String)> = if service::is_running() {
         let registry_path = service::lair_data_dir().join("agents.json");
         match okto_core::Registry::load(registry_path) {
             Ok(reg) => reg.list().iter()
                 .filter(|a| !a.is_remote() && a.status == okto_core::AgentStatus::Running)
-                .map(|a| a.name.clone())
+                .map(|a| (a.name.clone(), a.slug.clone()))
                 .collect(),
             Err(e) => {
                 warn!("[cli] could not read agent registry for restart snapshot: {e}");
@@ -695,10 +701,12 @@ async fn update_lair(image_override: Option<String>) -> Result<()> {
                 "Restarting {} local agent(s) on new image...",
                 local_agents_to_restart.len(),
             );
-            for name in &local_agents_to_restart {
-                if let Err(e) = agents::start(name).await {
-                    error!("[cli] failed to restart agent '{name}' after update: {e}");
-                    println!("  Failed to restart '{name}': {e} (run `okto agents start {name}` to retry)");
+            for (name, slug) in &local_agents_to_restart {
+                // Address the agent by slug — the key lair's API is keyed on —
+                // so the restart is immune to display-name → slug translation.
+                if let Err(e) = agents::start(slug).await {
+                    error!("[cli] failed to restart agent '{name}' ({slug}) after update: {e}");
+                    println!("  Failed to restart '{name}': {e} (run `okto agents start {slug}` to retry)");
                 }
             }
         }
