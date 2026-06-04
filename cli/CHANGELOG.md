@@ -7,6 +7,8 @@ the git log.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-04
+
 ### Added
 - **`okto reload --check-config`** validates your configuration instead of
   restarting. It checks the effective config values (`~/.okto/config.json`
