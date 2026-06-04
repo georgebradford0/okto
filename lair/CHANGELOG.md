@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Fixed
+- **`create_agent` is now transactional under interrupt.** Interrupting the turn
+  while a `create_agent` tool call is in flight previously left a half-created
+  agent behind: the child process is spawned with `kill_on_drop(false)` and is
+  already in the registry by the time lair waits for its `/health`, so the
+  cancel-by-drop only abandoned the wait — the orphaned process + `Pending`
+  registry row + on-disk dirs survived and the poller would even promote it to
+  `running`, all while the model was told "interrupted". A drop guard now rolls
+  the half-created agent back: it SIGTERM→(grace)→SIGKILLs and reaps the child,
+  removes its `data/`/`workspace/`/`.ssh` dirs, drops the registry row, and frees
+  the capability-token slot — leaving no trace. The guard is disarmed on a
+  successful create and on the deliberate "spawned but not yet reachable, leave
+  it for the operator/poller" outcome, so only a true interrupt triggers rollback.
+
 ## [0.22.1] - 2026-06-04
 
 ### Fixed

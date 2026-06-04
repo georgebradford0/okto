@@ -2096,6 +2096,56 @@ async fn exec_create_agent(state: Arc<AppState>, input: serde_json::Value) -> St
     }
 }
 
+/// Makes `create_agent` transactional under interrupt. `create_agent` runs as a
+/// tool, so an interrupt mid-call drops its future at an `.await` (cancel-by-
+/// drop in `execute_tool`) — the child process is spawned with
+/// `kill_on_drop(false)` and is already in the registry, so without this it
+/// would survive as a half-created agent (live process + `Pending` row + data
+/// dirs) that the poller then promotes to `Running`, while the model is told
+/// "interrupted".
+///
+/// Armed once the child exists (spawned + registered) and disarmed on every
+/// real return. If instead the future is dropped while armed, `Drop` fires a
+/// detached rollback via `terminate_agent_by_name` — which SIGTERM→(grace)→
+/// SIGKILLs and reaps the child, *then* `remove_dir_all`s its
+/// data/workspace/.ssh dirs, drops the registry row, and frees the token slot.
+/// Drop can't be async, so the teardown runs as a spawned task on the current
+/// runtime; it still completes after the tool returns "interrupted".
+struct CreateAgentGuard {
+    state: Arc<AppState>,
+    slug:  String,
+    armed: bool,
+}
+
+impl CreateAgentGuard {
+    fn new(state: Arc<AppState>, slug: String) -> Self {
+        Self { state, slug, armed: true }
+    }
+    /// Mark the create as having reached a definite outcome (success, or a
+    /// deliberate "leave it for the operator/poller" failure) — no rollback.
+    fn disarm(&mut self) { self.armed = false; }
+}
+
+impl Drop for CreateAgentGuard {
+    fn drop(&mut self) {
+        if !self.armed { return; }
+        let state = self.state.clone();
+        let slug  = self.slug.clone();
+        warn!("[lair/create_agent] '{slug}' interrupted mid-create — rolling back (terminate + remove dirs)");
+        match tokio::runtime::Handle::try_current() {
+            Ok(h) => {
+                h.spawn(async move {
+                    match terminate_agent_by_name(&state, &slug).await {
+                        Ok(())  => info!("[lair/create_agent] rollback of interrupted '{slug}' complete"),
+                        Err(e)  => warn!("[lair/create_agent] rollback of interrupted '{slug}' failed: {e}"),
+                    }
+                });
+            }
+            Err(_) => warn!("[lair/create_agent] no tokio runtime to roll back interrupted '{slug}'"),
+        }
+    }
+}
+
 /// Core create-agent logic shared by the lair-LLM tool, the CLI endpoint,
 /// and the agent-token-gated `POST /agents/child` endpoint. `parent` is the
 /// `slug` of the agent that requested this spawn, or `None` for operator-level
@@ -2277,6 +2327,12 @@ async fn exec_create_agent_for_parent(
             info!("[lair/create_agent] created {child_slug} pid={pid}, waiting for /health");
             state.poll_trigger.notify_one();
 
+            // From here the child exists on disk + in the registry. Arm the
+            // transactional rollback: if this future is cancel-by-dropped
+            // (interrupt) before either return below, the guard tears the
+            // half-created agent down completely. Disarmed on both outcomes.
+            let mut rollback = CreateAgentGuard::new(state.clone(), child_slug.clone());
+
             // Block until the child binds its loopback HTTP port and answers
             // `/health`. Without this the tool returns "created" while the
             // child is still doing git clone + startup script + MCP init, and
@@ -2289,6 +2345,7 @@ async fn exec_create_agent_for_parent(
                 .unwrap_or(180);
             match wait_for_agent_ready(port, pid, Duration::from_secs(ready_timeout)).await {
                 Ok(elapsed) => {
+                    rollback.disarm();
                     let _ = state.registry.lock().unwrap()
                         .update_status(&child_slug, AgentStatus::Running);
                     state.poll_trigger.notify_one();
@@ -2302,11 +2359,14 @@ async fn exec_create_agent_for_parent(
                     ))
                 }
                 Err(e) => {
+                    // Deliberate outcome, not an interrupt: leave the agent in
+                    // the registry so the operator can inspect logs and decide
+                    // whether to terminate or wait — tearing it down here would
+                    // race a slow-but-recovering bootstrap. The poller
+                    // reconciles status from here. Disarm so the guard doesn't
+                    // roll it back.
+                    rollback.disarm();
                     warn!("[lair/create_agent] {child_slug} not reachable: {e}");
-                    // Leave the agent in the registry so the operator can
-                    // inspect logs and decide whether to terminate or wait —
-                    // tearing it down here would race a slow-but-recovering
-                    // bootstrap. The poller will reconcile status from here.
                     Err(format!(
                         "child '{child_name}' (id '{child_slug}', pid {pid}) was spawned but {e}. \
                          Call terminate_agent('{child_slug}') to clean up, or wait and retry.",
