@@ -67,6 +67,14 @@ nav:
   - Push notifications: notifications.md
   - CLI reference: cli-reference.md
 
+# App Store pages (Apple Support URL + Privacy Policy URL). Served at the same
+# directory URLs the old Jekyll permalinks used — /support/ and /privacy/ — so
+# the links registered in App Store Connect keep working. Kept out of the
+# operator nav above; `not_in_nav` suppresses the --strict "not in nav" error.
+not_in_nav: |
+  /support.md
+  /privacy.md
+
 extra:
   social:
     - icon: fontawesome/brands/github

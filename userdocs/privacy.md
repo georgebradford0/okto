@@ -1,9 +1,3 @@
----
-layout: default
-title: Privacy Policy
-permalink: /privacy/
----
-
 # Privacy Policy for Okto
 
 **Last updated: May 31, 2026**
