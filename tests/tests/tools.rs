@@ -7,7 +7,26 @@ mod common;
 
 use std::time::Duration;
 
+use common::tunnel::ChatWs;
 use common::{event_types, LairProcess, Turn};
+use serde_json::Value;
+
+/// Read events until one of `types` is seen; returns that event. Panics if the
+/// stream closes first.
+async fn read_until(chat: &mut ChatWs, types: &[&str]) -> Value {
+    loop {
+        let ev = chat
+            .next_event()
+            .await
+            .expect("ws error")
+            .expect("stream closed before expected event");
+        if let Some(ty) = ev.get("type").and_then(|x| x.as_str()) {
+            if types.contains(&ty) {
+                return ev;
+            }
+        }
+    }
+}
 
 #[tokio::test]
 async fn bash_tool_runs_and_has_a_real_side_effect() {
@@ -89,4 +108,99 @@ async fn bash_tool_runs_and_has_a_real_side_effect() {
 
     // Two model calls: the tool turn, then the follow-up after the tool_result.
     assert_eq!(lair.mock.request_count(), 2, "expected tool turn + follow-up turn");
+}
+
+#[tokio::test]
+async fn interrupt_kills_the_whole_process_group() {
+    // The bash leader backgrounds a child that writes `survivor` after a delay,
+    // then blocks. Interrupting must signal the whole process group — the
+    // backgrounded child included — so `survivor` is never written. Without a
+    // process-group kill, that child orphans to PID 1 and writes the file
+    // anyway, which is the regression this guards.
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let started  = scratch.path().join("started");
+    let survivor = scratch.path().join("survivor");
+    let command = format!(
+        "echo go > {started}; ( sleep 3; echo alive > {survivor} ) & sleep 30",
+        started  = started.display(),
+        survivor = survivor.display(),
+    );
+
+    let lair = LairProcess::start(vec![
+        Turn::tool("call_1", "bash", serde_json::json!({ "command": command })),
+        Turn::text("unreached"),
+    ])
+    .await
+    .expect("lair to start");
+
+    let mut chat = lair.chat().await.expect("open chat ws");
+    read_until(&mut chat, &["ready"]).await;
+    chat.send_user_message("run a backgrounded child").await.expect("send");
+    read_until(&mut chat, &["tool_use"]).await;
+
+    // Wait until the command has actually launched its background child.
+    for _ in 0..50 {
+        if started.exists() { break; }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(started.exists(), "command never started");
+
+    chat.interrupt().await.expect("interrupt");
+    let terminal = read_until(&mut chat, &["interrupted", "done", "error"]).await;
+    assert_eq!(terminal["type"], "interrupted", "expected interrupt, got {terminal}");
+
+    // Wait past the child's 3s delay. With the group killed it can never write;
+    // if it orphaned and survived, the file appears within this window.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert!(
+        !survivor.exists(),
+        "backgrounded child survived the interrupt and wrote {} — process group not killed",
+        survivor.display()
+    );
+}
+
+#[tokio::test]
+async fn interrupted_bash_returns_partial_output() {
+    // Output streamed before the kill must reach the model in the tool_result,
+    // along with an explicit interrupted marker — so on resume it can tell how
+    // far a non-idempotent command got. Output after the interrupt must not.
+    let command = "echo first-line; sleep 30; echo second-line";
+
+    let lair = LairProcess::start(vec![
+        Turn::tool("call_1", "bash", serde_json::json!({ "command": command })),
+        Turn::text("unreached"),
+    ])
+    .await
+    .expect("lair to start");
+
+    let mut chat = lair.chat().await.expect("open chat ws");
+    read_until(&mut chat, &["ready"]).await;
+    chat.send_user_message("stream then sleep").await.expect("send");
+    read_until(&mut chat, &["tool_use"]).await;
+
+    // Make sure the first line was actually streamed before interrupting.
+    let out = read_until(&mut chat, &["tool_output"]).await;
+    assert!(
+        out["line"].as_str().unwrap_or("").contains("first-line"),
+        "first tool_output was not first-line: {out}"
+    );
+
+    chat.interrupt().await.expect("interrupt");
+
+    // Capture the model-facing tool_result the interrupt produced (it precedes
+    // the terminal `interrupted` frame on the same ordered stream).
+    let mut tool_result = None;
+    loop {
+        let ev = chat.next_event().await.expect("ws error").expect("stream closed");
+        match ev.get("type").and_then(|x| x.as_str()) {
+            Some("tool_result") => tool_result = Some(ev),
+            Some("interrupted") | Some("done") | Some("error") => break,
+            _ => {}
+        }
+    }
+    let tr = tool_result.expect("a tool_result before the terminal event");
+    let output = tr["output"].as_str().unwrap_or("");
+    assert!(output.contains("first-line"), "partial output missing first-line: {output:?}");
+    assert!(output.contains("[interrupted"), "missing interrupted marker: {output:?}");
+    assert!(!output.contains("second-line"), "post-sleep output leaked: {output:?}");
 }

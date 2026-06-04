@@ -15,6 +15,16 @@
   from the agentic loop's own outcome rather than a post-hoc token re-sample
   (so a stop pressed just as a turn finishes can't mislabel a completed turn);
   and `STARTUP_PROMPT` turns are now interruptible. No wire-protocol change.
+- **Interrupting a `bash` tool now kills the whole process group**, not just the
+  `bash -c` leader. The tool runs as its own group leader and an interrupt
+  signals the group, so anything the command spawned (a build, a dev server,
+  `docker run`, …) is killed too instead of orphaning to PID 1 and continuing to
+  mutate the container. The interrupted tool result now also carries the output
+  captured before the kill plus an explicit "interrupted before completion"
+  marker, so the model can tell how far a non-idempotent command got on resume.
+  (Previously a generic cancel-by-drop guard could pre-empt bash's own cleanup,
+  bypassing the kill and discarding partial output; bash is now awaited directly
+  while other tools keep the universal cancel-by-drop guard.)
 
 ## [0.22.0] - 2026-06-03
 

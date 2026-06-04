@@ -627,6 +627,39 @@ pub fn tool_definitions() -> Vec<AnthropicTool> {
 
 // ── Tool Execution ─────────────────────────────────────────────────────────────
 
+/// SIGKILL an entire process group (the bash leader plus everything it
+/// spawned). The bash tool launches its child with `process_group(0)` so the
+/// child's pgid equals its pid; passing that pid here reaches the whole tree.
+/// Without this an interrupt only kills the `bash -c` leader, orphaning any
+/// long-lived descendants (build, dev server, `docker run`, …) to PID 1 where
+/// they keep mutating the container.
+#[cfg(unix)]
+fn kill_process_group(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        // SAFETY: `kill(2)` with a negated pid signals the process group whose
+        // id is `pid`. No memory is touched; an invalid/already-reaped group
+        // just yields ESRCH, which we ignore.
+        unsafe { libc::kill(-(pid as i32), libc::SIGKILL); }
+    }
+}
+#[cfg(not(unix))]
+fn kill_process_group(_pid: Option<u32>) {}
+
+/// Format a bash tool result for the interrupted path: hand the model whatever
+/// was streamed before the kill (so it can tell how far a non-idempotent
+/// command got) plus an explicit warning that side effects may be incomplete.
+fn format_bash_interrupted(stdout_buf: &str, stderr_buf: &str) -> String {
+    let mut out = String::new();
+    if !stdout_buf.is_empty() { out.push_str(stdout_buf.trim_end_matches('\n')); }
+    if !stderr_buf.is_empty() {
+        if !out.is_empty() { out.push('\n'); }
+        out.push_str(&format!("[stderr]: {}", stderr_buf.trim_end_matches('\n')));
+    }
+    let note = "[interrupted before completion — the command was killed; \
+                any side effects may be partial]";
+    if out.is_empty() { note.to_string() } else { format!("{out}\n{note}") }
+}
+
 pub async fn execute_tool(
     tool_use_id:      &str,
     name:             &str,
@@ -640,14 +673,24 @@ pub async fn execute_tool(
 ) -> String {
     let tool_start = std::time::Instant::now();
     debug!("[core/tool] execute '{name}' cwd={cwd}");
-    // Race the tool future against the cancel token. On cancel, the in-flight
-    // future is dropped — cancel-by-drop gives us a universal interrupt that
-    // works for every tool including MCP, at the cost of possibly leaving
-    // partial state (e.g. a half-written file). The model will see the
-    // synthetic "error: interrupted" result and can clean up on the next turn.
-    let result = tokio::select! {
-        r = execute_tool_inner(tool_use_id, name, input, cwd, tx, cancel.clone(), extra_executor) => r,
-        _ = cancel.cancelled() => "error: interrupted".to_string(),
+    // `bash` self-handles cancellation: it kills its whole process group and
+    // returns the output captured so far. Racing-and-dropping it from out here
+    // would pre-empt that cleanup (orphaning descendants, discarding partial
+    // output), so await it directly and let its inner cancel branch run.
+    //
+    // Every other tool gets the universal cancel-by-drop guard: on cancel the
+    // in-flight future is dropped, which interrupts even tools (MCP, web) that
+    // have no cancellation logic of their own. The model sees the synthetic
+    // "error: interrupted" result and can clean up on the next turn. Synchronous
+    // tools (read/edit/write/glob) complete in a single poll, so they apply
+    // fully or not at all rather than leaving half-written state.
+    let result = if name == "bash" {
+        execute_tool_inner(tool_use_id, name, input, cwd, tx, cancel.clone(), extra_executor).await
+    } else {
+        tokio::select! {
+            r = execute_tool_inner(tool_use_id, name, input, cwd, tx, cancel.clone(), extra_executor) => r,
+            _ = cancel.cancelled() => "error: interrupted".to_string(),
+        }
     };
     let elapsed = tool_start.elapsed().as_millis();
     let preview: String = result.chars().take(200).collect();
@@ -670,18 +713,25 @@ async fn execute_tool_inner(
         "bash" => {
             use tokio::io::{AsyncBufReadExt, BufReader as TokioBufReader};
             let cmd = input["command"].as_str().unwrap_or("");
-            match tokio::process::Command::new("bash")
+            let mut command = tokio::process::Command::new("bash");
+            command
                 .arg("-c").arg(cmd)
                 .current_dir(cwd)
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
+                .stderr(std::process::Stdio::piped());
+            // Run the command as the leader of its own process group so an
+            // interrupt can signal the whole tree (see `kill_process_group`).
+            #[cfg(unix)]
+            command.process_group(0);
+            match command.spawn()
             {
                 Err(e) => {
                     error!("[core/tool] bash spawn failed cwd={cwd}: {e}");
                     format!("error: {e}")
                 }
                 Ok(mut child) => {
+                    // With `process_group(0)` the child's pgid equals its pid.
+                    let pgid = child.id();
                     let stdout_pipe = child.stdout.take().expect("stdout piped");
                     let stderr_pipe = child.stderr.take().expect("stderr piped");
                     let mut stdout_reader = TokioBufReader::new(stdout_pipe).lines();
@@ -707,9 +757,13 @@ async fn execute_tool_inner(
                                 _ => break,
                             },
                             _ = cancel.cancelled() => {
-                                debug!("[core/tool] bash interrupted, killing child");
+                                debug!("[core/tool] bash interrupted, killing process group");
+                                // Kill the whole group first (reaps descendants),
+                                // then reap the leader so it doesn't linger as a
+                                // zombie. Hand the model the partial output.
+                                kill_process_group(pgid);
                                 child.kill().await.ok();
-                                return "error: interrupted".to_string();
+                                return format_bash_interrupted(&stdout_buf, &stderr_buf);
                             }
                         }
                     }

@@ -20,3 +20,8 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand         = "0.8"
 base64       = "0.22"
 ssh-key      = { version = "0.6", features = ["ed25519", "rand_core"] }
+
+# Used to signal a bash tool's whole process group on interrupt (kill the
+# command plus anything it spawned, not just the bash leader).
+[target.'cfg(unix)'.dependencies]
+libc         = "0.2"
