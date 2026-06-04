@@ -34,6 +34,16 @@ Restart lair to apply env/config; optionally upsert env vars and pick agents.
 | `--agents <NAME> ...` | all | Restart only these agents. |
 | `-e, --env KEY=VALUE ...` | — | Upsert env vars into `lair-env` before restart. |
 | `--ready-timeout <SECS>` | `180` | Seconds to wait for health. |
+| `--check-config` | — | Validate config instead of restarting (see below). |
+
+With `--check-config`, lair is **not** restarted. Instead okto validates the
+effective configuration — the values in `~/.okto/config.json` overlaid with any
+matching `~/.okto/lair-env` overrides (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`MODEL`, `OPENAI_API_URL`, `ANTHROPIC_API_URL`) — and then sends a minimal
+one-token "ping" request to the configured backend (Anthropic or an
+OpenAI-compatible API) to confirm the key, model, and URL actually work. It
+exits non-zero on the first problem, so it's useful as a preflight before
+`okto reload` or in scripts.
 
 ### `okto destroy`
 Stop lair, remove every agent, and wipe lair's data dirs + env file + launch

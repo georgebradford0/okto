@@ -70,9 +70,17 @@ okto reload
 okto reload -e GH_TOKEN=ghp_new          # upsert env, then restart
 okto reload --agents lair-myrepo         # also restart only these agents
 okto reload --ready-timeout 300          # wait longer for health
+okto reload --check-config               # validate config; don't restart
 ```
 
 Without `--agents`, every managed agent is restarted along with lair.
+
+`--check-config` is a preflight: instead of restarting, okto validates the
+effective configuration (`~/.okto/config.json` overlaid with the matching
+`~/.okto/lair-env` overrides) and sends a minimal "ping" request to the
+configured API to confirm the key, model, and URL actually work. It exits
+non-zero on the first problem and restarts nothing — run it before a real
+`okto reload` to catch a bad key or model without bouncing the container.
 
 ## Logs (`okto logs`)
 

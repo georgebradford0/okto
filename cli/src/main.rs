@@ -59,6 +59,105 @@ fn validate_resolved_config(cfg: &Config) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolve the configuration lair would actually run with: `config.json` overlaid
+/// with the matching `~/.okto/lair-env` overrides (env wins, mirroring how
+/// `okto_core` resolves the backend/key at runtime). Returns the effective
+/// [`Config`] plus an optional `ANTHROPIC_API_URL` override from the env file.
+fn effective_config() -> (Config, Option<String>) {
+    let mut cfg = okto_core::read_config();
+
+    // The env-file values lair passes to `docker --env-file` take precedence over
+    // config.json (see `okto_core::resolve_api_key` / `ApiBackend::resolve`).
+    let text = std::fs::read_to_string(service::env_file_path()).unwrap_or_default();
+    let env: std::collections::HashMap<String, String> =
+        init::parse_env_file(&text).into_iter().collect();
+    let nonempty = |k: &str| env.get(k).map(|s| s.trim()).filter(|s| !s.is_empty()).map(str::to_string);
+
+    if let Some(v) = nonempty("ANTHROPIC_API_KEY") { cfg.anthropic_api_key = Some(v); }
+    if let Some(v) = nonempty("OPENAI_API_KEY")    { cfg.openai_api_key    = Some(v); }
+    if let Some(v) = nonempty("MODEL")             { cfg.model             = Some(v); }
+    if let Some(v) = nonempty("OPENAI_API_URL")    { cfg.api_url           = Some(v); }
+
+    (cfg, nonempty("ANTHROPIC_API_URL"))
+}
+
+/// Implements `okto reload --check-config`: validate the effective config values,
+/// then send a minimal "ping" turn to the configured API to confirm the
+/// credentials, model, and URL actually work. Returns `Err` (non-zero exit) on
+/// the first problem found.
+async fn check_config_setup() -> Result<()> {
+    let (cfg, anthropic_url_override) = effective_config();
+
+    // 1. Static validation of the resolved values (keys, model, URL scheme).
+    print!("Config values ... ");
+    use std::io::Write;
+    std::io::stdout().flush().ok();
+    if let Err(e) = validate_resolved_config(&cfg) {
+        println!("invalid");
+        anyhow::bail!("{e}");
+    }
+    println!("ok");
+
+    let model = cfg.model.as_deref().map(str::trim).unwrap_or_default().to_string();
+
+    // 2. Resolve the backend exactly as `okto_core` does: an `api_url` selects the
+    //    OpenAI-compatible path (Bearer key), otherwise Anthropic (x-api-key).
+    let api_url = cfg.api_url.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("build HTTP client")?;
+
+    let (label, request) = if let Some(url) = api_url {
+        let key = cfg.openai_api_key.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            .or_else(|| cfg.anthropic_api_key.as_deref().map(str::trim).filter(|s| !s.is_empty()))
+            .ok_or_else(|| anyhow::anyhow!("api_url is set ({url}) but no API key is configured"))?;
+        let body = serde_json::json!({
+            "model":      model,
+            "max_tokens": 1,
+            "messages":   [{"role": "user", "content": "ping"}],
+        });
+        let req = client
+            .post(url)
+            .header("Authorization", format!("Bearer {key}"))
+            .header("content-type", "application/json")
+            .json(&body);
+        (format!("OpenAI-compatible @ {url} (model {model}, key {})", mask(key)), req)
+    } else {
+        let key = cfg.anthropic_api_key.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("no anthropic_api_key is configured"))?;
+        let url = anthropic_url_override
+            .unwrap_or_else(|| "https://api.anthropic.com/v1/messages".to_string());
+        let body = serde_json::json!({
+            "model":      model,
+            "max_tokens": 1,
+            "messages":   [{"role": "user", "content": "ping"}],
+        });
+        let req = client
+            .post(&url)
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&body);
+        (format!("Anthropic @ {url} (model {model}, key {})", mask(key)), req)
+    };
+
+    print!("API ping: {label} ... ");
+    std::io::stdout().flush().ok();
+    let resp = request.send().await.context("send ping request")?;
+    let status = resp.status();
+    if !status.is_success() {
+        println!("failed");
+        let text = resp.text().await.unwrap_or_default();
+        let snippet: String = text.chars().take(500).collect();
+        anyhow::bail!("API returned {status}: {snippet}");
+    }
+    println!("ok ({status})");
+
+    println!("\nConfiguration looks good.");
+    Ok(())
+}
+
 #[derive(Parser)]
 #[command(name = "okto", about = "okto lair management CLI")]
 struct Cli {
@@ -149,6 +248,14 @@ enum Command {
         /// 180s — bump it for heavy `bootstrap.sh` installs.
         #[arg(long, value_name = "SECS", default_value_t = service::DEFAULT_READY_TIMEOUT_SECS)]
         ready_timeout: u64,
+        /// Validate the configuration instead of restarting. Checks the
+        /// effective config values (`~/.okto/config.json` overlaid with the
+        /// matching `~/.okto/lair-env` overrides) and sends a minimal "ping"
+        /// request to the configured API to confirm the key + model + URL
+        /// actually work. Exits non-zero on the first problem; nothing is
+        /// restarted.
+        #[arg(long = "check-config")]
+        check_config: bool,
     },
 
     /// Print the QR code mobile clients scan to connect to this lair
@@ -978,7 +1085,12 @@ async fn main() -> Result<()> {
             }
         }
 
-        Command::Reload { agents: agent_targets, env, ready_timeout } => {
+        Command::Reload { agents: agent_targets, env, ready_timeout, check_config } => {
+            if check_config {
+                info!("[cli] reload --check-config: validating configuration (no restart)");
+                check_config_setup().await?;
+                return Ok(());
+            }
             info!("[cli] reload starting (agent_targets={}, env_pairs={}, ready_timeout={ready_timeout}s)", agent_targets.len(), env.len());
             if !env.is_empty() {
                 let new_pairs = init::parse_extra_env(&env)?;

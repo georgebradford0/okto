@@ -7,6 +7,15 @@ the git log.
 
 ## [Unreleased]
 
+### Added
+- **`okto reload --check-config`** validates your configuration instead of
+  restarting. It checks the effective config values (`~/.okto/config.json`
+  overlaid with the matching `~/.okto/lair-env` overrides — `ANTHROPIC_API_KEY`,
+  `OPENAI_API_KEY`, `MODEL`, `OPENAI_API_URL`, `ANTHROPIC_API_URL`), then sends a
+  minimal one-token "ping" turn to the configured backend (Anthropic or
+  OpenAI-compatible) to confirm the key, model, and URL actually work. Exits
+  non-zero on the first problem and restarts nothing.
+
 ## [0.7.3] - 2026-06-04
 
 ### Fixed
