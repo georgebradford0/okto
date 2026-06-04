@@ -1879,15 +1879,27 @@ fn buildah_note() -> &'static str {
 }
 
 pub fn build_system_prompt(repo_path: &str) -> String {
-    let claude_md = match std::fs::read_to_string(format!("{}/CLAUDE.md", repo_path)) {
-        Ok(s) => {
-            debug!("[core] including CLAUDE.md ({} chars) from {repo_path}", s.len());
-            format!("\n\n# Project instructions (CLAUDE.md)\n{}", s)
+    let mut project_instructions = String::new();
+
+    for filename in &["CLAUDE.md", "SYSTEM.md"] {
+        match std::fs::read_to_string(format!("{}/{filename}", repo_path)) {
+            Ok(s) => {
+                debug!("[core] including {filename} ({} chars) from {repo_path}", s.len());
+                if !project_instructions.is_empty() {
+                    project_instructions.push_str("\n\n");
+                }
+                project_instructions.push_str(&format!("# Project instructions ({filename})\n{}", s));
+            }
+            Err(_) => {
+                debug!("[core] no {filename} at {repo_path}");
+            }
         }
-        Err(_) => {
-            debug!("[core] no CLAUDE.md at {repo_path}");
-            String::new()
-        }
+    }
+
+    let project_instructions_block = if project_instructions.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{}", project_instructions)
     };
 
     let tool_guidance    = shared_tool_guidance();
@@ -1898,7 +1910,7 @@ pub fn build_system_prompt(repo_path: &str) -> String {
     format!(
         "You are an AI assistant helping manage the git repository at {repo_path}.\
          You can inspect code, answer questions, and help coordinate work across branches.\
-         Any path preceded by '@' (e.g. @src/main.rs) is a reference to a file path in the git repository.{claude_md}{tool_guidance}{buildah}{bg_task_note}{spawn_note}"
+         Any path preceded by '@' (e.g. @src/main.rs) is a reference to a file path in the git repository.{project_instructions_block}{tool_guidance}{buildah}{bg_task_note}{spawn_note}"
     )
 }
 

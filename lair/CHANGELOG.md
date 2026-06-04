@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- `build_system_prompt` now checks for both `CLAUDE.md` and `SYSTEM.md` in the repo root; if both exist, both are included in the system prompt.
+
 ## [0.22.2] - 2026-06-04
 
 ### Fixed
@@ -43,6 +46,10 @@
   (Previously a generic cancel-by-drop guard could pre-empt bash's own cleanup,
   bypassing the kill and discarding partial output; bash is now awaited directly
   while other tools keep the universal cancel-by-drop guard.)
+=======
+### Changed
+- `build_system_prompt` now checks for both `CLAUDE.md` and `SYSTEM.md` in the repo root; if both exist, both are included in the system prompt.
+>>>>>>> 3861f98 (Support both CLAUDE.md and SYSTEM.md as repo-level system prompt sources)
 
 ## [0.22.0] - 2026-06-03
 
