@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Interrupt handling no longer races the turn boundary.** The per-turn cancel
+  token now lives inside the `TurnGate`, so installing the next turn's token,
+  clearing `interrupt_requested`, and the interrupt itself all happen under one
+  lock. Previously an interrupt arriving in the gap between a turn finishing and
+  the next (auto- or queued-message) turn starting could cancel the
+  already-finished turn's token and be swallowed, letting the chained turn run
+  uncancelled. Three related fixes: an interrupt received while no turn is
+  streaming is now a no-op (it can no longer leave `interrupt_requested` set to
+  suppress a later turn's auto-chain); a turn is classified interrupted-vs-done
+  from the agentic loop's own outcome rather than a post-hoc token re-sample
+  (so a stop pressed just as a turn finishes can't mislabel a completed turn);
+  and `STARTUP_PROMPT` turns are now interruptible. No wire-protocol change.
+
 ## [0.22.0] - 2026-06-03
 
 ### Added

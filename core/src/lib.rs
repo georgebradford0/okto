@@ -1613,8 +1613,25 @@ pub fn sanitize_agent_name(raw: &str) -> Option<String> {
     if capped.is_empty() { None } else { Some(capped) }
 }
 
+/// Outcome of a completed `send_message` turn.
+pub struct TurnOutcome {
+    /// The assistant's final text for the turn.
+    pub text:        String,
+    /// Cumulative USD cost across every model call made in the turn.
+    pub cost_usd:    f64,
+    /// The full conversation, including this turn's assistant + tool messages.
+    pub messages:    Vec<ApiMessage>,
+    /// `true` if the turn stopped because its `CancellationToken` fired
+    /// (interrupt) rather than reaching a natural stop. This is authoritative:
+    /// callers MUST use it to classify the turn instead of re-sampling the
+    /// token after the fact, which races a late interrupt that arrives between
+    /// this function returning and the caller's check.
+    pub interrupted: bool,
+}
+
 /// Send a message and run the tool loop until Claude stops with end_turn.
-/// Returns (final_text, total_cost_usd, updated_messages).
+/// Returns a `TurnOutcome` (final text, total cost, updated messages, and
+/// whether the turn was interrupted).
 /// MCP is disabled; only built-in tools are available.
 /// If `event_tx` is Some, Text and ToolUse events are forwarded to the caller.
 /// Passing a cancelled `CancellationToken` causes an early return.
@@ -1630,7 +1647,7 @@ pub async fn send_message(
     extra_executor: Option<Arc<dyn Fn(String, serde_json::Value)
                             -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
                             + Send + Sync>>,
-) -> Result<(String, f64, Vec<ApiMessage>), (String, Vec<ApiMessage>)> {
+) -> Result<TurnOutcome, (String, Vec<ApiMessage>)> {
     let backend    = ApiBackend::resolve();
     let mut total_cost = 0.0f64;
     let mut last_text  = String::new();
@@ -1645,7 +1662,7 @@ pub async fn send_message(
         turn += 1;
         if cancel.is_cancelled() {
             tx.send(ChatEvent::InterruptAck).await.ok();
-            return Ok((last_text, total_cost, messages));
+            return Ok(TurnOutcome { text: last_text, cost_usd: total_cost, messages, interrupted: true });
         }
         // One model call via the shared request+stream builder (`call_turn`).
         // Text and ToolUse events are emitted live during streaming; we get back
@@ -1656,7 +1673,7 @@ pub async fn send_message(
             Ok(v) => v,
             Err(e) if e == "__interrupted__" => {
                 tx.send(ChatEvent::InterruptAck).await.ok();
-                return Ok((last_text, total_cost, messages));
+                return Ok(TurnOutcome { text: last_text, cost_usd: total_cost, messages, interrupted: true });
             }
             Err(e) => {
                 error!("[core/send_message] turn={turn} error: {e}");
@@ -1695,7 +1712,7 @@ pub async fn send_message(
 
         if stop_reason != "tool_use" || tool_uses.is_empty() {
             info!("[core/send_message] done turns={turn} cost=${total_cost:.4}");
-            return Ok((text_buf, total_cost, messages));
+            return Ok(TurnOutcome { text: text_buf, cost_usd: total_cost, messages, interrupted: false });
         }
 
         last_text = text_buf;

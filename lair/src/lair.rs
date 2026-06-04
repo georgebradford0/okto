@@ -111,6 +111,12 @@ struct TurnGate {
     /// Set by `interrupt_handler`; prevents `finalize_turn` from chaining
     /// another auto-turn — the gate is released instead, giving the user control.
     interrupt_requested: bool,
+    /// Cancellation token for the in-flight turn. Lives here (rather than in a
+    /// separate `Mutex`) so that installing the next turn's token, resetting
+    /// `interrupt_requested`, and the interrupt handler's cancel all happen
+    /// under this one lock — an interrupt and a turn-boundary can no longer
+    /// race onto different generations of the token.
+    cancel:              CancellationToken,
 }
 
 impl TurnGate {
@@ -121,7 +127,29 @@ impl TurnGate {
             queued_user_message:   None,
             auto_depth:            0,
             interrupt_requested:   false,
+            cancel:                CancellationToken::new(),
         }
+    }
+
+    /// Commit to a new turn: install a fresh cancel token and clear the
+    /// interrupt flag, atomically under the gate lock. Returns the token clone
+    /// the turn task drives. Caller must already hold `streaming = true`.
+    fn begin_turn(&mut self) -> CancellationToken {
+        let token = CancellationToken::new();
+        self.cancel = token.clone();
+        self.interrupt_requested = false;
+        token
+    }
+
+    /// Request interruption of the in-flight turn. No-op (returns `false`) when
+    /// no turn is streaming, so a stray interrupt can't cancel an already-
+    /// finished token nor leave `interrupt_requested` set to poison the next
+    /// turn's auto-chain decision.
+    fn interrupt(&mut self) -> bool {
+        if !self.streaming { return false; }
+        self.cancel.cancel();
+        self.interrupt_requested = true;
+        true
     }
 }
 
@@ -152,7 +180,6 @@ struct AppState {
     supervisor:    Arc<AgentSupervisor>,
     registry:      Arc<Mutex<Registry>>,
     mcp_pool:      McpPool,
-    cancel:        Mutex<CancellationToken>,
     turn_gate:     Mutex<TurnGate>,
     stream_state:  Mutex<StreamState>,
     /// Flips to true once subsystem init completes (first agent poll done).
@@ -243,8 +270,7 @@ async fn require_agent_token(
 }
 
 async fn interrupt_handler(State(state): State<Arc<AppState>>) -> StatusCode {
-    state.cancel.lock().unwrap().cancel();
-    state.turn_gate.lock().unwrap().interrupt_requested = true;
+    state.turn_gate.lock().unwrap().interrupt();
     StatusCode::OK
 }
 
@@ -390,8 +416,8 @@ async fn synthesize_task_notification(
         Ok(r)  => r,
         Err(_) => { warn!("[lair/notify-task] LLM call timed out"); return None; }
     };
-    let (text, _cost, _msgs) = match result {
-        Ok(t)       => t,
+    let text = match result {
+        Ok(outcome) => outcome.text,
         Err((e, _)) => { warn!("[lair/notify-task] LLM call failed: {e}"); return None; }
     };
 
@@ -457,7 +483,12 @@ async fn stream_handler(
     ws.on_upgrade(move |socket| handle_stream(socket, state))
 }
 
-fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
+/// Run one turn. `cancel` is the turn's token, already installed in the gate
+/// by the caller under the gate lock (via `begin_turn`) — passing it in rather
+/// than minting it here keeps token installation atomic with the turn-boundary
+/// decision, so an interrupt arriving in the finalize→spawn window targets this
+/// turn's token instead of the previous (finished) one.
+fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger, cancel: CancellationToken) {
     // Gate must already be claimed (streaming=true) before calling this.
     tokio::spawn(async move {
         let api_key = match resolve_api_key() {
@@ -495,9 +526,6 @@ fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
         let (event_tx, mut event_rx) = mpsc::channel::<ChatEvent>(256);
         let done_tx = event_tx.clone();
 
-        let cancel = CancellationToken::new();
-        *state.cancel.lock().unwrap() = cancel.clone();
-
         state.stream_state.lock().unwrap().buffer.clear();
 
         let extra_tools = build_tools_with_mcp(&state.mcp_pool, &lair_extra_tools(!state.relay_url.is_empty())).await;
@@ -505,8 +533,13 @@ fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
 
         tokio::spawn(async move {
             match send_message(messages, &system, &model, &api_key, "/", Some(event_tx), cancel.clone(), &extra_tools, executor).await {
-                Ok((_, cost_usd, mut updated)) => {
-                    if cancel.is_cancelled() {
+                Ok(outcome) => {
+                    let cost_usd = outcome.cost_usd;
+                    let mut updated = outcome.messages;
+                    // Classify from the turn's own outcome, not a post-hoc token
+                    // re-sample — a late interrupt landing after a clean finish
+                    // must not relabel a completed turn as interrupted.
+                    if outcome.interrupted {
                         info!("[lair/stream] turn interrupted, cost=${cost_usd:.4}");
                         updated.push(ApiMessage {
                             role:    "interrupted".to_string(),
@@ -560,8 +593,13 @@ fn spawn_turn(state: Arc<AppState>, trigger: TurnTrigger) {
 ///      interrupt was not requested, and auto_depth < MAX_AUTO_DEPTH).
 ///   3. Nothing actionable → release the gate.
 fn finalize_turn(state: Arc<AppState>) {
-    // Drain queued state under the gate, decide what happens next.
-    let (injections, queued_user, should_auto) = {
+    // Drain queued state under the gate, decide what happens next, and mint the
+    // next turn's cancel token in the same locked block when we chain — so the
+    // moment we release the lock the gate already holds the upcoming turn's
+    // token. An interrupt racing the finalize→spawn window then cancels that
+    // token (and `send_message`'s top-of-loop check honours it) instead of
+    // harmlessly cancelling the just-finished turn's token.
+    let (injections, queued_user, should_auto, next) = {
         let mut gate = state.turn_gate.lock().unwrap();
         let injections  = std::mem::take(&mut gate.pending_injections);
         let queued_user = gate.queued_user_message.take();
@@ -569,18 +607,21 @@ fn finalize_turn(state: Arc<AppState>) {
             && gate.auto_depth < MAX_AUTO_DEPTH
             && queued_user.is_none()
             && !injections.is_empty();
-        gate.interrupt_requested = false;
-        if should_auto {
-            gate.auto_depth += 1;
-            // streaming stays true — we chain into an auto-turn.
-        } else if queued_user.is_some() {
-            // streaming stays true — we chain into a user-driven turn.
+        let next = if queued_user.is_some() {
+            // streaming stays true — chain into a user-driven turn.
             gate.auto_depth = 0;
+            Some(gate.begin_turn())
+        } else if should_auto {
+            // streaming stays true — chain into an auto-turn.
+            gate.auto_depth += 1;
+            Some(gate.begin_turn())
         } else {
             gate.streaming = false;
             gate.auto_depth = 0;
-        }
-        (injections, queued_user, should_auto)
+            gate.interrupt_requested = false;
+            None
+        };
+        (injections, queued_user, should_auto, next)
     };
 
     // Fold the queued user message + any injections into the persisted
@@ -601,13 +642,13 @@ fn finalize_turn(state: Arc<AppState>) {
 
     if let Some(text) = queued_user {
         info!("[lair/stream] queued user message takes priority — spawning user turn");
-        spawn_turn(state, TurnTrigger::User(text));
+        spawn_turn(state, TurnTrigger::User(text), next.expect("user-msg chain mints a token"));
         return;
     }
 
     if should_auto {
         info!("[lair/stream] auto-turn triggered by queued background injection");
-        spawn_turn(state, TurnTrigger::Auto);
+        spawn_turn(state, TurnTrigger::Auto, next.expect("auto chain mints a token"));
         return;
     }
 
@@ -642,6 +683,8 @@ fn try_continue_auto(state: Arc<AppState>) {
 
     gate.streaming = true;
     gate.auto_depth = 1;
+    // Mint the turn's cancel token under the gate lock before releasing it.
+    let cancel = gate.begin_turn();
     let drained: Vec<ApiMessage> = std::mem::take(&mut gate.pending_injections);
     drop(gate);
 
@@ -652,7 +695,7 @@ fn try_continue_auto(state: Arc<AppState>) {
         save_messages(&msgs);
     }
     info!("[lair/stream] auto-turn triggered by queued background injection");
-    spawn_turn(state, TurnTrigger::Auto);
+    spawn_turn(state, TurnTrigger::Auto, cancel);
 }
 
 async fn handle_stream(socket: WebSocket, state: Arc<AppState>) {
@@ -795,15 +838,16 @@ async fn handle_client_frame(raw: &str, state: &Arc<AppState>) {
             }
             gate.streaming = true;
             gate.auto_depth = 0;
+            // Install the turn's cancel token under the same lock.
+            let cancel = gate.begin_turn();
             drop(gate);
             let preview: String = text.chars().take(120).collect();
             info!("[lair/stream] user_message ({} chars): {preview}", text.len());
-            spawn_turn(state.clone(), TurnTrigger::User(text));
+            spawn_turn(state.clone(), TurnTrigger::User(text), cancel);
         }
         "interrupt" => {
             info!("[lair/stream] interrupt frame received");
-            state.cancel.lock().unwrap().cancel();
-            state.turn_gate.lock().unwrap().interrupt_requested = true;
+            state.turn_gate.lock().unwrap().interrupt();
             buffer_and_fanout(&state.stream_state, serde_json::json!({"type":"interrupt_ack"}).to_string());
         }
         "start_agent" => {
@@ -3480,7 +3524,6 @@ pub async fn run(print_pubkey: bool) -> anyhow::Result<()> {
             supervisor,
             registry,
             mcp_pool,
-            cancel:        Mutex::new(CancellationToken::new()),
             turn_gate:     Mutex::new(TurnGate::new()),
             stream_state:  Mutex::new({
                 let mut ss = StreamState::new();

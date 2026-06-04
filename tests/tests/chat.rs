@@ -129,3 +129,48 @@ async fn interrupt_stops_an_in_flight_turn() {
         "expected the turn to be interrupted, got {terminal}"
     );
 }
+
+#[tokio::test]
+async fn session_is_reusable_after_an_interrupt() {
+    // Regression guard for the interrupt refactor: an interrupted turn must
+    // release the gate cleanly and the *next* turn must run to completion on a
+    // fresh, uncancelled token. Before the fix, the per-turn cancel token and
+    // `interrupt_requested` were tracked under separate locks and swapped at
+    // different times, leaving room for an interrupt to bleed across the turn
+    // boundary. The interrupted bash turn never consumes the scripted text
+    // turn, so it stays queued for the second user message.
+    let lair = LairProcess::start(vec![
+        Turn::tool("call_1", "bash", serde_json::json!({"command": "sleep 3"})),
+        Turn::text("after-interrupt-ok"),
+    ])
+    .await
+    .expect("lair to start");
+
+    let mut chat = lair.chat().await.expect("open chat ws");
+    read_until(&mut chat, &["ready"]).await;
+
+    // Turn 1: interrupt mid-tool.
+    chat.send_user_message("run something slow").await.expect("send");
+    let tool = read_until(&mut chat, &["tool_use"]).await;
+    assert_eq!(tool["tool"], "bash");
+    chat.interrupt().await.expect("interrupt");
+    let terminal = read_until(&mut chat, &["interrupted", "done", "error"]).await;
+    assert_eq!(terminal["type"], "interrupted", "turn 1 should interrupt, got {terminal}");
+
+    // Turn 2: a normal turn on the same session must complete with `done`
+    // (not be mislabeled interrupted, and not be stuck behind a stale gate).
+    chat.send_user_message("now answer normally").await.expect("send");
+    let events = chat.collect_turn().await.expect("collect turn 2");
+    let types = event_types(&events);
+    assert!(
+        types.contains(&"done".to_string()),
+        "turn 2 did not complete with done: {types:?}\nlog:\n{}",
+        lair.log()
+    );
+    let text: String = events
+        .iter()
+        .filter(|e| e["type"] == "text")
+        .filter_map(|e| e["text"].as_str())
+        .collect();
+    assert_eq!(text, "after-interrupt-ok", "turn 2 text mismatch");
+}
