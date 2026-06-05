@@ -7,6 +7,8 @@ the git log.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-06-04
+
 ### Added
 - **`okto reload` now streams the lair container's stdout live** while waiting
   for `/health`, instead of waiting silently. The boot/`bootstrap.sh` output is
