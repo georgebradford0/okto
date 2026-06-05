@@ -48,7 +48,7 @@ It then:
 | `--mcp-config <PATH>` | Seed lair's [MCP servers](mcp.md) from an `mcp.json` file. |
 | `--system-prompt-append <TEXT or @PATH>` | Append site-specific guidance to lair's system prompt. `@path` reads a file. See [Customization](customization.md#system-prompt). |
 | `--disable-push` | Turn [push notifications](notifications.md) off end-to-end. |
-| `--ready-timeout <SECS>` | How long to wait for health after `docker run`. Default **180**. Bump it if your [`bootstrap.sh`](customization.md#bootstrapsh) does heavy work. |
+| `--ready-timeout <SECS>` | How long to wait for health after `docker run`. Default **1200** (20 min). Bump it if your [`bootstrap.sh`](customization.md#bootstrapsh) does heavy work. |
 
 !!! example "Init with a GitHub token and house-style prompt"
     ```sh

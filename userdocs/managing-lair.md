@@ -69,7 +69,7 @@ same step:
 okto reload
 okto reload -e GH_TOKEN=ghp_new          # upsert env, then restart
 okto reload --agents lair-myrepo         # also restart only these agents
-okto reload --ready-timeout 300          # wait longer for health
+okto reload --ready-timeout 1800         # wait even longer for health
 okto reload --check-config               # validate config; don't restart
 ```
 

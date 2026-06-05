@@ -7,6 +7,19 @@ the git log.
 
 ## [Unreleased]
 
+### Added
+- **`okto reload` now streams the lair container's stdout live** while waiting
+  for `/health`, instead of waiting silently. The boot/`bootstrap.sh` output is
+  followed (`docker logs --follow`) between the "Waiting for lair to be ready"
+  and "lair ready" lines, so a long reload shows progress as it happens. (Also
+  applies to the other restart paths — `okto lair update`, `okto env set/unset`.)
+
+### Changed
+- **`--ready-timeout` default raised from 180s to 1200s (20 min)** on `okto init`
+  and `okto reload` (and the env-mutating commands that reuse it). Heavy
+  `~/.okto/bootstrap.sh` installs on a cold image pull could exceed the old
+  3-minute deadline and fail health-check before the container finished booting.
+
 ## [0.8.0] - 2026-06-04
 
 ### Added

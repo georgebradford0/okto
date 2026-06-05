@@ -24,7 +24,7 @@ model the first time; if `~/.okto/config.json` already exists it **reuses** it
 | `--mcp-config <PATH>` | — | Seed MCP servers from an `mcp.json`. |
 | `--system-prompt-append <TEXT or @PATH>` | — | Append text to lair's system prompt. |
 | `--disable-push` | off | Disable push notifications end-to-end. |
-| `--ready-timeout <SECS>` | `180` | Seconds to wait for health after `docker run`. |
+| `--ready-timeout <SECS>` | `1200` | Seconds to wait for health after `docker run`. |
 
 ### `okto reload`
 Restart lair to apply env/config; optionally upsert env vars and pick agents.
@@ -33,7 +33,7 @@ Restart lair to apply env/config; optionally upsert env vars and pick agents.
 |------|---------|-------------|
 | `--agents <NAME> ...` | all | Restart only these agents. |
 | `-e, --env KEY=VALUE ...` | — | Upsert env vars into `lair-env` before restart. |
-| `--ready-timeout <SECS>` | `180` | Seconds to wait for health. |
+| `--ready-timeout <SECS>` | `1200` | Seconds to wait for health. |
 | `--check-config` | — | Validate config instead of restarting (see below). |
 
 With `--check-config`, lair is **not** restarted. Instead okto validates the

@@ -415,7 +415,10 @@ pub async fn restart_lair(reason: &str, ready_timeout: std::time::Duration) -> R
     println!("Restarting lair ({reason})...");
     service::start_lair(&launch)?;
     println!("Waiting for lair to be ready (up to {}s)...", ready_timeout.as_secs());
-    service::wait_for_health(rec.http_port, ready_timeout).await?;
+    println!("--- lair container output ---");
+    let health = service::wait_for_health_streaming(rec.http_port, ready_timeout).await;
+    println!("--- end lair container output ---");
+    health?;
     info!("[init] lair restart complete (reason: {reason})");
     println!("lair ready.");
     Ok(())

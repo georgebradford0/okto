@@ -24,11 +24,11 @@ pub const LAIR_DEFAULT_HTTP_PORT:  u16 = 8000;
 pub const LAIR_DEFAULT_NOISE_PORT: u16 = 8443;
 
 /// Default deadline for `wait_for_health` after `docker run`/`docker restart`.
-/// Set to 3 minutes so the container has time to apt-install heavy packages
-/// in `~/.okto/bootstrap.sh` (e.g. Proton Bridge ≈ 216 MB unpacked) on a
-/// fresh image pull, when the apt cache is cold. Override per-invocation
+/// Set to 20 minutes so the container has ample time to apt-install heavy
+/// packages in `~/.okto/bootstrap.sh` (e.g. Proton Bridge ≈ 216 MB unpacked)
+/// on a fresh image pull, when the apt cache is cold. Override per-invocation
 /// with `okto init --ready-timeout <SECS>` or `okto reload --ready-timeout`.
-pub const DEFAULT_READY_TIMEOUT_SECS: u64 = 180;
+pub const DEFAULT_READY_TIMEOUT_SECS: u64 = 1200;
 
 /// Container name the CLI uses for the lair instance on this host. Used as
 /// the `--name` flag on `docker run` and as the target for every subsequent
@@ -474,6 +474,40 @@ pub async fn wait_for_health(port: u16, timeout: Duration) -> Result<()> {
             _ => tokio::time::sleep(Duration::from_secs(1)).await,
         }
     }
+}
+
+/// Spawn `docker logs --follow` for the lair container as a background child,
+/// inheriting this process's stdout/stderr so the container's boot output
+/// streams live. Returns the child handle (kill it once you're done) or `None`
+/// if the follower couldn't be started — log streaming is best-effort and must
+/// never block a reload. The container is freshly created on restart, so every
+/// line belongs to this boot; no `--since`/`--tail` filtering is needed.
+fn follow_lair_logs() -> Option<tokio::process::Child> {
+    let mut cmd = tokio::process::Command::new("docker");
+    cmd.args(["logs", "--follow", LAIR_CONTAINER_NAME]);
+    cmd.kill_on_drop(true);
+    debug!("[service] shelling out: docker logs --follow {LAIR_CONTAINER_NAME} (boot stream)");
+    match cmd.spawn() {
+        Ok(child) => Some(child),
+        Err(e) => {
+            warn!("[service] could not follow lair logs during restart: {e}");
+            None
+        }
+    }
+}
+
+/// Like [`wait_for_health`], but tails the lair container's stdout/stderr
+/// (`docker logs --follow`) to this process's stdout while polling, so the
+/// operator can watch boot/`bootstrap.sh` progress during a long reload. The
+/// follower is torn down as soon as `/health` succeeds or the deadline passes.
+pub async fn wait_for_health_streaming(port: u16, timeout: Duration) -> Result<()> {
+    let mut follower = follow_lair_logs();
+    let result = wait_for_health(port, timeout).await;
+    if let Some(mut child) = follower.take() {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
+    result
 }
 
 pub async fn detect_public_ip() -> Result<String> {

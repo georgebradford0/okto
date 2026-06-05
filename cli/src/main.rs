@@ -217,7 +217,7 @@ enum Command {
         /// How long (seconds) to wait for `/health` after `docker run`. Bump
         /// this when your `~/.okto/bootstrap.sh` does heavy work like
         /// `apt-get install` of large packages, especially on a fresh image
-        /// pull when the apt cache is cold. Default 180s.
+        /// pull when the apt cache is cold. Default 1200s (20 min).
         #[arg(long, value_name = "SECS", default_value_t = service::DEFAULT_READY_TIMEOUT_SECS)]
         ready_timeout: u64,
     },
@@ -245,7 +245,7 @@ enum Command {
         #[arg(long = "env", short = 'e', value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
         env: Vec<String>,
         /// How long (seconds) to wait for `/health` after restart. Default
-        /// 180s — bump it for heavy `bootstrap.sh` installs.
+        /// 1200s (20 min) — bump it further for heavy `bootstrap.sh` installs.
         #[arg(long, value_name = "SECS", default_value_t = service::DEFAULT_READY_TIMEOUT_SECS)]
         ready_timeout: u64,
         /// Validate the configuration instead of restarting. Checks the
