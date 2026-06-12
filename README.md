@@ -6,7 +6,7 @@ This code is experimental and will change frequently between version updates.
 ## Setup
 To get up and running you'll need
 - A Linux host with static IP with ports 22 and 8443 open
-- LLM provider API key (you can also setup open source models but we'll defer explaining)  // TODO create section explaining self hosted requirements and link
+- LLM provider API key (you can also setup open source models but we'll defer explaining)
 - iPhone (or you can build Android if you like)
 
 Grab the CLI on your linux host with the helper script
